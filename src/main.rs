@@ -89,6 +89,7 @@ async fn main() {
         .options(poise::FrameworkOptions {
             prefix_options: poise::PrefixFrameworkOptions {
                 prefix: Some("!".to_string()),
+                mention_as_prefix: false,
                 ..Default::default()
             },
             commands: vec![commands::m()],
