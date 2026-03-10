@@ -135,7 +135,7 @@ async fn handle_component_interaction(
         if let Some(member) = &interaction.member {
             let is_admin = member
                 .permissions
-                .map_or(false, |p| p.contains(Permissions::ADMINISTRATOR));
+                .is_some_and(|p| p.contains(Permissions::ADMINISTRATOR));
             if !is_admin {
                 if let Some(settings) = get_guild_settings(&data.db, &guild_id.to_string()).await {
                     if settings.dj_mode_enabled {
@@ -228,28 +228,60 @@ async fn handle_component_interaction(
             let mut p = player_arc.lock().await;
             if let Some(title) = p.skip_current() {
                 if let Some(next_track) = p.advance() {
+                    let loop_mode = p.loop_mode;
                     drop(p);
-                    let pctx = data.playback_context(ctx, guild_id).await;
-                    match voice::play_track(ctx, guild_id, &next_track.url, pctx.as_ref()).await {
+                    let pctx = data.playback_context(ctx, guild_id, interaction.channel_id).await;
+                    match voice::play_track(ctx, guild_id, &next_track.url, &data.http_client, pctx.as_ref()).await {
                         Ok(handle) => {
                             data.track_handles.insert(guild_id, handle);
                         }
                         Err(e) => tracing::error!("Playback error on skip: {e}"),
                     }
+
+                    // Update the original message to just show "Skipped" (remove controls)
+                    let skip_embed = CreateEmbed::new()
+                        .color(0x5865f2)
+                        .description(format!("⏭️ Skipped **{title}**."));
+                    let _ = interaction
+                        .create_response(
+                            &ctx.http,
+                            CreateInteractionResponse::UpdateMessage(
+                                CreateInteractionResponseMessage::new()
+                                    .embed(skip_embed)
+                                    .components(vec![]),
+                            ),
+                        )
+                        .await;
+
+                    // Send a new "Now Playing" embed with controls
+                    let embed = now_playing_embed(&next_track);
+                    let controls = music_controls(false, loop_mode);
+                    if let Ok(msg) = interaction
+                        .channel_id
+                        .send_message(
+                            &ctx.http,
+                            CreateMessage::new().embed(embed).components(controls),
+                        )
+                        .await
+                    {
+                        if let Some(ref pctx) = pctx {
+                            *pctx.now_playing_msg.lock().await = Some(msg.id);
+                        }
+                    }
                 } else {
                     drop(p);
                     voice::stop_playback(ctx, guild_id).await;
                     data.track_handles.remove(&guild_id);
+                    let _ = interaction
+                        .create_response(
+                            &ctx.http,
+                            CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .content(format!("⏭️ Skipped **{title}**. Queue is empty.")),
+                            ),
+                        )
+                        .await;
                 }
-                let _ = interaction
-                    .create_response(
-                        &ctx.http,
-                        CreateInteractionResponse::Message(
-                            CreateInteractionResponseMessage::new()
-                                .content(format!("⏭️ Skipped **{title}**.")),
-                        ),
-                    )
-                    .await;
             } else {
                 let _ = interaction
                     .create_response(
@@ -269,7 +301,7 @@ async fn handle_component_interaction(
             drop(p);
 
             // Cancel any pending idle timer
-            if let Some(pctx) = data.playback_context(ctx, guild_id).await {
+            if let Some(pctx) = data.playback_context(ctx, guild_id, interaction.channel_id).await {
                 voice::cancel_idle_timer(&pctx).await;
             }
 

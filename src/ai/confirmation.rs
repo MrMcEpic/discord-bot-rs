@@ -48,13 +48,41 @@ pub async fn request_confirmation(
 ) -> Result<bool, BotError> {
     let required_perm = required_permission(name);
 
-    // Pre-check permission
-    if let Some(member) = &message.member {
-        let perms = member.permissions.unwrap_or(Permissions::empty());
-        if !perms.contains(required_perm) {
-            channel_id.say(&ctx.http, "You don't have permission to do that.").await?;
+    // Pre-check permission — compute from guild roles since message.member.permissions
+    // is often None for messages fetched from the API.
+    let guild_id = match message.guild_id {
+        Some(id) => id,
+        None => {
+            channel_id.say(&ctx.http, "This only works in a server.").await?;
             return Ok(false);
         }
+    };
+    // Fetch the full member and compute permissions from guild roles
+    let has_perm = match guild_id.member(&ctx.http, message.author.id).await {
+        Ok(member) => {
+            if let Some(guild) = ctx.cache.guild(guild_id) {
+                let mut perms = guild.roles.get(&guild_id.everyone_role())
+                    .map(|r| r.permissions)
+                    .unwrap_or(Permissions::empty());
+                for role_id in &member.roles {
+                    if let Some(role) = guild.roles.get(role_id) {
+                        perms |= role.permissions;
+                    }
+                }
+                if perms.contains(Permissions::ADMINISTRATOR) {
+                    true
+                } else {
+                    perms.contains(required_perm)
+                }
+            } else {
+                false
+            }
+        }
+        Err(_) => false,
+    };
+    if !has_perm {
+        channel_id.say(&ctx.http, "You don't have permission to do that.").await?;
+        return Ok(false);
     }
 
     let confirm_id = format!("mod_confirm_{}", chrono::Utc::now().timestamp_millis());
@@ -106,17 +134,13 @@ pub async fn request_confirmation(
 
         match interaction {
             Some(interaction) => {
-                let has_perm = interaction.member.as_ref()
-                    .and_then(|m| m.permissions)
-                    .map_or(false, |p| p.contains(required_perm));
-
-                if !has_perm {
+                // Only the requesting user can approve/cancel
+                if interaction.user.id != message.author.id {
                     let _ = interaction.create_response(&ctx.http, CreateInteractionResponse::Message(
                         CreateInteractionResponseMessage::new()
-                            .content("You don't have permission to approve this action.")
+                            .content("Only the person who requested this action can respond.")
                             .ephemeral(true),
                     )).await;
-                    // Continue waiting for an authorized user
                     continue;
                 }
 

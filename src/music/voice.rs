@@ -2,24 +2,31 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use dashmap::DashMap;
-use serenity::all::{ChannelId, Context, GuildId};
+use serenity::all::{ChannelId, Context, CreateMessage, GuildId, Http, MessageId};
 use songbird::events::{Event, EventContext, EventHandler, TrackEvent};
-use songbird::input::{ChildContainer, Input};
+use songbird::input::YoutubeDl;
 use songbird::tracks::TrackHandle;
+use songbird::driver::Bitrate;
 use songbird::Songbird;
 use tokio::sync::Mutex;
 
+use super::embeds::{music_controls, now_playing_embed};
 use super::player::GuildPlayer;
-use super::track::AudioPipeline;
+use super::track::ytdlp_user_args;
 
 /// Shared references needed by the track-end event handler and idle timer.
 /// Cloned into each handler instance.
 #[derive(Clone)]
 pub struct PlaybackContext {
     pub guild_id: GuildId,
+    pub channel_id: ChannelId,
     pub songbird: Arc<Songbird>,
+    pub serenity_http: Arc<Http>,
+    pub http_client: reqwest::Client,
     pub guild_players: Arc<DashMap<GuildId, Arc<Mutex<GuildPlayer>>>>,
     pub track_handles: Arc<DashMap<GuildId, TrackHandle>>,
+    /// The most recent "Now Playing" message, so we can delete it when advancing.
+    pub now_playing_msg: Arc<Mutex<Option<MessageId>>>,
     /// If set, the handle for the current idle-leave timer task.
     /// Stored externally so new tracks can cancel it.
     pub idle_timer_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
@@ -36,15 +43,25 @@ pub async fn join_channel(
         .ok_or("Songbird not initialized")?
         .clone();
 
+    tracing::info!(
+        "Attempting to join voice: guild={guild_id}, channel={channel_id}"
+    );
+
     let _call = manager
         .join(guild_id, channel_id)
         .await
-        .map_err(|e| format!("Failed to join voice: {e}"))?;
+        .map_err(|e| {
+            tracing::error!("Songbird join failed: {e:?}");
+            format!("Failed to join voice: {e}")
+        })?;
 
-    // Self-deafen
+    tracing::info!("Successfully joined voice channel {channel_id}");
+
+    // Self-deafen and set bitrate to 256kbps (matching TS bot quality)
     {
         let mut handler = _call.lock().await;
         let _ = handler.deafen(true).await;
+        handler.set_bitrate(Bitrate::BitsPerSecond(256_000));
     }
 
     Ok(())
@@ -57,7 +74,13 @@ pub async fn leave_channel(ctx: &Context, guild_id: GuildId) {
     }
 }
 
-/// Play audio using our yt-dlp|ffmpeg pipeline via songbird ChildContainer.
+/// Create a YoutubeDl input source with our custom yt-dlp args (cookies, etc).
+fn make_ytdl_source(http_client: &reqwest::Client, url: &str) -> YoutubeDl<'static> {
+    YoutubeDl::new(http_client.clone(), url.to_string())
+        .user_args(ytdlp_user_args())
+}
+
+/// Play audio using songbird's YoutubeDl input (HTTP streaming via yt-dlp).
 /// Returns a TrackHandle for controlling playback.
 ///
 /// If `pctx` is provided, a track-end event listener is registered so the next
@@ -66,6 +89,7 @@ pub async fn play_track(
     ctx: &Context,
     guild_id: GuildId,
     url: &str,
+    http_client: &reqwest::Client,
     pctx: Option<&PlaybackContext>,
 ) -> Result<TrackHandle, String> {
     let manager = songbird::get(ctx)
@@ -75,14 +99,11 @@ pub async fn play_track(
 
     let call = manager.get(guild_id).ok_or("Not in a voice channel")?;
 
-    let mut pipeline = AudioPipeline::spawn(url)?;
-    let children = pipeline.into_children();
-    let container = ChildContainer::new(children);
-    let input: Input = container.into();
+    let source = make_ytdl_source(http_client, url);
 
     let mut handler = call.lock().await;
     handler.stop();
-    let track_handle = handler.play_input(input);
+    let track_handle = handler.play_input(source.into());
 
     // Register the track-end event so the next song plays automatically
     if let Some(pctx) = pctx {
@@ -106,14 +127,11 @@ async fn play_next_from_context(pctx: &PlaybackContext, url: &str) -> Result<Tra
         .get(pctx.guild_id)
         .ok_or("Not in a voice channel")?;
 
-    let mut pipeline = AudioPipeline::spawn(url)?;
-    let children = pipeline.into_children();
-    let container = ChildContainer::new(children);
-    let input: Input = container.into();
+    let source = make_ytdl_source(&pctx.http_client, url);
 
     let mut handler = call.lock().await;
     handler.stop();
-    let track_handle = handler.play_input(input);
+    let track_handle = handler.play_input(source.into());
 
     // Register the same end-of-track event on the new track
     let end_handler = TrackEndHandler {
@@ -203,15 +221,36 @@ impl EventHandler for TrackEndHandler {
                     track.title
                 );
 
+                // Delete the old "Now Playing" message
+                let old_msg = self.pctx.now_playing_msg.lock().await.take();
+                if let Some(msg_id) = old_msg {
+                    let _ = self.pctx.channel_id.delete_message(&self.pctx.serenity_http, msg_id).await;
+                }
+
                 match play_next_from_context(&self.pctx, &track.url).await {
                     Ok(handle) => {
                         self.pctx.track_handles.insert(guild_id, handle);
+
+                        // Send new "Now Playing" embed with controls
+                        let p = player_arc.lock().await;
+                        let embed = now_playing_embed(&track);
+                        let controls = music_controls(false, p.loop_mode);
+                        drop(p);
+
+                        if let Ok(msg) = self.pctx.channel_id
+                            .send_message(
+                                &self.pctx.serenity_http,
+                                CreateMessage::new().embed(embed).components(controls),
+                            )
+                            .await
+                        {
+                            *self.pctx.now_playing_msg.lock().await = Some(msg.id);
+                        }
                     }
                     Err(e) => {
                         tracing::error!(
                             "TrackEndHandler: failed to play next track in guild {guild_id}: {e}"
                         );
-                        // Clear current track since playback failed
                         if let Some(entry) = self.pctx.guild_players.get(&guild_id) {
                             let mut p = entry.value().lock().await;
                             p.current = None;

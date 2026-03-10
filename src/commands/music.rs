@@ -19,7 +19,10 @@ async fn check_dj_mode(ctx: Context<'_>) -> Result<bool, BotError> {
         None => return Ok(false),
     };
 
-    let perms = member.permissions(ctx.cache()).unwrap_or(Permissions::empty());
+    let perms = ctx.cache()
+        .guild(guild_id)
+        .map(|guild| guild.member_permissions(&member))
+        .unwrap_or(Permissions::empty());
     if perms.contains(Permissions::ADMINISTRATOR) {
         return Ok(false);
     }
@@ -110,8 +113,8 @@ pub async fn play(
         p.paused = false;
         drop(p);
 
-        let pctx = ctx.data().playback_context(ctx.serenity_context(), guild_id).await;
-        match voice::play_track(ctx.serenity_context(), guild_id, &track.url, pctx.as_ref()).await {
+        let pctx = ctx.data().playback_context(ctx.serenity_context(), guild_id, channel_id).await;
+        match voice::play_track(ctx.serenity_context(), guild_id, &track.url, &ctx.data().http_client, pctx.as_ref()).await {
             Ok(handle) => { ctx.data().track_handles.insert(guild_id, handle); }
             Err(e) => {
                 tracing::error!("Playback error: {e}");
@@ -122,7 +125,13 @@ pub async fn play(
 
         let p = player.lock().await;
         let controls = music_controls(false, p.loop_mode);
-        ctx.send(poise::CreateReply::default().embed(now_playing_embed(&track)).components(controls)).await?;
+        let reply = ctx.send(poise::CreateReply::default().embed(now_playing_embed(&track)).components(controls)).await?;
+        // Store the "Now Playing" message ID so TrackEndHandler can delete it
+        if let Ok(msg) = reply.message().await {
+            if let Some(pctx) = &pctx {
+                *pctx.now_playing_msg.lock().await = Some(msg.id);
+            }
+        }
     }
 
     Ok(())
@@ -176,8 +185,8 @@ pub async fn playlist(
         p.current = Some(track.clone());
         p.paused = false;
         drop(p);
-        let pctx = ctx.data().playback_context(ctx.serenity_context(), guild_id).await;
-        if let Ok(handle) = voice::play_track(ctx.serenity_context(), guild_id, &track.url, pctx.as_ref()).await {
+        let pctx = ctx.data().playback_context(ctx.serenity_context(), guild_id, channel_id).await;
+        if let Ok(handle) = voice::play_track(ctx.serenity_context(), guild_id, &track.url, &ctx.data().http_client, pctx.as_ref()).await {
             ctx.data().track_handles.insert(guild_id, handle);
         }
         let p = player.lock().await;
@@ -187,7 +196,12 @@ pub async fn playlist(
             .description(format!("Added **{}** tracks to the queue.", added + 1))
             .field("Now Playing", p.current.as_ref().map_or("Unknown", |t| &t.title), false);
         let controls = music_controls(false, p.loop_mode);
-        ctx.send(poise::CreateReply::default().embed(embed).components(controls)).await?;
+        let reply = ctx.send(poise::CreateReply::default().embed(embed).components(controls)).await?;
+        if let Ok(msg) = reply.message().await {
+            if let Some(ref pctx) = pctx {
+                *pctx.now_playing_msg.lock().await = Some(msg.id);
+            }
+        }
     } else {
         let embed = CreateEmbed::new()
             .color(0x57f287)
@@ -210,18 +224,29 @@ pub async fn skip(ctx: Context<'_>) -> Result<(), BotError> {
 
     if let Some(title) = p.skip_current() {
         if let Some(next_track) = p.advance() {
+            let loop_mode = p.loop_mode;
             drop(p);
-            let pctx = ctx.data().playback_context(ctx.serenity_context(), guild_id).await;
-            match voice::play_track(ctx.serenity_context(), guild_id, &next_track.url, pctx.as_ref()).await {
+            let pctx = ctx.data().playback_context(ctx.serenity_context(), guild_id, ctx.channel_id()).await;
+            match voice::play_track(ctx.serenity_context(), guild_id, &next_track.url, &ctx.data().http_client, pctx.as_ref()).await {
                 Ok(handle) => { ctx.data().track_handles.insert(guild_id, handle); }
                 Err(e) => tracing::error!("Playback error on skip: {e}"),
+            }
+            ctx.say(format!("Skipped **{title}**.")).await?;
+            // Send new "Now Playing" embed with controls
+            let embed = now_playing_embed(&next_track);
+            let controls = music_controls(false, loop_mode);
+            let reply = ctx.send(poise::CreateReply::default().embed(embed).components(controls)).await?;
+            if let Ok(msg) = reply.message().await {
+                if let Some(ref pctx) = pctx {
+                    *pctx.now_playing_msg.lock().await = Some(msg.id);
+                }
             }
         } else {
             drop(p);
             voice::stop_playback(ctx.serenity_context(), guild_id).await;
             ctx.data().track_handles.remove(&guild_id);
+            ctx.say(format!("Skipped **{title}**. Queue is empty.")).await?;
         }
-        ctx.say(format!("Skipped **{title}**.")).await?;
     } else {
         ctx.say("Nothing is playing right now.").await?;
     }
@@ -241,7 +266,7 @@ pub async fn stop(ctx: Context<'_>) -> Result<(), BotError> {
     drop(p);
 
     // Cancel any pending idle timer
-    if let Some(pctx) = ctx.data().playback_context(ctx.serenity_context(), guild_id).await {
+    if let Some(pctx) = ctx.data().playback_context(ctx.serenity_context(), guild_id, ctx.channel_id()).await {
         voice::cancel_idle_timer(&pctx).await;
     }
 

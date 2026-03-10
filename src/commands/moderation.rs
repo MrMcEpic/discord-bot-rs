@@ -169,7 +169,7 @@ pub async fn nuke(
     ctx: Context<'_>,
     #[description = "Number of messages (1-100)"] count: u8,
 ) -> Result<(), BotError> {
-    if count < 1 || count > 100 {
+    if !(1..=100).contains(&count) {
         ctx.say("Usage: `!m nuke <1-100>`").await?;
         return Ok(());
     }

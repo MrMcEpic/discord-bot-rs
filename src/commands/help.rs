@@ -11,8 +11,9 @@ pub async fn help(ctx: Context<'_>) -> Result<(), BotError> {
         None => return Ok(()),
     };
 
-    let perms = member
-        .permissions(ctx.cache())
+    let perms = ctx.guild_id()
+        .and_then(|gid| ctx.cache().guild(gid))
+        .map(|guild| guild.member_permissions(&member))
         .unwrap_or(Permissions::empty());
     let has_ban = perms.contains(Permissions::BAN_MEMBERS);
     let has_manage = perms.contains(Permissions::MANAGE_MESSAGES);

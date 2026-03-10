@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use sqlx::FromRow;
 
 #[derive(Debug, FromRow)]
+#[allow(dead_code)]
 pub struct Tempban {
     pub id: i32,
     pub guild_id: String,
@@ -14,6 +15,7 @@ pub struct Tempban {
 }
 
 #[derive(Debug, FromRow)]
+#[allow(dead_code)]
 pub struct GuildSettings {
     pub guild_id: String,
     pub audit_log_channel_id: Option<String>,

@@ -1,5 +1,6 @@
 use regex::Regex;
 use std::sync::LazyLock;
+use tokio::process::Command;
 
 static LINK_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"class="result__a"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)</a>"#).unwrap()
@@ -17,32 +18,38 @@ pub struct SearchResult {
 }
 
 pub async fn web_search(
-    client: &reqwest::Client,
+    _client: &reqwest::Client,
     query: &str,
     max_results: usize,
 ) -> Result<Vec<SearchResult>, String> {
-    let params = [("q", query)];
+    let form_data = format!("q={}", urlencoding::encode(query));
 
-    let response = client
-        .post("https://html.duckduckgo.com/html/")
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .header("User-Agent", "Mozilla/5.0")
-        .form(&params)
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
+    // Shell out to curl (matches the working TS implementation exactly).
+    // reqwest sends extra headers that cause DDG to return a non-result page.
+    let output = Command::new("curl")
+        .args([
+            "-s",
+            "-X", "POST",
+            "https://html.duckduckgo.com/html/",
+            "-H", "Content-Type: application/x-www-form-urlencoded",
+            "-H", "User-Agent: Mozilla/5.0",
+            "-d", &form_data,
+            "--max-time", "10",
+        ])
+        .output()
         .await
-        .map_err(|e| format!("Search request failed: {e}"))?;
+        .map_err(|e| format!("curl failed: {e}"))?;
 
-    let html = response
-        .text()
-        .await
-        .map_err(|e| format!("Failed to read response: {e}"))?;
+    if !output.status.success() {
+        return Err(format!("curl exited with {}", output.status));
+    }
+
+    let html = String::from_utf8_lossy(&output.stdout);
 
     Ok(parse_results(&html, max_results))
 }
 
 fn strip_html(s: &str) -> String {
-    // Remove HTML tags
     let s = Regex::new(r"<[^>]*>").unwrap().replace_all(s, "");
     s.replace("&#x27;", "'")
         .replace("&amp;", "&")

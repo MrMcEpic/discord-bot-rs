@@ -53,7 +53,7 @@ pub async fn djmode(ctx: Context<'_>) -> Result<(), BotError> {
     let guild_id = ctx.guild_id().ok_or(BotError::Other("Not in a guild".into()))?;
 
     let settings = get_guild_settings(&ctx.data().db, &guild_id.to_string()).await;
-    let current = settings.as_ref().map_or(false, |s| s.dj_mode_enabled);
+    let current = settings.as_ref().is_some_and(|s| s.dj_mode_enabled);
     let new_value = !current;
 
     if new_value && settings.as_ref().and_then(|s| s.dj_role_id.as_ref()).is_none() {

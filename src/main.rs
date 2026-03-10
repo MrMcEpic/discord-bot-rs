@@ -20,15 +20,21 @@ use config::Config;
 use error::BotError;
 use util::ratelimit::RateLimiters;
 
+type IdleTimerMap = Arc<DashMap<GuildId, Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>>>;
+
 pub struct Data {
     pub db: sqlx::PgPool,
     pub http_client: reqwest::Client,
     pub guild_players: Arc<DashMap<GuildId, Arc<Mutex<GuildPlayer>>>>,
     pub track_handles: Arc<DashMap<GuildId, TrackHandle>>,
+    /// Per-guild "Now Playing" message IDs, so we can delete old ones when advancing.
+    pub now_playing_msgs: Arc<DashMap<GuildId, Arc<Mutex<Option<serenity::all::MessageId>>>>>,
     /// Per-guild idle timer handles, used to cancel idle-leave when a new track starts.
-    pub idle_timers: Arc<DashMap<GuildId, Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>>>,
+    pub idle_timers: IdleTimerMap,
     pub rate_limiters: RateLimiters,
     pub config: Config,
+    /// When this bot instance started — bot messages before this are from a previous instance.
+    pub started_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl Data {
@@ -38,6 +44,7 @@ impl Data {
         &self,
         ctx: &serenity::all::prelude::Context,
         guild_id: GuildId,
+        channel_id: ChannelId,
     ) -> Option<PlaybackContext> {
         let songbird = songbird::get(ctx).await?;
         let idle_timer_handle = self
@@ -46,11 +53,21 @@ impl Data {
             .or_insert_with(|| Arc::new(Mutex::new(None)))
             .value()
             .clone();
+        let now_playing_msg = self
+            .now_playing_msgs
+            .entry(guild_id)
+            .or_insert_with(|| Arc::new(Mutex::new(None)))
+            .value()
+            .clone();
         Some(PlaybackContext {
             guild_id,
+            channel_id,
             songbird,
+            serenity_http: ctx.http.clone(),
+            http_client: self.http_client.clone(),
             guild_players: self.guild_players.clone(),
             track_handles: self.track_handles.clone(),
+            now_playing_msg,
             idle_timer_handle,
         })
     }
@@ -61,6 +78,11 @@ pub type Context<'a> = poise::Context<'a, Data, BotError>;
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
+
+    // Remove PM2's node IPC env vars — they cause child node processes
+    // (spawned by yt-dlp for JS challenge solving) to crash with SIGABRT.
+    std::env::remove_var("NODE_CHANNEL_FD");
+    std::env::remove_var("NODE_CHANNEL_SERIALIZATION_MODE");
 
     let config = Config::load();
     tracing::info!("Config loaded. Client ID: {}", config.client_id);
@@ -118,9 +140,11 @@ async fn main() {
                     http_client,
                     guild_players: Arc::new(DashMap::new()),
                     track_handles: Arc::new(DashMap::new()),
+                    now_playing_msgs: Arc::new(DashMap::new()),
                     idle_timers: Arc::new(DashMap::new()),
                     rate_limiters,
                     config,
+                    started_at: chrono::Utc::now(),
                 })
             })
         })

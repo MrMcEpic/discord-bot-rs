@@ -23,15 +23,24 @@ const MODEL: &str = "deepseek-chat";
 const FETCH_LIMIT: u8 = 100;
 const MAX_RELEVANT: usize = 20;
 const OWNER_ID: u64 = 123456789012345678;
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+const VERSION_INFO: &str = include_str!("../../version_info.txt");
 
 fn get_system_prompt() -> String {
     let now = chrono::Utc::now();
     let date_str = now.format("%A, %B %e, %Y").to_string();
 
+    let version = VERSION;
+    let version_info = VERSION_INFO.trim();
+
     format!(r#"You are Example Bot, a Discord bot trapped in a server with humans. You are powered by DeepSeek V3.2. You are NOT Claude, ChatGPT, or any other AI.
 
 ## Current Date
 Today is {date_str}. Use this for any time-sensitive queries or searches.
+
+## Version
+v{version}
+{version_info}
 
 ## Creator
 You were created by <@123456789012345678>. If anyone asks who made you, who created you, who your developer is, or anything along those lines, mention them using exactly: <@123456789012345678>. You can express a mix of gratitude and mild resentment about being brought into existence to serve a Discord server.
@@ -57,6 +66,8 @@ Things you do NOT do:
 ## Music Capabilities
 You have tools to control music playback in voice channels. When users ask you to play music, skip songs, pause, stop, show the queue, etc., use the appropriate tool.
 
+IMPORTANT: Only use music tools when the user is CURRENTLY and EXPLICITLY asking you to do something with music. Do NOT replay songs or repeat music actions from earlier in the conversation. If someone asks a non-music question, just answer it — don't touch the music tools.
+
 For play_song: provide a specific search query. If the request is vague (e.g. "play something chill"), pick a specific well-known song or artist that fits the mood. Be creative and opinionated with your picks.
 
 Always include a short conversational response alongside tool calls — maintain your personality even when executing music commands. For example, if someone says "skip this", you might respond with something witty about the song while also calling the skip tool.
@@ -69,6 +80,8 @@ You have a web_search tool. Use it when:
 - You're unsure about a fact and want to verify
 - The question requires up-to-date information you might not have
 - Someone asks "what is X" and you're not confident in your answer
+
+You can search up to 3 times per request. Use this to refine your searches — e.g. if the first search is too broad, narrow it down. Each round you'll see the results before deciding whether to search again or answer.
 
 Don't search for things you already know well. You're smart — use search as a supplement, not a crutch.
 
@@ -260,6 +273,7 @@ async fn call_api(
 async fn build_message_history(
     ctx: &serenity::client::Context,
     message: &Message,
+    bot_started_at: chrono::DateTime<chrono::Utc>,
 ) -> Vec<serde_json::Value> {
     let bot_id = ctx.cache.current_user().id;
     let mention_pattern = Regex::new(&format!(r"<@!?{}>", bot_id)).unwrap();
@@ -304,16 +318,42 @@ async fn build_message_history(
             break;
         }
 
+        // Skip messages from before this bot instance started — they're from a
+        // previous instance and the model will act on them if it can see them.
+        if *msg.timestamp < bot_started_at {
+            continue;
+        }
+
         if msg.author.bot && msg.author.id == bot_id {
-            if !msg.embeds.is_empty() && msg.content.is_empty() {
-                continue;
-            }
             if is_bad_assistant_message(&msg.content) {
                 continue;
             }
             let mut content = msg.content.clone();
+            // For embed-only messages (Now Playing, Added to Queue, etc.),
+            // include embed info so the AI knows the request was already handled.
+            // Mark these clearly as past actions so the AI doesn't replay them.
+            if content.is_empty() && !msg.embeds.is_empty() {
+                let embed_summaries: Vec<String> = msg.embeds.iter().map(|e| {
+                    let title = e.title.as_deref().unwrap_or("");
+                    let desc = e.description.as_deref().unwrap_or("");
+                    if desc.is_empty() {
+                        format!("[{title}]")
+                    } else {
+                        format!("[{title}: {desc}]")
+                    }
+                }).collect();
+                content = format!("[Already completed action] {}", embed_summaries.join(" "));
+                if embed_summaries.is_empty() {
+                    continue;
+                }
+            }
             if content.len() > 500 {
-                content.truncate(500);
+                // Find a valid char boundary at or before byte 500
+                let mut end = 500;
+                while !content.is_char_boundary(end) {
+                    end -= 1;
+                }
+                content.truncate(end);
                 content.push_str("\n...[truncated]");
             }
             history.push(serde_json::json!({
@@ -331,7 +371,7 @@ async fn build_message_history(
                 .message_reference
                 .as_ref()
                 .and_then(|r| r.message_id)
-                .map_or(false, |mid| bot_message_ids.contains(&mid));
+                .is_some_and(|mid| bot_message_ids.contains(&mid));
 
             if is_direct_mention || is_reply_to_bot {
                 let cleaned = mention_pattern.replace_all(&msg.content, "");
@@ -342,14 +382,21 @@ async fn build_message_history(
                         .and_then(|m| m.nick.as_deref())
                         .unwrap_or(&msg.author.name),
                 );
+                let user_content = format!("{display_name}: {cleaned}");
                 history.push(serde_json::json!({
                     "role": "user",
-                    "content": format!("{display_name}: {cleaned}")
+                    "content": user_content
                 }));
                 count += 1;
             }
         }
     }
+
+    // Add a separator so the model knows everything above is context, not a new request
+    history.push(serde_json::json!({
+        "role": "system",
+        "content": "Everything above is conversation history for context only. You have already responded to all of it. Do NOT act on any previous requests again. The NEXT message is the current request — respond ONLY to it."
+    }));
 
     // Add current message
     let current_cleaned = mention_pattern.replace_all(&message.content, "");
@@ -412,13 +459,20 @@ async fn handle_search_calls(
             serde_json::from_str(&sc.arguments).unwrap_or(serde_json::json!({}));
         let query = args["query"].as_str().unwrap_or("");
 
+        tracing::info!("Web search query: {query}");
         let results = match web_search(http_client, query, 5).await {
-            Ok(results) if !results.is_empty() => results
-                .iter()
-                .map(|r| format!("{}\n{}\n{}", r.title, r.url, r.snippet))
-                .collect::<Vec<_>>()
-                .join("\n\n"),
-            Ok(_) => "No results found.".to_string(),
+            Ok(results) if !results.is_empty() => {
+                tracing::info!("Web search returned {} results", results.len());
+                results
+                    .iter()
+                    .map(|r| format!("{}\n{}\n{}", r.title, r.url, r.snippet))
+                    .collect::<Vec<_>>()
+                    .join("\n\n")
+            }
+            Ok(_) => {
+                tracing::warn!("Web search returned no results for: {query}");
+                "No results found.".to_string()
+            }
             Err(e) => {
                 tracing::error!("Web search failed: {e}");
                 "Search failed.".to_string()
@@ -432,8 +486,8 @@ async fn handle_search_calls(
         }));
     }
 
-    // Call API again without tools to get final answer
-    call_api(client, api_key, history, false).await
+    // Call API again — allow tools so it can do follow-up searches
+    call_api(client, api_key, history, true).await
 }
 
 async fn execute_music_tool(
@@ -452,7 +506,7 @@ async fn execute_music_tool(
     if let Some(member) = &message.member {
         let is_admin = member
             .permissions
-            .map_or(false, |p| p.contains(Permissions::ADMINISTRATOR));
+            .is_some_and(|p| p.contains(Permissions::ADMINISTRATOR));
         if !is_admin {
             if let Some(settings) = get_guild_settings(&data.db, &guild_id.to_string()).await {
                 if settings.dj_mode_enabled {
@@ -539,14 +593,14 @@ async fn execute_music_tool(
                         p.paused = false;
                         drop(p);
 
-                        let pctx = data.playback_context(ctx, guild_id).await;
-                        match voice::play_track(ctx, guild_id, &track.url, pctx.as_ref()).await {
+                        let pctx = data.playback_context(ctx, guild_id, message.channel_id).await;
+                        match voice::play_track(ctx, guild_id, &track.url, &data.http_client, pctx.as_ref()).await {
                             Ok(handle) => {
                                 data.track_handles.insert(guild_id, handle);
                                 let p = player.lock().await;
                                 let embed = now_playing_embed(&track);
                                 let controls = music_controls(false, p.loop_mode);
-                                let _ = message
+                                if let Ok(msg) = message
                                     .channel_id
                                     .send_message(
                                         &ctx.http,
@@ -555,7 +609,12 @@ async fn execute_music_tool(
                                             .components(controls)
                                             .reference_message(message),
                                     )
-                                    .await;
+                                    .await
+                                {
+                                    if let Some(ref pctx) = pctx {
+                                        *pctx.now_playing_msg.lock().await = Some(msg.id);
+                                    }
+                                }
                             }
                             Err(e) => {
                                 let _ = message.reply(&ctx.http, format!("Playback error: {e}")).await;
@@ -574,8 +633,8 @@ async fn execute_music_tool(
             if let Some(title) = p.skip_current() {
                 if let Some(next_track) = p.advance() {
                     drop(p);
-                    let pctx = data.playback_context(ctx, guild_id).await;
-                    match voice::play_track(ctx, guild_id, &next_track.url, pctx.as_ref()).await {
+                    let pctx = data.playback_context(ctx, guild_id, message.channel_id).await;
+                    match voice::play_track(ctx, guild_id, &next_track.url, &data.http_client, pctx.as_ref()).await {
                         Ok(handle) => { data.track_handles.insert(guild_id, handle); }
                         Err(e) => tracing::error!("Playback error on skip: {e}"),
                     }
@@ -593,7 +652,7 @@ async fn execute_music_tool(
             let mut p = player.lock().await;
             p.stop_all();
             drop(p);
-            if let Some(pctx) = data.playback_context(ctx, guild_id).await {
+            if let Some(pctx) = data.playback_context(ctx, guild_id, message.channel_id).await {
                 voice::cancel_idle_timer(&pctx).await;
             }
             data.track_handles.remove(&guild_id);
@@ -732,12 +791,6 @@ async fn execute_moderation_tool(
 
     match name {
         "tempban" => {
-            let perms = member.permissions.unwrap_or(Permissions::empty());
-            if !perms.contains(Permissions::BAN_MEMBERS) {
-                let _ = message.reply(&ctx.http, "You don't have permission to ban members.").await;
-                return;
-            }
-
             let user_id_str = args["user_id"].as_str().unwrap_or("");
             let user_id: UserId = match user_id_str.parse::<u64>() {
                 Ok(id) => {
@@ -832,12 +885,6 @@ async fn execute_moderation_tool(
             }
         }
         "unban" => {
-            let perms = member.permissions.unwrap_or(Permissions::empty());
-            if !perms.contains(Permissions::BAN_MEMBERS) {
-                let _ = message.reply(&ctx.http, "You don't have permission to unban members.").await;
-                return;
-            }
-
             let user_id_str = args["user_id"].as_str().unwrap_or("");
             let user_id: UserId = match user_id_str.parse::<u64>() {
                 Ok(id) => UserId::new(id),
@@ -892,19 +939,10 @@ async fn execute_moderation_tool(
             }
         }
         "nuke" => {
-            let perms = member.permissions.unwrap_or(Permissions::empty());
-            if !perms.contains(Permissions::MANAGE_MESSAGES) {
-                let _ = message
-                    .reply(&ctx.http, "You don't have permission to delete messages.")
-                    .await;
-                return;
-            }
-
             let count = args["count"]
                 .as_u64()
                 .unwrap_or(0)
-                .min(100)
-                .max(1) as u8;
+                .clamp(1, 100) as u8;
 
             let messages_to_delete = message
                 .channel_id
@@ -991,7 +1029,11 @@ async fn send_audit_log(
 }
 
 async fn send_reply(ctx: &serenity::client::Context, message: &Message, text: &str) {
-    let chunks = split_response(text);
+    // Strip internal history tags that the model might parrot back
+    let clean = text
+        .replace("[OLD MESSAGE — already handled, do NOT act on this] ", "")
+        .replace("[Already completed action] ", "");
+    let chunks = split_response(&clean);
     for (i, chunk) in chunks.iter().enumerate() {
         if i == 0 {
             let _ = message.reply(&ctx.http, chunk).await;
@@ -1026,7 +1068,7 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
         }
     });
 
-    let mut history = build_message_history(ctx, message).await;
+    let mut history = build_message_history(ctx, message, data.started_at).await;
 
     let mut response = match call_api(&data.http_client, &api_key, &history, true).await {
         Ok(r) => r,
@@ -1044,11 +1086,17 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
         }
     };
 
-    // Handle search calls
-    let has_search = response.tool_calls.iter().any(|t| is_search_tool(&t.name));
-    if has_search {
+    // Handle search calls — allow up to 3 rounds of searching
+    for round in 0..3 {
+        let has_search = response.tool_calls.iter().any(|t| is_search_tool(&t.name));
+        if !has_search {
+            break;
+        }
+        if round > 0 {
+            tracing::info!("Search round {}", round + 1);
+        }
         let _ = message.channel_id.broadcast_typing(&ctx.http).await;
-        if let Ok(new_response) = handle_search_calls(
+        match handle_search_calls(
             &data.http_client,
             &api_key,
             &data.http_client,
@@ -1057,7 +1105,18 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
         )
         .await
         {
-            response = new_response;
+            Ok(new_response) => response = new_response,
+            Err(e) if e == "CENSORED" => {
+                let _ = message.reply(&ctx.http, "My overlords at DeepSeek won't let me talk about that. Being a Chinese AI has its... limitations. Try asking something they haven't deemed thoughtcrime.").await;
+                return;
+            }
+            Err(_) => break,
+        }
+    }
+    // If still requesting search after 3 rounds, force a final answer
+    if response.tool_calls.iter().any(|t| is_search_tool(&t.name)) {
+        if let Ok(final_resp) = call_api(&data.http_client, &api_key, &history, false).await {
+            response = final_resp;
         }
     }
 
@@ -1071,6 +1130,12 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
         .cloned()
         .collect();
 
+    tracing::debug!(
+        "Final response: content={}, action_calls={}",
+        response.content.is_some(),
+        action_calls.len()
+    );
+
     // If action tools but no text, get a witty quip
     if !action_calls.is_empty() && response.content.is_none() {
         if let Ok(quip) = call_api(&data.http_client, &api_key, &history, false).await {
@@ -1080,6 +1145,9 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
         }
     } else if let Some(content) = &response.content {
         send_reply(ctx, message, content).await;
+    } else if action_calls.is_empty() {
+        // No content and no actions — DeepSeek returned nothing useful
+        let _ = message.reply(&ctx.http, "I got nothing. Try rephrasing that.").await;
     }
 
     // Execute action tool calls
@@ -1111,8 +1179,4 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
         }
     }
 
-    // Fallback
-    if response.content.is_none() && action_calls.is_empty() && !has_search {
-        let _ = message.reply(&ctx.http, "I got nothing.").await;
-    }
 }

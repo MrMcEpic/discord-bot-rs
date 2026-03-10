@@ -1,5 +1,4 @@
 use serde::Deserialize;
-use std::process::Child;
 use tokio::process::Command;
 
 #[derive(Debug, Clone)]
@@ -18,6 +17,30 @@ struct YtDlpJson {
     title: Option<String>,
     duration: Option<f64>,
     thumbnail: Option<String>,
+}
+
+/// Resolves the node runtime specifier for yt-dlp's `--js-runtimes` flag.
+/// nvm-installed node isn't on PATH for non-login shells, so we pass the full path.
+fn node_runtime() -> String {
+    let nvm_node = "/home/webapps/.nvm/versions/node/v20.20.1/bin/node";
+    if std::path::Path::new(nvm_node).exists() {
+        format!("node:{nvm_node}")
+    } else {
+        "node".to_string()
+    }
+}
+
+/// Returns yt-dlp args for songbird's YoutubeDl input (cookies, node runtime, etc).
+pub fn ytdlp_user_args() -> Vec<String> {
+    vec![
+        "--cookies".to_string(),
+        cookies_path(),
+        "--js-runtimes".to_string(),
+        node_runtime(),
+        "--remote-components".to_string(),
+        "ejs:github".to_string(),
+        "--no-playlist".to_string(),
+    ]
 }
 
 fn cookies_path() -> String {
@@ -49,7 +72,7 @@ pub async fn resolve_tracks(
         "--dump-json".to_string(),
         "--no-download".to_string(),
         "--js-runtimes".to_string(),
-        "node".to_string(),
+        node_runtime(),
         "--cookies".to_string(),
         cookies,
         "--remote-components".to_string(),
@@ -102,104 +125,3 @@ pub async fn resolve_tracks(
     Ok(tracks)
 }
 
-/// Spawn yt-dlp | ffmpeg pipeline, returning both child processes as a Vec<Child>.
-/// The last child (ffmpeg) must have stdout piped for songbird ChildContainer to read.
-pub struct AudioPipeline {
-    ytdlp: Option<Child>,
-    ffmpeg: Option<Child>,
-}
-
-impl AudioPipeline {
-    /// Spawn the pipeline. Returns AudioPipeline (for cleanup) and the unused stdout
-    /// (which ChildContainer will read via the ffmpeg child).
-    ///
-    /// NOTE: For ChildContainer, we need the ffmpeg child to still have stdout attached.
-    /// So we return the children directly.
-    pub fn spawn(url: &str) -> Result<Self, String> {
-        let cookies = cookies_path();
-
-        let mut ytdlp = std::process::Command::new("yt-dlp")
-            .args([
-                "-f",
-                "bestaudio",
-                "--no-playlist",
-                "--js-runtimes",
-                "node",
-                "--cookies",
-                &cookies,
-                "--remote-components",
-                "ejs:github",
-                "-o",
-                "-",
-                url,
-            ])
-            .env_remove("NODE_CHANNEL_FD")
-            .env_remove("NODE_CHANNEL_SERIALIZATION_MODE")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|e| format!("Failed to spawn yt-dlp: {e}"))?;
-
-        let ytdlp_stdout = ytdlp.stdout.take().ok_or("No yt-dlp stdout")?;
-
-        let ffmpeg = std::process::Command::new("ffmpeg")
-            .args([
-                "-i",
-                "pipe:0",
-                "-analyzeduration",
-                "0",
-                "-loglevel",
-                "0",
-                "-c:a",
-                "libopus",
-                "-b:a",
-                "256k",
-                "-ar",
-                "48000",
-                "-ac",
-                "2",
-                "-application",
-                "audio",
-                "-f",
-                "ogg",
-                "pipe:1",
-            ])
-            .stdin(ytdlp_stdout)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|e| format!("Failed to spawn ffmpeg: {e}"))?;
-
-        Ok(Self { ytdlp: Some(ytdlp), ffmpeg: Some(ffmpeg) })
-    }
-
-    /// Consume into a Vec<Child> for songbird's ChildContainer.
-    /// ChildContainer reads stdout from the LAST child in the vec.
-    pub fn into_children(&mut self) -> Vec<Child> {
-        let mut children = Vec::new();
-        if let Some(ytdlp) = self.ytdlp.take() {
-            children.push(ytdlp);
-        }
-        if let Some(ffmpeg) = self.ffmpeg.take() {
-            children.push(ffmpeg);
-        }
-        children
-    }
-
-    pub fn kill(&mut self) {
-        if let Some(ref mut ytdlp) = self.ytdlp {
-            let _ = ytdlp.kill();
-        }
-        if let Some(ref mut ffmpeg) = self.ffmpeg {
-            let _ = ffmpeg.kill();
-        }
-    }
-}
-
-impl Drop for AudioPipeline {
-    fn drop(&mut self) {
-        // Only kill children that haven't been taken via into_children()
-        self.kill();
-    }
-}

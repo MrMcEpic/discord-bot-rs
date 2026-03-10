@@ -48,7 +48,7 @@ pub async fn handle_voice_state_update(
                 && !guild
                     .members
                     .get(&vs.user_id)
-                    .map_or(false, |m| m.user.bot)
+                    .is_some_and(|m| m.user.bot)
         })
         .count();
 
@@ -56,7 +56,7 @@ pub async fn handle_voice_state_update(
         tracing::info!("Voice channel empty in {} — leaving", guild.name);
 
         // Cancel any pending idle timer
-        if let Some(pctx) = data.playback_context(ctx, guild_id).await {
+        if let Some(pctx) = data.playback_context(ctx, guild_id, old_channel_id).await {
             voice::cancel_idle_timer(&pctx).await;
         }
 

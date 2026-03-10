@@ -52,5 +52,3 @@ impl From<String> for BotError {
         Self::Other(s)
     }
 }
-
-pub type BotResult<T> = Result<T, BotError>;
