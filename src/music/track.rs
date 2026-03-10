@@ -72,6 +72,8 @@ pub async fn resolve_tracks(
 
     let output = Command::new("yt-dlp")
         .args(&args)
+        .env_remove("NODE_CHANNEL_FD")
+        .env_remove("NODE_CHANNEL_SERIALIZATION_MODE")
         .output()
         .await
         .map_err(|e| format!("Failed to spawn yt-dlp: {e}"))?;
@@ -131,6 +133,8 @@ impl AudioPipeline {
                 "-",
                 url,
             ])
+            .env_remove("NODE_CHANNEL_FD")
+            .env_remove("NODE_CHANNEL_SERIALIZATION_MODE")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
