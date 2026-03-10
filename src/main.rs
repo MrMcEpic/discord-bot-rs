@@ -9,6 +9,7 @@ mod util;
 
 use dashmap::DashMap;
 use music::player::GuildPlayer;
+use music::voice::PlaybackContext;
 use serenity::all::*;
 use songbird::SerenityInit;
 use songbird::tracks::TrackHandle;
@@ -22,10 +23,37 @@ use util::ratelimit::RateLimiters;
 pub struct Data {
     pub db: sqlx::PgPool,
     pub http_client: reqwest::Client,
-    pub guild_players: DashMap<GuildId, Arc<Mutex<GuildPlayer>>>,
-    pub track_handles: DashMap<GuildId, TrackHandle>,
+    pub guild_players: Arc<DashMap<GuildId, Arc<Mutex<GuildPlayer>>>>,
+    pub track_handles: Arc<DashMap<GuildId, TrackHandle>>,
+    /// Per-guild idle timer handles, used to cancel idle-leave when a new track starts.
+    pub idle_timers: Arc<DashMap<GuildId, Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>>>,
     pub rate_limiters: RateLimiters,
     pub config: Config,
+}
+
+impl Data {
+    /// Build a `PlaybackContext` for the given guild, suitable for passing to
+    /// `voice::play_track` so track-end events can advance the queue.
+    pub async fn playback_context(
+        &self,
+        ctx: &serenity::all::prelude::Context,
+        guild_id: GuildId,
+    ) -> Option<PlaybackContext> {
+        let songbird = songbird::get(ctx).await?;
+        let idle_timer_handle = self
+            .idle_timers
+            .entry(guild_id)
+            .or_insert_with(|| Arc::new(Mutex::new(None)))
+            .value()
+            .clone();
+        Some(PlaybackContext {
+            guild_id,
+            songbird,
+            guild_players: self.guild_players.clone(),
+            track_handles: self.track_handles.clone(),
+            idle_timer_handle,
+        })
+    }
 }
 
 pub type Context<'a> = poise::Context<'a, Data, BotError>;
@@ -41,7 +69,10 @@ async fn main() {
         .await
         .expect("Failed to connect to database");
 
-    let http_client = reqwest::Client::new();
+    let http_client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .expect("HTTP client");
     let rate_limiters = RateLimiters::new();
 
     let intents = GatewayIntents::GUILDS
@@ -84,8 +115,9 @@ async fn main() {
                 Ok(Data {
                     db,
                     http_client,
-                    guild_players: DashMap::new(),
-                    track_handles: DashMap::new(),
+                    guild_players: Arc::new(DashMap::new()),
+                    track_handles: Arc::new(DashMap::new()),
+                    idle_timers: Arc::new(DashMap::new()),
                     rate_limiters,
                     config,
                 })

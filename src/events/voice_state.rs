@@ -55,6 +55,11 @@ pub async fn handle_voice_state_update(
     if humans == 0 {
         tracing::info!("Voice channel empty in {} — leaving", guild.name);
 
+        // Cancel any pending idle timer
+        if let Some(pctx) = data.playback_context(ctx, guild_id).await {
+            voice::cancel_idle_timer(&pctx).await;
+        }
+
         // Clean up player state
         if let Some(player_entry) = data.guild_players.get(&guild_id) {
             let player = player_entry.value().clone();
@@ -62,6 +67,7 @@ pub async fn handle_voice_state_update(
             p.leave_empty();
         }
         data.guild_players.remove(&guild_id);
+        data.idle_timers.remove(&guild_id);
 
         data.track_handles.remove(&guild_id);
         voice::stop_playback(ctx, guild_id).await;

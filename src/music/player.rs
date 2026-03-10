@@ -37,7 +37,6 @@ pub struct GuildPlayer {
     pub current: Option<Track>,
     pub loop_mode: LoopMode,
     pub paused: bool,
-    idle_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl GuildPlayer {
@@ -48,7 +47,6 @@ impl GuildPlayer {
             current: None,
             loop_mode: LoopMode::Off,
             paused: false,
-            idle_handle: None,
         }
     }
 
@@ -95,7 +93,6 @@ impl GuildPlayer {
             Some(track)
         } else {
             self.current = None;
-            self.start_idle_timer();
             None
         }
     }
@@ -109,7 +106,6 @@ impl GuildPlayer {
         self.current = None;
         self.loop_mode = LoopMode::Off;
         self.paused = false;
-        self.cancel_idle_timer();
     }
 
     pub fn remove(&mut self, position: usize) -> Option<Track> {
@@ -136,26 +132,5 @@ impl GuildPlayer {
         self.current = None;
         self.loop_mode = LoopMode::Off;
         self.paused = false;
-        self.cancel_idle_timer();
-    }
-
-    fn start_idle_timer(&mut self) {
-        self.cancel_idle_timer();
-        let guild_id = self.guild_id;
-        self.idle_handle = Some(tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_secs(300)).await;
-            tracing::info!("Idle timeout for guild {guild_id}");
-        }));
-    }
-
-    fn cancel_idle_timer(&mut self) {
-        if let Some(handle) = self.idle_handle.take() {
-            handle.abort();
-        }
-    }
-
-    pub fn is_idle_expired(&self) -> bool {
-        self.current.is_none()
-            && self.idle_handle.as_ref().map_or(false, |h| h.is_finished())
     }
 }

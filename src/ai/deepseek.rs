@@ -336,11 +336,12 @@ async fn build_message_history(
             if is_direct_mention || is_reply_to_bot {
                 let cleaned = mention_pattern.replace_all(&msg.content, "");
                 let cleaned = sanitize_content(cleaned.trim());
-                let display_name = msg
-                    .member
-                    .as_ref()
-                    .and_then(|m| m.nick.as_deref())
-                    .unwrap_or(&msg.author.name);
+                let display_name = sanitize_content(
+                    msg.member
+                        .as_ref()
+                        .and_then(|m| m.nick.as_deref())
+                        .unwrap_or(&msg.author.name),
+                );
                 history.push(serde_json::json!({
                     "role": "user",
                     "content": format!("{display_name}: {cleaned}")
@@ -353,11 +354,13 @@ async fn build_message_history(
     // Add current message
     let current_cleaned = mention_pattern.replace_all(&message.content, "");
     let current_cleaned = sanitize_content(current_cleaned.trim());
-    let display_name = message
-        .member
-        .as_ref()
-        .and_then(|m| m.nick.as_deref())
-        .unwrap_or(&message.author.name);
+    let display_name = sanitize_content(
+        message
+            .member
+            .as_ref()
+            .and_then(|m| m.nick.as_deref())
+            .unwrap_or(&message.author.name),
+    );
     let current_text = if current_cleaned.is_empty() {
         "hey".to_string()
     } else {
@@ -536,7 +539,8 @@ async fn execute_music_tool(
                         p.paused = false;
                         drop(p);
 
-                        match voice::play_track(ctx, guild_id, &track.url).await {
+                        let pctx = data.playback_context(ctx, guild_id).await;
+                        match voice::play_track(ctx, guild_id, &track.url, pctx.as_ref()).await {
                             Ok(handle) => {
                                 data.track_handles.insert(guild_id, handle);
                                 let p = player.lock().await;
@@ -570,7 +574,8 @@ async fn execute_music_tool(
             if let Some(title) = p.skip_current() {
                 if let Some(next_track) = p.advance() {
                     drop(p);
-                    match voice::play_track(ctx, guild_id, &next_track.url).await {
+                    let pctx = data.playback_context(ctx, guild_id).await;
+                    match voice::play_track(ctx, guild_id, &next_track.url, pctx.as_ref()).await {
                         Ok(handle) => { data.track_handles.insert(guild_id, handle); }
                         Err(e) => tracing::error!("Playback error on skip: {e}"),
                     }
@@ -588,6 +593,9 @@ async fn execute_music_tool(
             let mut p = player.lock().await;
             p.stop_all();
             drop(p);
+            if let Some(pctx) = data.playback_context(ctx, guild_id).await {
+                voice::cancel_idle_timer(&pctx).await;
+            }
             data.track_handles.remove(&guild_id);
             voice::stop_playback(ctx, guild_id).await;
             voice::leave_channel(ctx, guild_id).await;
@@ -731,13 +739,14 @@ async fn execute_moderation_tool(
             }
 
             let user_id_str = args["user_id"].as_str().unwrap_or("");
-            if user_id_str == OWNER_ID.to_string() {
-                let _ = message.reply(&ctx.http, "I can't ban the bot owner.").await;
-                return;
-            }
-
             let user_id: UserId = match user_id_str.parse::<u64>() {
-                Ok(id) => UserId::new(id),
+                Ok(id) => {
+                    if id == OWNER_ID {
+                        let _ = message.reply(&ctx.http, "I can't ban the bot owner.").await;
+                        return;
+                    }
+                    UserId::new(id)
+                }
                 Err(_) => {
                     let _ = message.reply(&ctx.http, "Invalid user ID.").await;
                     return;

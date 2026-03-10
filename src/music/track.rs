@@ -1,5 +1,4 @@
 use serde::Deserialize;
-use std::path::Path;
 use std::process::Child;
 use tokio::process::Command;
 
@@ -26,9 +25,6 @@ fn cookies_path() -> String {
     let candidate = exe_dir.join("cookies.txt");
     if candidate.exists() {
         return candidate.to_string_lossy().to_string();
-    }
-    if Path::new("/root/discord-bot/cookies.txt").exists() {
-        return "/root/discord-bot/cookies.txt".to_string();
     }
     "cookies.txt".to_string()
 }
@@ -107,8 +103,8 @@ pub async fn resolve_tracks(
 /// Spawn yt-dlp | ffmpeg pipeline, returning both child processes as a Vec<Child>.
 /// The last child (ffmpeg) must have stdout piped for songbird ChildContainer to read.
 pub struct AudioPipeline {
-    ytdlp: Child,
-    ffmpeg: Child,
+    ytdlp: Option<Child>,
+    ffmpeg: Option<Child>,
 }
 
 impl AudioPipeline {
@@ -171,27 +167,35 @@ impl AudioPipeline {
             .spawn()
             .map_err(|e| format!("Failed to spawn ffmpeg: {e}"))?;
 
-        Ok(Self { ytdlp, ffmpeg })
+        Ok(Self { ytdlp: Some(ytdlp), ffmpeg: Some(ffmpeg) })
     }
 
     /// Consume into a Vec<Child> for songbird's ChildContainer.
     /// ChildContainer reads stdout from the LAST child in the vec.
-    pub fn into_children(self) -> Vec<Child> {
-        // Use ManuallyDrop to prevent the Drop impl from running
-        let mut s = std::mem::ManuallyDrop::new(self);
-        let ytdlp = unsafe { std::ptr::read(&mut s.ytdlp) };
-        let ffmpeg = unsafe { std::ptr::read(&mut s.ffmpeg) };
-        vec![ytdlp, ffmpeg]
+    pub fn into_children(&mut self) -> Vec<Child> {
+        let mut children = Vec::new();
+        if let Some(ytdlp) = self.ytdlp.take() {
+            children.push(ytdlp);
+        }
+        if let Some(ffmpeg) = self.ffmpeg.take() {
+            children.push(ffmpeg);
+        }
+        children
     }
 
     pub fn kill(&mut self) {
-        let _ = self.ytdlp.kill();
-        let _ = self.ffmpeg.kill();
+        if let Some(ref mut ytdlp) = self.ytdlp {
+            let _ = ytdlp.kill();
+        }
+        if let Some(ref mut ffmpeg) = self.ffmpeg {
+            let _ = ffmpeg.kill();
+        }
     }
 }
 
 impl Drop for AudioPipeline {
     fn drop(&mut self) {
+        // Only kill children that haven't been taken via into_children()
         self.kill();
     }
 }

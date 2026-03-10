@@ -3,7 +3,11 @@ use std::sync::LazyLock;
 
 static DURATION_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\d+)([smhdw])$").unwrap());
 
+/// Maximum duration: 365 days in milliseconds.
+const MAX_DURATION_MS: i64 = 365 * 86_400_000;
+
 /// Parse a short duration string like "3d", "2h", "30m" into milliseconds.
+/// Returns None on overflow or if the duration exceeds 365 days.
 pub fn parse_duration(input: &str) -> Option<i64> {
     let caps = DURATION_RE.captures(input)?;
     let amount: i64 = caps[1].parse().ok()?;
@@ -15,7 +19,11 @@ pub fn parse_duration(input: &str) -> Option<i64> {
         "w" => 604_800_000,
         _ => return None,
     };
-    Some(amount * unit_ms)
+    let total = amount.checked_mul(unit_ms)?;
+    if total > MAX_DURATION_MS {
+        return None;
+    }
+    Some(total)
 }
 
 /// Format milliseconds into the largest fitting unit, e.g. "3d", "2h".

@@ -4,6 +4,7 @@ pub mod voice_state;
 use serenity::all::*;
 
 use crate::ai::deepseek::handle_mention;
+use crate::db::queries::get_guild_settings;
 use crate::music::embeds::{music_controls, now_playing_embed, queue_embed, status_footer};
 use crate::music::voice;
 use crate::Data;
@@ -79,6 +80,88 @@ async fn handle_component_interaction(
         None => return,
     };
 
+    // Voice presence + DJ mode check (skip for read-only "music_queue")
+    if custom_id != "music_queue" {
+        // Check if user is in the same voice channel as the bot
+        let user_voice_channel = ctx
+            .cache
+            .guild(guild_id)
+            .and_then(|g| {
+                g.voice_states
+                    .get(&interaction.user.id)
+                    .and_then(|vs| vs.channel_id)
+            });
+
+        let bot_voice_channel = ctx
+            .cache
+            .guild(guild_id)
+            .and_then(|g| {
+                g.voice_states
+                    .get(&ctx.cache.current_user().id)
+                    .and_then(|vs| vs.channel_id)
+            });
+
+        match (user_voice_channel, bot_voice_channel) {
+            (None, _) => {
+                let _ = interaction
+                    .create_response(
+                        &ctx.http,
+                        CreateInteractionResponse::Message(
+                            CreateInteractionResponseMessage::new()
+                                .content("You need to be in a voice channel to use music controls.")
+                                .ephemeral(true),
+                        ),
+                    )
+                    .await;
+                return;
+            }
+            (Some(user_vc), Some(bot_vc)) if user_vc != bot_vc => {
+                let _ = interaction
+                    .create_response(
+                        &ctx.http,
+                        CreateInteractionResponse::Message(
+                            CreateInteractionResponseMessage::new()
+                                .content("You need to be in the same voice channel as the bot.")
+                                .ephemeral(true),
+                        ),
+                    )
+                    .await;
+                return;
+            }
+            _ => {}
+        }
+
+        // DJ mode check
+        if let Some(member) = &interaction.member {
+            let is_admin = member
+                .permissions
+                .map_or(false, |p| p.contains(Permissions::ADMINISTRATOR));
+            if !is_admin {
+                if let Some(settings) = get_guild_settings(&data.db, &guild_id.to_string()).await {
+                    if settings.dj_mode_enabled {
+                        if let Some(ref dj_role_id) = settings.dj_role_id {
+                            if let Ok(role_id) = dj_role_id.parse::<u64>() {
+                                if !member.roles.contains(&RoleId::new(role_id)) {
+                                    let _ = interaction
+                                        .create_response(
+                                            &ctx.http,
+                                            CreateInteractionResponse::Message(
+                                                CreateInteractionResponseMessage::new()
+                                                    .content("DJ mode is enabled. You need the DJ role to use music controls.")
+                                                    .ephemeral(true),
+                                            ),
+                                        )
+                                        .await;
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     let player_arc = match data.guild_players.get(&guild_id) {
         Some(entry) => entry.value().clone(),
         None => {
@@ -146,7 +229,8 @@ async fn handle_component_interaction(
             if let Some(title) = p.skip_current() {
                 if let Some(next_track) = p.advance() {
                     drop(p);
-                    match voice::play_track(ctx, guild_id, &next_track.url).await {
+                    let pctx = data.playback_context(ctx, guild_id).await;
+                    match voice::play_track(ctx, guild_id, &next_track.url, pctx.as_ref()).await {
                         Ok(handle) => {
                             data.track_handles.insert(guild_id, handle);
                         }
@@ -183,6 +267,11 @@ async fn handle_component_interaction(
             let mut p = player_arc.lock().await;
             p.stop_all();
             drop(p);
+
+            // Cancel any pending idle timer
+            if let Some(pctx) = data.playback_context(ctx, guild_id).await {
+                voice::cancel_idle_timer(&pctx).await;
+            }
 
             data.track_handles.remove(&guild_id);
             voice::stop_playback(ctx, guild_id).await;

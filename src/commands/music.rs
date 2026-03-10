@@ -110,7 +110,8 @@ pub async fn play(
         p.paused = false;
         drop(p);
 
-        match voice::play_track(ctx.serenity_context(), guild_id, &track.url).await {
+        let pctx = ctx.data().playback_context(ctx.serenity_context(), guild_id).await;
+        match voice::play_track(ctx.serenity_context(), guild_id, &track.url, pctx.as_ref()).await {
             Ok(handle) => { ctx.data().track_handles.insert(guild_id, handle); }
             Err(e) => {
                 tracing::error!("Playback error: {e}");
@@ -175,7 +176,8 @@ pub async fn playlist(
         p.current = Some(track.clone());
         p.paused = false;
         drop(p);
-        if let Ok(handle) = voice::play_track(ctx.serenity_context(), guild_id, &track.url).await {
+        let pctx = ctx.data().playback_context(ctx.serenity_context(), guild_id).await;
+        if let Ok(handle) = voice::play_track(ctx.serenity_context(), guild_id, &track.url, pctx.as_ref()).await {
             ctx.data().track_handles.insert(guild_id, handle);
         }
         let p = player.lock().await;
@@ -209,7 +211,8 @@ pub async fn skip(ctx: Context<'_>) -> Result<(), BotError> {
     if let Some(title) = p.skip_current() {
         if let Some(next_track) = p.advance() {
             drop(p);
-            match voice::play_track(ctx.serenity_context(), guild_id, &next_track.url).await {
+            let pctx = ctx.data().playback_context(ctx.serenity_context(), guild_id).await;
+            match voice::play_track(ctx.serenity_context(), guild_id, &next_track.url, pctx.as_ref()).await {
                 Ok(handle) => { ctx.data().track_handles.insert(guild_id, handle); }
                 Err(e) => tracing::error!("Playback error on skip: {e}"),
             }
@@ -236,6 +239,11 @@ pub async fn stop(ctx: Context<'_>) -> Result<(), BotError> {
     let mut p = player.lock().await;
     p.stop_all();
     drop(p);
+
+    // Cancel any pending idle timer
+    if let Some(pctx) = ctx.data().playback_context(ctx.serenity_context(), guild_id).await {
+        voice::cancel_idle_timer(&pctx).await;
+    }
 
     ctx.data().track_handles.remove(&guild_id);
     voice::stop_playback(ctx.serenity_context(), guild_id).await;

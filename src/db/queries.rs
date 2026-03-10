@@ -12,12 +12,17 @@ pub async fn get_guild_settings(pool: &PgPool, guild_id: &str) -> Option<GuildSe
         .flatten()
 }
 
+const ALLOWED_COLUMNS: &[&str] = &["audit_log_channel_id", "dj_role_id", "dj_mode_enabled"];
+
 pub async fn upsert_guild_setting(
     pool: &PgPool,
     guild_id: &str,
     key: &str,
     value: &str,
 ) -> Result<(), sqlx::Error> {
+    if !ALLOWED_COLUMNS.contains(&key) {
+        return Err(sqlx::Error::Protocol(format!("Invalid setting key: {key}")));
+    }
     let query = format!(
         "INSERT INTO guild_settings (guild_id, {key}) VALUES ($1, $2) \
          ON CONFLICT (guild_id) DO UPDATE SET {key} = $2"
@@ -32,6 +37,9 @@ pub async fn upsert_guild_setting_bool(
     key: &str,
     value: bool,
 ) -> Result<(), sqlx::Error> {
+    if !ALLOWED_COLUMNS.contains(&key) {
+        return Err(sqlx::Error::Protocol(format!("Invalid setting key: {key}")));
+    }
     let query = format!(
         "INSERT INTO guild_settings (guild_id, {key}) VALUES ($1, $2) \
          ON CONFLICT (guild_id) DO UPDATE SET {key} = $2"

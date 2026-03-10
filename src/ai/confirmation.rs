@@ -83,52 +83,11 @@ pub async fn request_confirmation(
 
     let mut confirm_msg = channel_id.send_message(&ctx.http, reply).await?;
 
-    let interaction = confirm_msg
-        .await_component_interaction(ctx.shard.clone())
-        .timeout(CONFIRM_TIMEOUT)
-        .custom_ids(vec![confirm_id.clone(), deny_id.clone()])
-        .await;
+    let deadline = tokio::time::Instant::now() + CONFIRM_TIMEOUT;
 
-    match interaction {
-        Some(interaction) => {
-            let has_perm = interaction.member.as_ref()
-                .and_then(|m| m.permissions)
-                .map_or(false, |p| p.contains(required_perm));
-
-            if !has_perm {
-                let _ = interaction.create_response(&ctx.http, CreateInteractionResponse::Message(
-                    CreateInteractionResponseMessage::new()
-                        .content("You don't have permission to approve this action.")
-                        .ephemeral(true),
-                )).await;
-                return Ok(false);
-            }
-
-            let approved = interaction.data.custom_id == confirm_id;
-            let responder_name = interaction.member.as_ref()
-                .and_then(|m| m.nick.as_deref())
-                .or(interaction.user.global_name.as_deref())
-                .unwrap_or(&interaction.user.name);
-
-            let (color, title, footer_text) = if approved {
-                (0x57f287, "Approved", format!("Approved by {responder_name}"))
-            } else {
-                (0xed4245, "Cancelled", format!("Cancelled by {responder_name}"))
-            };
-
-            let update_embed = CreateEmbed::new()
-                .color(color)
-                .title(title)
-                .description(&description)
-                .footer(CreateEmbedFooter::new(footer_text));
-
-            let _ = interaction.create_response(&ctx.http, CreateInteractionResponse::UpdateMessage(
-                CreateInteractionResponseMessage::new().embed(update_embed).components(vec![]),
-            )).await;
-
-            Ok(approved)
-        }
-        None => {
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
             let expired_embed = CreateEmbed::new()
                 .color(0x95a5a6)
                 .title("Expired")
@@ -136,7 +95,65 @@ pub async fn request_confirmation(
                 .footer(CreateEmbedFooter::new("No response — action cancelled"));
 
             let _ = confirm_msg.edit(&ctx.http, EditMessage::new().embed(expired_embed).components(vec![])).await;
-            Ok(false)
+            return Ok(false);
+        }
+
+        let interaction = confirm_msg
+            .await_component_interaction(ctx.shard.clone())
+            .timeout(remaining)
+            .custom_ids(vec![confirm_id.clone(), deny_id.clone()])
+            .await;
+
+        match interaction {
+            Some(interaction) => {
+                let has_perm = interaction.member.as_ref()
+                    .and_then(|m| m.permissions)
+                    .map_or(false, |p| p.contains(required_perm));
+
+                if !has_perm {
+                    let _ = interaction.create_response(&ctx.http, CreateInteractionResponse::Message(
+                        CreateInteractionResponseMessage::new()
+                            .content("You don't have permission to approve this action.")
+                            .ephemeral(true),
+                    )).await;
+                    // Continue waiting for an authorized user
+                    continue;
+                }
+
+                let approved = interaction.data.custom_id == confirm_id;
+                let responder_name = interaction.member.as_ref()
+                    .and_then(|m| m.nick.as_deref())
+                    .or(interaction.user.global_name.as_deref())
+                    .unwrap_or(&interaction.user.name);
+
+                let (color, title, footer_text) = if approved {
+                    (0x57f287, "Approved", format!("Approved by {responder_name}"))
+                } else {
+                    (0xed4245, "Cancelled", format!("Cancelled by {responder_name}"))
+                };
+
+                let update_embed = CreateEmbed::new()
+                    .color(color)
+                    .title(title)
+                    .description(&description)
+                    .footer(CreateEmbedFooter::new(footer_text));
+
+                let _ = interaction.create_response(&ctx.http, CreateInteractionResponse::UpdateMessage(
+                    CreateInteractionResponseMessage::new().embed(update_embed).components(vec![]),
+                )).await;
+
+                return Ok(approved);
+            }
+            None => {
+                let expired_embed = CreateEmbed::new()
+                    .color(0x95a5a6)
+                    .title("Expired")
+                    .description(&description)
+                    .footer(CreateEmbedFooter::new("No response — action cancelled"));
+
+                let _ = confirm_msg.edit(&ctx.http, EditMessage::new().embed(expired_embed).components(vec![])).await;
+                return Ok(false);
+            }
         }
     }
 }
