@@ -1,5 +1,17 @@
 const DISCORD_MAX_LENGTH: usize = 2000;
 
+/// Find the largest byte index <= `pos` that is a valid char boundary.
+fn floor_char_boundary(s: &str, pos: usize) -> usize {
+    if pos >= s.len() {
+        return s.len();
+    }
+    let mut i = pos;
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
 /// Split a response into chunks that fit within Discord's message limit,
 /// preserving code blocks across splits.
 pub fn split_response(text: &str) -> Vec<String> {
@@ -16,7 +28,8 @@ pub fn split_response(text: &str) -> Vec<String> {
             break;
         }
 
-        let candidate = &remaining[..DISCORD_MAX_LENGTH.min(remaining.len())];
+        let safe_end = floor_char_boundary(&remaining, DISCORD_MAX_LENGTH);
+        let candidate = &remaining[..safe_end];
         let code_block_count = candidate.matches("```").count();
         let inside_code_block = code_block_count % 2 == 1;
 
@@ -36,7 +49,7 @@ pub fn split_response(text: &str) -> Vec<String> {
                     }
                     i += 3;
                 } else {
-                    i += 1;
+                    i += candidate[i..].chars().next().map_or(1, |c| c.len_utf8());
                 }
             }
 
@@ -51,7 +64,7 @@ pub fn split_response(text: &str) -> Vec<String> {
                 remaining = remaining[split_at..].trim_start().to_string();
             } else {
                 // Code block starts early — close it and re-open in next chunk
-                let max = DISCORD_MAX_LENGTH.saturating_sub(4);
+                let max = floor_char_boundary(&remaining, DISCORD_MAX_LENGTH.saturating_sub(4));
                 split_at = remaining[..max]
                     .rfind('\n')
                     .filter(|&p| p > 200)
@@ -71,24 +84,26 @@ pub fn split_response(text: &str) -> Vec<String> {
             }
         } else {
             // Not inside a code block — split on paragraph/line/sentence boundaries
-            split_at = remaining[..DISCORD_MAX_LENGTH]
+            split_at = remaining[..safe_end]
                 .rfind("\n\n")
                 .filter(|&p| p > 200)
                 .or_else(|| {
-                    remaining[..DISCORD_MAX_LENGTH]
+                    remaining[..safe_end]
                         .rfind('\n')
                         .filter(|&p| p > 200)
                 })
                 .or_else(|| {
-                    remaining[..DISCORD_MAX_LENGTH]
+                    remaining[..safe_end]
                         .rfind(". ")
                         .filter(|&p| p > 200)
                 })
-                .unwrap_or(DISCORD_MAX_LENGTH);
+                .unwrap_or(safe_end);
 
-            let chunk = remaining[..split_at + 1].trim_end().to_string();
+            let end = if split_at < safe_end { split_at + 1 } else { split_at };
+            let end = floor_char_boundary(&remaining, end);
+            let chunk = remaining[..end].trim_end().to_string();
             chunks.push(chunk);
-            remaining = remaining[split_at + 1..].trim_start().to_string();
+            remaining = remaining[end..].trim_start().to_string();
         }
     }
 

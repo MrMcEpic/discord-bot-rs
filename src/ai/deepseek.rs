@@ -1,5 +1,8 @@
+use base64::Engine;
+use image::ImageReader;
 use regex::Regex;
 use serenity::all::*;
+use std::io::Cursor;
 use std::sync::LazyLock;
 
 use super::confirmation::request_confirmation;
@@ -18,8 +21,18 @@ use crate::music::voice;
 use crate::util::duration::{format_duration_ms, parse_duration};
 use crate::Data;
 
-const API_URL: &str = "https://api.deepseek.com/chat/completions";
-const MODEL: &str = "deepseek-chat";
+const DEEPSEEK_URL: &str = "https://api.deepseek.com/chat/completions";
+const DEEPSEEK_MODEL: &str = "deepseek-chat";
+const GEMINI_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
+const GEMINI_MODEL: &str = "gemini-3-flash-preview";
+const DEEPSEEK_REASONER_MODEL: &str = "deepseek-reasoner";
+
+#[derive(Clone)]
+struct ApiEndpoint {
+    url: &'static str,
+    model: &'static str,
+    api_key: String,
+}
 const FETCH_LIMIT: u8 = 100;
 const MAX_RELEVANT: usize = 20;
 const OWNER_ID: u64 = 123456789012345678;
@@ -186,24 +199,45 @@ fn is_bad_assistant_message(content: &str) -> bool {
 
 async fn call_api(
     client: &reqwest::Client,
-    api_key: &str,
+    endpoint: &ApiEndpoint,
     messages: &[serde_json::Value],
     use_tools: bool,
+    max_tokens: u32,
 ) -> Result<ApiResponse, String> {
+    let is_reasoner = endpoint.model == DEEPSEEK_REASONER_MODEL;
+
+    // Each provider has different max_tokens limits
+    let provider_limit = if is_reasoner {
+        32768
+    } else if endpoint.url == DEEPSEEK_URL {
+        8192
+    } else {
+        // Gemini
+        16384
+    };
+    let clamped_tokens = max_tokens.min(provider_limit);
+
     let mut body = serde_json::json!({
-        "model": MODEL,
+        "model": endpoint.model,
         "messages": messages,
-        "max_tokens": 2048,
+        "max_tokens": clamped_tokens,
     });
 
-    if use_tools {
+    if use_tools && !is_reasoner {
         body["tools"] = serde_json::Value::Array(tool_definitions());
     }
 
+    let timeout = if is_reasoner {
+        std::time::Duration::from_secs(300)
+    } else {
+        std::time::Duration::from_secs(30)
+    };
+
     let response = client
-        .post(API_URL)
+        .post(endpoint.url)
         .header("Content-Type", "application/json")
-        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Authorization", format!("Bearer {}", endpoint.api_key))
+        .timeout(timeout)
         .json(&body)
         .send()
         .await
@@ -212,7 +246,7 @@ async fn call_api(
     if !response.status().is_success() {
         let status = response.status();
         let err_body = response.text().await.unwrap_or_default();
-        tracing::error!("DeepSeek API {status}: {err_body}");
+        tracing::error!("{} API {status}: {err_body}", endpoint.model);
         if err_body.contains("Content Exists Risk") {
             return Err("CENSORED".to_string());
         }
@@ -270,11 +304,13 @@ async fn call_api(
     })
 }
 
+/// Builds the message history for the AI. Returns the history and any image
+/// attachments from a referenced (replied-to) non-bot message.
 async fn build_message_history(
     ctx: &serenity::client::Context,
     message: &Message,
     bot_started_at: chrono::DateTime<chrono::Utc>,
-) -> Vec<serde_json::Value> {
+) -> (Vec<serde_json::Value>, Vec<Attachment>) {
     let bot_id = ctx.cache.current_user().id;
     let mention_pattern = Regex::new(&format!(r"<@!?{}>", bot_id)).unwrap();
 
@@ -398,7 +434,7 @@ async fn build_message_history(
         "content": "Everything above is conversation history for context only. You have already responded to all of it. Do NOT act on any previous requests again. The NEXT message is the current request — respond ONLY to it."
     }));
 
-    // Add current message
+    // Add current message, with reply context if replying to another user
     let current_cleaned = mention_pattern.replace_all(&message.content, "");
     let current_cleaned = sanitize_content(current_cleaned.trim());
     let display_name = sanitize_content(
@@ -413,17 +449,66 @@ async fn build_message_history(
     } else {
         current_cleaned
     };
+
+    // If replying to a non-bot message, fetch it and prepend context
+    let mut reply_context = String::new();
+    let mut reply_attachments: Vec<Attachment> = Vec::new();
+    if let Some(ref reference) = message.message_reference {
+        if let Some(mid) = reference.message_id {
+            if !bot_message_ids.contains(&mid) {
+                if let Ok(ref_msg) = message.channel_id.message(&ctx.http, mid).await {
+                    let ref_author = sanitize_content(
+                        ref_msg
+                            .member
+                            .as_ref()
+                            .and_then(|m| m.nick.as_deref())
+                            .unwrap_or(&ref_msg.author.name),
+                    );
+                    let mut ref_content = sanitize_content(&ref_msg.content);
+                    if ref_content.len() > 300 {
+                        ref_content.truncate(300);
+                        ref_content.push_str("...");
+                    }
+                    if !ref_content.is_empty() {
+                        reply_context =
+                            format!("[Replying to {ref_author}: \"{ref_content}\"] ");
+                    }
+
+                    // Collect image attachments from the referenced message
+                    let ref_images: Vec<Attachment> = ref_msg
+                        .attachments
+                        .iter()
+                        .filter(|a| {
+                            a.content_type
+                                .as_deref()
+                                .unwrap_or("")
+                                .starts_with("image/")
+                        })
+                        .cloned()
+                        .collect();
+                    if !ref_images.is_empty() {
+                        if reply_context.is_empty() {
+                            reply_context =
+                                format!("[Replying to {ref_author}'s image] ");
+                        }
+                        reply_attachments = ref_images;
+                    }
+                }
+            }
+        }
+    }
+
     history.push(serde_json::json!({
         "role": "user",
-        "content": format!("{display_name}: {current_text}")
+        "content": format!("{reply_context}{display_name}: {current_text}")
     }));
 
-    history
+    (history, reply_attachments)
 }
 
 async fn handle_search_calls(
     client: &reqwest::Client,
-    api_key: &str,
+    endpoint: &ApiEndpoint,
     http_client: &reqwest::Client,
     history: &mut Vec<serde_json::Value>,
     response: &ApiResponse,
@@ -487,7 +572,7 @@ async fn handle_search_calls(
     }
 
     // Call API again — allow tools so it can do follow-up searches
-    call_api(client, api_key, history, true).await
+    call_api(client, endpoint, history, true, 32768).await
 }
 
 async fn execute_music_tool(
@@ -1043,11 +1128,79 @@ async fn send_reply(ctx: &serenity::client::Context, message: &Message, text: &s
     }
 }
 
-pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, data: &Data) {
-    let api_key = match &data.config.deepseek_api_key {
-        Some(key) => key.clone(),
-        None => return,
+async fn process_image_attachment(
+    client: &reqwest::Client,
+    attachment: &Attachment,
+) -> Result<String, String> {
+    let content_type = attachment.content_type.as_deref().unwrap_or("");
+    if !content_type.starts_with("image/") {
+        return Err("Not an image".to_string());
+    }
+    if attachment.size > 10_000_000 {
+        return Err("Image too large (>10MB)".to_string());
+    }
+
+    let bytes = client
+        .get(&attachment.url)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to download image: {e}"))?
+        .bytes()
+        .await
+        .map_err(|e| format!("Failed to read image bytes: {e}"))?;
+
+    let img = ImageReader::new(Cursor::new(&bytes))
+        .with_guessed_format()
+        .map_err(|e| format!("Failed to guess image format: {e}"))?
+        .decode()
+        .map_err(|e| format!("Failed to decode image: {e}"))?;
+
+    let img = if img.width() > 1024 || img.height() > 1024 {
+        img.resize(1024, 1024, image::imageops::FilterType::Lanczos3)
+    } else {
+        img
     };
+
+    let mut jpeg_bytes = Vec::new();
+    let mut cursor = Cursor::new(&mut jpeg_bytes);
+    img.write_to(&mut cursor, image::ImageFormat::Jpeg)
+        .map_err(|e| format!("Failed to encode image as JPEG: {e}"))?;
+
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&jpeg_bytes);
+    Ok(format!("data:image/jpeg;base64,{b64}"))
+}
+
+async fn classify_message(
+    client: &reqwest::Client,
+    endpoint: &ApiEndpoint,
+    user_text: &str,
+) -> Result<bool, String> {
+    let messages = vec![
+        serde_json::json!({
+            "role": "system",
+            "content": "You are a message classifier. Determine if the following message is a technical or coding question that would benefit from an expert coding model. Respond with ONLY the word 'yes' or 'no'."
+        }),
+        serde_json::json!({
+            "role": "user",
+            "content": user_text
+        }),
+    ];
+
+    let response = call_api(client, endpoint, &messages, false, 10).await?;
+    let text = response.content.unwrap_or_default().to_lowercase();
+    Ok(text.starts_with("yes"))
+}
+
+pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, data: &Data) {
+    let has_images = message
+        .attachments
+        .iter()
+        .any(|a| a.content_type.as_deref().unwrap_or("").starts_with("image/"));
+
+    // If no DeepSeek key and no images (or no Gemini key), we can't do anything
+    if data.config.deepseek_api_key.is_none() && !(has_images && data.config.gemini_api_key.is_some()) {
+        return;
+    }
 
     // Rate limit
     let cooldown = data.rate_limiters.ai.check(&message.author.id.to_string());
@@ -1068,16 +1221,146 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
         }
     });
 
-    let mut history = build_message_history(ctx, message, data.started_at).await;
+    let (mut history, reply_attachments) = build_message_history(ctx, message, data.started_at).await;
+    let has_reply_images = !reply_attachments.is_empty();
+    let has_images = has_images || has_reply_images;
 
-    let mut response = match call_api(&data.http_client, &api_key, &history, true).await {
+    // --- Image vision path: route to Gemini ---
+    if has_images {
+        if let Some(ref gemini_key) = data.config.gemini_api_key {
+            let gemini_endpoint = ApiEndpoint {
+                url: GEMINI_URL,
+                model: GEMINI_MODEL,
+                api_key: gemini_key.clone(),
+            };
+
+            let mut data_uris = Vec::new();
+            // Process images from the replied-to message first
+            for attachment in &reply_attachments {
+                match process_image_attachment(&data.http_client, attachment).await {
+                    Ok(uri) => data_uris.push(uri),
+                    Err(e) => tracing::warn!("Skipping reply image attachment: {e}"),
+                }
+            }
+            // Then images from the current message
+            for attachment in &message.attachments {
+                if !attachment.content_type.as_deref().unwrap_or("").starts_with("image/") {
+                    continue;
+                }
+                match process_image_attachment(&data.http_client, attachment).await {
+                    Ok(uri) => data_uris.push(uri),
+                    Err(e) => tracing::warn!("Skipping image attachment: {e}"),
+                }
+            }
+
+            if !data_uris.is_empty() {
+                // Build multimodal content array for the last user message
+                let last_idx = history.len() - 1;
+                let user_text = history[last_idx]["content"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
+
+                let mut content_parts: Vec<serde_json::Value> = data_uris
+                    .iter()
+                    .map(|uri| {
+                        serde_json::json!({
+                            "type": "image_url",
+                            "image_url": { "url": uri }
+                        })
+                    })
+                    .collect();
+                content_parts.push(serde_json::json!({
+                    "type": "text",
+                    "text": user_text
+                }));
+
+                history[last_idx]["content"] = serde_json::Value::Array(content_parts);
+
+                tracing::info!("Routing to Gemini 3 Flash (image vision, {} images)", data_uris.len());
+                match call_api(&data.http_client, &gemini_endpoint, &history, false, 32768).await {
+                    Ok(resp) => {
+                        typing_handle.abort();
+                        if let Some(content) = &resp.content {
+                            send_reply(ctx, message, content).await;
+                        } else {
+                            let _ = message.reply(&ctx.http, "I see the image but I got nothing to say about it.").await;
+                        }
+                        return;
+                    }
+                    Err(e) => {
+                        tracing::error!("Gemini vision failed: {e}");
+                        // Fall through to text-only DeepSeek path (strip multimodal content back)
+                        history[last_idx]["content"] = serde_json::Value::String(
+                            history[last_idx]["content"]
+                                .as_array()
+                                .and_then(|arr| {
+                                    arr.iter().find_map(|p| {
+                                        if p["type"] == "text" {
+                                            p["text"].as_str().map(|s| s.to_string())
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                })
+                                .unwrap_or_default(),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Text path: need a DeepSeek key from here ---
+    let deepseek_key = match &data.config.deepseek_api_key {
+        Some(key) => key.clone(),
+        None => {
+            typing_handle.abort();
+            return;
+        }
+    };
+
+    let deepseek_endpoint = ApiEndpoint {
+        url: DEEPSEEK_URL,
+        model: DEEPSEEK_MODEL,
+        api_key: deepseek_key,
+    };
+
+    // --- Model router: classify and possibly route to DeepSeek Reasoner ---
+    let active_endpoint = {
+        let user_text = history
+            .last()
+            .and_then(|m| m["content"].as_str())
+            .unwrap_or("");
+
+        match classify_message(&data.http_client, &deepseek_endpoint, user_text).await {
+            Ok(true) => {
+                tracing::info!("Routing to DeepSeek Reasoner (technical/coding question)");
+                ApiEndpoint {
+                    url: DEEPSEEK_URL,
+                    model: DEEPSEEK_REASONER_MODEL,
+                    api_key: deepseek_endpoint.api_key.clone(),
+                }
+            }
+            Ok(false) => {
+                tracing::info!("Routing to DeepSeek V3 (general question)");
+                deepseek_endpoint.clone()
+            }
+            Err(e) => {
+                tracing::warn!("Classification failed, defaulting to DeepSeek V3: {e}");
+                deepseek_endpoint.clone()
+            }
+        }
+    };
+
+    let mut response = match call_api(&data.http_client, &active_endpoint, &history, true, 32768).await {
         Ok(r) => r,
         Err(e) => {
             typing_handle.abort();
             if e == "CENSORED" {
                 let _ = message.reply(&ctx.http, "My overlords at DeepSeek won't let me talk about that. Being a Chinese AI has its... limitations. Try asking something they haven't deemed thoughtcrime.").await;
             } else {
-                tracing::error!("DeepSeek chat failed: {e}");
+                tracing::error!("AI chat failed: {e}");
                 let _ = message
                     .reply(&ctx.http, "Something went wrong talking to the AI. Try again in a sec.")
                     .await;
@@ -1098,7 +1381,7 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
         let _ = message.channel_id.broadcast_typing(&ctx.http).await;
         match handle_search_calls(
             &data.http_client,
-            &api_key,
+            &active_endpoint,
             &data.http_client,
             &mut history,
             &response,
@@ -1107,6 +1390,7 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
         {
             Ok(new_response) => response = new_response,
             Err(e) if e == "CENSORED" => {
+                typing_handle.abort();
                 let _ = message.reply(&ctx.http, "My overlords at DeepSeek won't let me talk about that. Being a Chinese AI has its... limitations. Try asking something they haven't deemed thoughtcrime.").await;
                 return;
             }
@@ -1115,7 +1399,7 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
     }
     // If still requesting search after 3 rounds, force a final answer
     if response.tool_calls.iter().any(|t| is_search_tool(&t.name)) {
-        if let Ok(final_resp) = call_api(&data.http_client, &api_key, &history, false).await {
+        if let Ok(final_resp) = call_api(&data.http_client, &active_endpoint, &history, false, 32768).await {
             response = final_resp;
         }
     }
@@ -1138,7 +1422,7 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
 
     // If action tools but no text, get a witty quip
     if !action_calls.is_empty() && response.content.is_none() {
-        if let Ok(quip) = call_api(&data.http_client, &api_key, &history, false).await {
+        if let Ok(quip) = call_api(&data.http_client, &active_endpoint, &history, false, 32768).await {
             if let Some(content) = &quip.content {
                 send_reply(ctx, message, content).await;
             }
@@ -1146,7 +1430,7 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
     } else if let Some(content) = &response.content {
         send_reply(ctx, message, content).await;
     } else if action_calls.is_empty() {
-        // No content and no actions — DeepSeek returned nothing useful
+        // No content and no actions — returned nothing useful
         let _ = message.reply(&ctx.http, "I got nothing. Try rephrasing that.").await;
     }
 
@@ -1178,5 +1462,4 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
             execute_music_tool(ctx, message, data, &tool.name, &args).await;
         }
     }
-
 }

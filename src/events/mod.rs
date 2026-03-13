@@ -59,7 +59,8 @@ async fn handle_message(ctx: &Context, message: &Message, data: &Data) {
         false
     };
 
-    if data.config.deepseek_api_key.is_some() && (is_mention || is_reply_to_bot) {
+    let has_any_ai_key = data.config.deepseek_api_key.is_some() || data.config.gemini_api_key.is_some();
+    if has_any_ai_key && (is_mention || is_reply_to_bot) {
         handle_mention(ctx, message, data).await;
     }
 }
