@@ -1345,53 +1345,91 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
     let active_endpoint = if use_reasoner {
         tracing::info!("Routing to DeepSeek Reasoner (reasoning question)");
 
-        // Reasoner can't use tools, so pre-flight a V3 call to check if search is needed
-        // and inject results into history before sending to Reasoner.
-        let preflight = call_api(&data.http_client, &deepseek_endpoint, &history, true, 256).await;
-        if let Ok(ref pf_response) = preflight {
+        // Reasoner can't use tools, so use V3 as a research assistant first.
+        // Loop: let V3 search, feed results back, let it search again if needed.
+        let mut pf_history = history.clone();
+        let mut all_search_context = Vec::new();
+
+        for round in 0..5 {
+            let pf_response = match call_api(&data.http_client, &deepseek_endpoint, &pf_history, true, 256).await {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!("Reasoner pre-flight round {} failed: {e}", round + 1);
+                    break;
+                }
+            };
+
             let search_calls: Vec<&ToolCall> = pf_response
                 .tool_calls
                 .iter()
                 .filter(|t| is_search_tool(&t.name))
                 .collect();
 
-            if !search_calls.is_empty() {
-                tracing::info!("Reasoner pre-flight: executing {} search(es)", search_calls.len());
-                let _ = message.channel_id.broadcast_typing(&ctx.http).await;
-
-                let mut search_context = Vec::new();
-                for sc in &search_calls {
-                    let args: serde_json::Value =
-                        serde_json::from_str(&sc.arguments).unwrap_or(serde_json::json!({}));
-                    let query = args["query"].as_str().unwrap_or("");
-                    tracing::info!("Reasoner pre-flight search: {query}");
-
-                    match web_search(&data.http_client, query, 10).await {
-                        Ok(results) if !results.is_empty() => {
-                            let formatted = results
-                                .iter()
-                                .map(|r| format!("{}\n{}\n{}", r.title, r.url, r.snippet))
-                                .collect::<Vec<_>>()
-                                .join("\n\n");
-                            search_context.push(format!("Search results for \"{query}\":\n{formatted}"));
-                        }
-                        Ok(_) => search_context.push(format!("Search for \"{query}\": No results found.")),
-                        Err(e) => {
-                            tracing::error!("Reasoner pre-flight search failed: {e}");
-                            search_context.push(format!("Search for \"{query}\": Search failed."));
-                        }
-                    }
-                }
-
-                if !search_context.is_empty() {
-                    // Insert search results as a system message right before the current user message
-                    let insert_idx = history.len() - 1;
-                    history.insert(insert_idx, serde_json::json!({
-                        "role": "system",
-                        "content": format!("Web search results for context:\n\n{}", search_context.join("\n\n---\n\n"))
-                    }));
-                }
+            if search_calls.is_empty() {
+                break;
             }
+
+            tracing::info!("Reasoner pre-flight round {}: executing {} search(es)", round + 1, search_calls.len());
+            let _ = message.channel_id.broadcast_typing(&ctx.http).await;
+
+            // Add assistant message with tool calls to pre-flight history
+            let tc_json: Vec<serde_json::Value> = search_calls
+                .iter()
+                .map(|tc| serde_json::json!({
+                    "id": tc.id,
+                    "type": "function",
+                    "function": { "name": tc.name, "arguments": tc.arguments }
+                }))
+                .collect();
+            pf_history.push(serde_json::json!({
+                "role": "assistant",
+                "content": pf_response.content.as_deref(),
+                "tool_calls": tc_json
+            }));
+
+            for sc in &search_calls {
+                let args: serde_json::Value =
+                    serde_json::from_str(&sc.arguments).unwrap_or(serde_json::json!({}));
+                let query = args["query"].as_str().unwrap_or("");
+                tracing::info!("Reasoner pre-flight search: {query}");
+
+                let result_text = match web_search(&data.http_client, query, 10).await {
+                    Ok(results) if !results.is_empty() => {
+                        let formatted = results
+                            .iter()
+                            .map(|r| format!("{}\n{}\n{}", r.title, r.url, r.snippet))
+                            .collect::<Vec<_>>()
+                            .join("\n\n");
+                        all_search_context.push(format!("Search results for \"{query}\":\n{formatted}"));
+                        formatted
+                    }
+                    Ok(_) => {
+                        all_search_context.push(format!("Search for \"{query}\": No results found."));
+                        "No results found.".to_string()
+                    }
+                    Err(e) => {
+                        tracing::error!("Reasoner pre-flight search failed: {e}");
+                        all_search_context.push(format!("Search for \"{query}\": Search failed."));
+                        "Search failed.".to_string()
+                    }
+                };
+
+                // Feed results back to V3 so it can decide if more searches are needed
+                pf_history.push(serde_json::json!({
+                    "role": "tool",
+                    "tool_call_id": sc.id,
+                    "content": result_text
+                }));
+            }
+        }
+
+        if !all_search_context.is_empty() {
+            // Insert all search results as context for Reasoner
+            let insert_idx = history.len() - 1;
+            history.insert(insert_idx, serde_json::json!({
+                "role": "system",
+                "content": format!("Web search results for context:\n\n{}", all_search_context.join("\n\n---\n\n"))
+            }));
         }
 
         ApiEndpoint {
@@ -1420,8 +1458,8 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
         }
     };
 
-    // Handle search calls — allow up to 3 rounds of searching
-    for round in 0..3 {
+    // Handle search calls — allow up to 5 rounds of searching
+    for round in 0..5 {
         let has_search = response.tool_calls.iter().any(|t| is_search_tool(&t.name));
         if !has_search {
             break;
