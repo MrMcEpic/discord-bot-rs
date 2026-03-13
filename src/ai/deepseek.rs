@@ -1178,7 +1178,7 @@ async fn classify_message(
     let messages = vec![
         serde_json::json!({
             "role": "system",
-            "content": "You are a message classifier. Determine if the following message is a technical or coding question that would benefit from an expert coding model. Respond with ONLY the word 'yes' or 'no'."
+            "content": "You are a message classifier. Determine if the following message requires deep reasoning, problem-solving, analysis, logic, math, coding, or technical expertise — anything that benefits from careful step-by-step thinking rather than quick conversational responses. Respond with ONLY the word 'yes' or 'no'."
         }),
         serde_json::json!({
             "role": "user",
@@ -1335,7 +1335,7 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
 
         match classify_message(&data.http_client, &deepseek_endpoint, user_text).await {
             Ok(true) => {
-                tracing::info!("Routing to DeepSeek Reasoner (technical/coding question)");
+                tracing::info!("Routing to DeepSeek Reasoner (reasoning question)");
                 ApiEndpoint {
                     url: DEEPSEEK_URL,
                     model: DEEPSEEK_REASONER_MODEL,
