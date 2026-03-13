@@ -12,6 +12,12 @@ fn floor_char_boundary(s: &str, pos: usize) -> usize {
     i
 }
 
+/// Safely slice a string at `pos`, snapping to the nearest char boundary.
+fn safe_split_at(s: &str, pos: usize) -> (&str, &str) {
+    let boundary = floor_char_boundary(s, pos);
+    (&s[..boundary], &s[boundary..])
+}
+
 /// Split a response into chunks that fit within Discord's message limit,
 /// preserving code blocks across splits.
 pub fn split_response(text: &str) -> Vec<String> {
@@ -29,11 +35,9 @@ pub fn split_response(text: &str) -> Vec<String> {
         }
 
         let safe_end = floor_char_boundary(&remaining, DISCORD_MAX_LENGTH);
-        let candidate = &remaining[..safe_end];
+        let (candidate, _) = safe_split_at(&remaining, safe_end);
         let code_block_count = candidate.matches("```").count();
         let inside_code_block = code_block_count % 2 == 1;
-
-        let split_at;
 
         if inside_code_block {
             // Find the opening fence of the unclosed code block
@@ -55,20 +59,22 @@ pub fn split_response(text: &str) -> Vec<String> {
 
             if open_idx > 200 {
                 // Split right before the code block opens
-                split_at = remaining[..open_idx]
+                let split_at = remaining[..open_idx]
                     .rfind('\n')
                     .filter(|&p| p > 200)
                     .unwrap_or(open_idx);
+                let split_at = floor_char_boundary(&remaining, split_at);
                 let chunk = remaining[..split_at].trim_end().to_string();
                 chunks.push(chunk);
                 remaining = remaining[split_at..].trim_start().to_string();
             } else {
                 // Code block starts early — close it and re-open in next chunk
                 let max = floor_char_boundary(&remaining, DISCORD_MAX_LENGTH.saturating_sub(4));
-                split_at = remaining[..max]
+                let split_at = remaining[..max]
                     .rfind('\n')
                     .filter(|&p| p > 200)
                     .unwrap_or(max);
+                let split_at = floor_char_boundary(&remaining, split_at);
 
                 // Find the language tag from the opening fence
                 let lang = remaining[open_idx..]
@@ -84,7 +90,7 @@ pub fn split_response(text: &str) -> Vec<String> {
             }
         } else {
             // Not inside a code block — split on paragraph/line/sentence boundaries
-            split_at = remaining[..safe_end]
+            let split_at = remaining[..safe_end]
                 .rfind("\n\n")
                 .filter(|&p| p > 200)
                 .or_else(|| {
