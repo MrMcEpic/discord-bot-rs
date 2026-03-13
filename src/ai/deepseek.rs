@@ -545,7 +545,7 @@ async fn handle_search_calls(
         let query = args["query"].as_str().unwrap_or("");
 
         tracing::info!("Web search query: {query}");
-        let results = match web_search(http_client, query, 5).await {
+        let results = match web_search(http_client, query, 10).await {
             Ok(results) if !results.is_empty() => {
                 tracing::info!("Web search returned {} results", results.len());
                 results
@@ -1327,30 +1327,81 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
     };
 
     // --- Model router: classify and possibly route to DeepSeek Reasoner ---
-    let active_endpoint = {
+    let use_reasoner = {
         let user_text = history
             .last()
             .and_then(|m| m["content"].as_str())
             .unwrap_or("");
 
         match classify_message(&data.http_client, &deepseek_endpoint, user_text).await {
-            Ok(true) => {
-                tracing::info!("Routing to DeepSeek Reasoner (reasoning question)");
-                ApiEndpoint {
-                    url: DEEPSEEK_URL,
-                    model: DEEPSEEK_REASONER_MODEL,
-                    api_key: deepseek_endpoint.api_key.clone(),
-                }
-            }
-            Ok(false) => {
-                tracing::info!("Routing to DeepSeek V3 (general question)");
-                deepseek_endpoint.clone()
-            }
+            Ok(v) => v,
             Err(e) => {
-                tracing::warn!("Classification failed, defaulting to DeepSeek V3: {e}");
-                deepseek_endpoint.clone()
+                tracing::warn!("Classification failed, defaulting to V3: {e}");
+                false
             }
         }
+    };
+
+    let active_endpoint = if use_reasoner {
+        tracing::info!("Routing to DeepSeek Reasoner (reasoning question)");
+
+        // Reasoner can't use tools, so pre-flight a V3 call to check if search is needed
+        // and inject results into history before sending to Reasoner.
+        let preflight = call_api(&data.http_client, &deepseek_endpoint, &history, true, 256).await;
+        if let Ok(ref pf_response) = preflight {
+            let search_calls: Vec<&ToolCall> = pf_response
+                .tool_calls
+                .iter()
+                .filter(|t| is_search_tool(&t.name))
+                .collect();
+
+            if !search_calls.is_empty() {
+                tracing::info!("Reasoner pre-flight: executing {} search(es)", search_calls.len());
+                let _ = message.channel_id.broadcast_typing(&ctx.http).await;
+
+                let mut search_context = Vec::new();
+                for sc in &search_calls {
+                    let args: serde_json::Value =
+                        serde_json::from_str(&sc.arguments).unwrap_or(serde_json::json!({}));
+                    let query = args["query"].as_str().unwrap_or("");
+                    tracing::info!("Reasoner pre-flight search: {query}");
+
+                    match web_search(&data.http_client, query, 10).await {
+                        Ok(results) if !results.is_empty() => {
+                            let formatted = results
+                                .iter()
+                                .map(|r| format!("{}\n{}\n{}", r.title, r.url, r.snippet))
+                                .collect::<Vec<_>>()
+                                .join("\n\n");
+                            search_context.push(format!("Search results for \"{query}\":\n{formatted}"));
+                        }
+                        Ok(_) => search_context.push(format!("Search for \"{query}\": No results found.")),
+                        Err(e) => {
+                            tracing::error!("Reasoner pre-flight search failed: {e}");
+                            search_context.push(format!("Search for \"{query}\": Search failed."));
+                        }
+                    }
+                }
+
+                if !search_context.is_empty() {
+                    // Insert search results as a system message right before the current user message
+                    let insert_idx = history.len() - 1;
+                    history.insert(insert_idx, serde_json::json!({
+                        "role": "system",
+                        "content": format!("Web search results for context:\n\n{}", search_context.join("\n\n---\n\n"))
+                    }));
+                }
+            }
+        }
+
+        ApiEndpoint {
+            url: DEEPSEEK_URL,
+            model: DEEPSEEK_REASONER_MODEL,
+            api_key: deepseek_endpoint.api_key.clone(),
+        }
+    } else {
+        tracing::info!("Routing to DeepSeek V3 (general question)");
+        deepseek_endpoint.clone()
     };
 
     let mut response = match call_api(&data.http_client, &active_endpoint, &history, true, 32768).await {
