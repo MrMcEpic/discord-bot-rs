@@ -9,6 +9,7 @@ mod music;
 mod stocks;
 mod util;
 mod wordle;
+mod instance_config;
 #[cfg(feature = "minecraft")]
 mod minecraft;
 
