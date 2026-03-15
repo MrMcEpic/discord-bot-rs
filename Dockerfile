@@ -1,7 +1,8 @@
-FROM rust:1.85-bookworm AS builder
+FROM rust:bookworm AS builder
+RUN apt-get update && apt-get install -y cmake libopus-dev libsodium-dev && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
-RUN mkdir src && echo "fn main() {}" > src/main.rs && cargo build --release 2>/dev/null; rm -rf src
+COPY version_info.txt ./
 COPY src ./src
 RUN cargo build --release
 
