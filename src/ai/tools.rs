@@ -159,6 +159,67 @@ pub fn tool_definitions() -> Vec<Value> {
                 }
             }
         }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "stock_buy",
+                "description": "Buy shares of a stock for the user using their virtual portfolio. Provide either quantity OR dollar_amount, not both.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "symbol": { "type": "string", "description": "Stock ticker symbol (e.g. AAPL, TSLA, MSFT)" },
+                        "quantity": { "type": "number", "description": "Number of shares to buy (use this OR dollar_amount)" },
+                        "dollar_amount": { "type": "number", "description": "Dollar amount to spend (use this OR quantity)" }
+                    },
+                    "required": ["symbol"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "stock_sell",
+                "description": "Sell shares of a stock from the user's virtual portfolio",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "symbol": { "type": "string", "description": "Stock ticker symbol" },
+                        "quantity": { "type": "number", "description": "Number of shares to sell. Omit to sell all shares." }
+                    },
+                    "required": ["symbol"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "stock_price",
+                "description": "Check the current price of a stock",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "symbol": { "type": "string", "description": "Stock ticker symbol" }
+                    },
+                    "required": ["symbol"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "stock_portfolio",
+                "description": "View the user's virtual stock portfolio with holdings, cash balance, and profit/loss",
+                "parameters": { "type": "object", "properties": {} }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "stock_leaderboard",
+                "description": "Show the server's stock trading leaderboard — top portfolios ranked by total value",
+                "parameters": { "type": "object", "properties": {} }
+            }
+        }),
     ]
 }
 
@@ -168,4 +229,11 @@ pub fn is_moderation_tool(name: &str) -> bool {
 
 pub fn is_search_tool(name: &str) -> bool {
     name == "web_search"
+}
+
+pub fn is_stock_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "stock_buy" | "stock_sell" | "stock_price" | "stock_portfolio" | "stock_leaderboard"
+    )
 }

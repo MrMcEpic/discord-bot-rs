@@ -2,6 +2,7 @@ pub mod admin;
 pub mod help;
 pub mod moderation;
 pub mod music;
+pub mod stocks;
 
 use crate::error::BotError;
 use crate::Data;
@@ -28,6 +29,7 @@ use crate::Data;
         "admin::setlog",
         "admin::djrole",
         "admin::djmode",
+        "stocks::stock",
         "help::help",
     )
 )]

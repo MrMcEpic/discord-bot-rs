@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 
-use super::models::{GuildSettings, Tempban};
+use super::models::{GuildSettings, StockHolding, StockPortfolio, StockPriceCache, StockTransaction, Tempban};
 
 pub async fn get_guild_settings(pool: &PgPool, guild_id: &str) -> Option<GuildSettings> {
     sqlx::query_as::<_, GuildSettings>("SELECT * FROM guild_settings WHERE guild_id = $1")
@@ -107,5 +107,308 @@ pub async fn mark_unbanned_by_id(pool: &PgPool, id: i32) -> Result<(), sqlx::Err
         .bind(id)
         .execute(pool)
         .await?;
+    Ok(())
+}
+
+// ── Stock trading queries ──
+
+pub async fn get_or_create_portfolio(
+    pool: &PgPool,
+    guild_id: &str,
+    user_id: &str,
+) -> Result<StockPortfolio, sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO stock_portfolios (guild_id, user_id) VALUES ($1, $2) \
+         ON CONFLICT (guild_id, user_id) DO NOTHING",
+    )
+    .bind(guild_id)
+    .bind(user_id)
+    .execute(pool)
+    .await?;
+
+    sqlx::query_as::<_, StockPortfolio>(
+        "SELECT * FROM stock_portfolios WHERE guild_id = $1 AND user_id = $2",
+    )
+    .bind(guild_id)
+    .bind(user_id)
+    .fetch_one(pool)
+    .await
+}
+
+pub async fn get_holdings(
+    pool: &PgPool,
+    guild_id: &str,
+    user_id: &str,
+) -> Result<Vec<StockHolding>, sqlx::Error> {
+    sqlx::query_as::<_, StockHolding>(
+        "SELECT * FROM stock_holdings WHERE guild_id = $1 AND user_id = $2 AND quantity > 0 \
+         ORDER BY symbol ASC",
+    )
+    .bind(guild_id)
+    .bind(user_id)
+    .fetch_all(pool)
+    .await
+}
+
+pub async fn get_holding(
+    pool: &PgPool,
+    guild_id: &str,
+    user_id: &str,
+    symbol: &str,
+) -> Result<Option<StockHolding>, sqlx::Error> {
+    sqlx::query_as::<_, StockHolding>(
+        "SELECT * FROM stock_holdings \
+         WHERE guild_id = $1 AND user_id = $2 AND symbol = $3 AND quantity > 0",
+    )
+    .bind(guild_id)
+    .bind(user_id)
+    .bind(symbol)
+    .fetch_optional(pool)
+    .await
+}
+
+pub async fn buy_stock(
+    pool: &PgPool,
+    guild_id: &str,
+    user_id: &str,
+    symbol: &str,
+    quantity: f64,
+    price_per_share: f64,
+) -> Result<f64, sqlx::Error> {
+    let total = quantity * price_per_share;
+    let mut tx = pool.begin().await?;
+
+    // Deduct cash (fails if insufficient)
+    let result = sqlx::query(
+        "UPDATE stock_portfolios SET cash_balance = cash_balance - $1 \
+         WHERE guild_id = $2 AND user_id = $3 AND cash_balance >= $1",
+    )
+    .bind(total)
+    .bind(guild_id)
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(sqlx::Error::Protocol("Insufficient funds".into()));
+    }
+
+    // Upsert holding with weighted average cost
+    sqlx::query(
+        "INSERT INTO stock_holdings (guild_id, user_id, symbol, quantity, avg_cost) \
+         VALUES ($1, $2, $3, $4, $5) \
+         ON CONFLICT (guild_id, user_id, symbol) DO UPDATE SET \
+             avg_cost = (stock_holdings.avg_cost * stock_holdings.quantity + $5 * $4) \
+                        / (stock_holdings.quantity + $4), \
+             quantity = stock_holdings.quantity + $4",
+    )
+    .bind(guild_id)
+    .bind(user_id)
+    .bind(symbol)
+    .bind(quantity)
+    .bind(price_per_share)
+    .execute(&mut *tx)
+    .await?;
+
+    // Transaction log
+    sqlx::query(
+        "INSERT INTO stock_transactions \
+         (guild_id, user_id, symbol, action, quantity, price_per_share, total_amount) \
+         VALUES ($1, $2, $3, 'BUY', $4, $5, $6)",
+    )
+    .bind(guild_id)
+    .bind(user_id)
+    .bind(symbol)
+    .bind(quantity)
+    .bind(price_per_share)
+    .bind(total)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(total)
+}
+
+pub async fn sell_stock(
+    pool: &PgPool,
+    guild_id: &str,
+    user_id: &str,
+    symbol: &str,
+    quantity: f64,
+    price_per_share: f64,
+) -> Result<(f64, f64), sqlx::Error> {
+    // Returns (total_sale_amount, realized_pnl)
+    let mut tx = pool.begin().await?;
+
+    // Get current holding (locked for update to prevent concurrent sells)
+    let holding = sqlx::query_as::<_, StockHolding>(
+        "SELECT * FROM stock_holdings \
+         WHERE guild_id = $1 AND user_id = $2 AND symbol = $3 AND quantity >= $4 \
+         FOR UPDATE",
+    )
+    .bind(guild_id)
+    .bind(user_id)
+    .bind(symbol)
+    .bind(quantity)
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    let holding = match holding {
+        Some(h) => h,
+        None => return Err(sqlx::Error::Protocol("Insufficient shares".into())),
+    };
+
+    let total = quantity * price_per_share;
+    let realized_pnl = (price_per_share - holding.avg_cost) * quantity;
+
+    // Add cash
+    sqlx::query(
+        "UPDATE stock_portfolios SET cash_balance = cash_balance + $1 \
+         WHERE guild_id = $2 AND user_id = $3",
+    )
+    .bind(total)
+    .bind(guild_id)
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?;
+
+    // Reduce or remove holding
+    let remaining = holding.quantity - quantity;
+    if remaining < 0.0001 {
+        sqlx::query(
+            "DELETE FROM stock_holdings WHERE guild_id = $1 AND user_id = $2 AND symbol = $3",
+        )
+        .bind(guild_id)
+        .bind(user_id)
+        .bind(symbol)
+        .execute(&mut *tx)
+        .await?;
+    } else {
+        sqlx::query(
+            "UPDATE stock_holdings SET quantity = $1 \
+             WHERE guild_id = $2 AND user_id = $3 AND symbol = $4",
+        )
+        .bind(remaining)
+        .bind(guild_id)
+        .bind(user_id)
+        .bind(symbol)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    // Transaction log
+    sqlx::query(
+        "INSERT INTO stock_transactions \
+         (guild_id, user_id, symbol, action, quantity, price_per_share, total_amount) \
+         VALUES ($1, $2, $3, 'SELL', $4, $5, $6)",
+    )
+    .bind(guild_id)
+    .bind(user_id)
+    .bind(symbol)
+    .bind(quantity)
+    .bind(price_per_share)
+    .bind(total)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok((total, realized_pnl))
+}
+
+pub async fn get_transactions(
+    pool: &PgPool,
+    guild_id: &str,
+    user_id: &str,
+    limit: i64,
+) -> Result<Vec<StockTransaction>, sqlx::Error> {
+    sqlx::query_as::<_, StockTransaction>(
+        "SELECT * FROM stock_transactions \
+         WHERE guild_id = $1 AND user_id = $2 \
+         ORDER BY created_at DESC LIMIT $3",
+    )
+    .bind(guild_id)
+    .bind(user_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+}
+
+pub async fn get_all_portfolios(
+    pool: &PgPool,
+    guild_id: &str,
+) -> Result<Vec<StockPortfolio>, sqlx::Error> {
+    sqlx::query_as::<_, StockPortfolio>(
+        "SELECT * FROM stock_portfolios WHERE guild_id = $1",
+    )
+    .bind(guild_id)
+    .fetch_all(pool)
+    .await
+}
+
+pub async fn reset_portfolio(
+    pool: &PgPool,
+    guild_id: &str,
+    user_id: &str,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+
+    sqlx::query("DELETE FROM stock_holdings WHERE guild_id = $1 AND user_id = $2")
+        .bind(guild_id)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+
+    sqlx::query("DELETE FROM stock_transactions WHERE guild_id = $1 AND user_id = $2")
+        .bind(guild_id)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+
+    sqlx::query(
+        "INSERT INTO stock_portfolios (guild_id, user_id, cash_balance) \
+         VALUES ($1, $2, 1000.0) \
+         ON CONFLICT (guild_id, user_id) DO UPDATE SET cash_balance = 1000.0",
+    )
+    .bind(guild_id)
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(())
+}
+
+pub async fn get_cached_price(
+    pool: &PgPool,
+    symbol: &str,
+) -> Result<Option<StockPriceCache>, sqlx::Error> {
+    sqlx::query_as::<_, StockPriceCache>(
+        "SELECT * FROM stock_price_cache \
+         WHERE symbol = $1 AND fetched_at > NOW() - INTERVAL '60 seconds'",
+    )
+    .bind(symbol)
+    .fetch_optional(pool)
+    .await
+}
+
+pub async fn upsert_cached_price(
+    pool: &PgPool,
+    symbol: &str,
+    price: f64,
+    prev_close: f64,
+    change_pct: f64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO stock_price_cache (symbol, price, prev_close, change_pct, fetched_at) \
+         VALUES ($1, $2, $3, $4, NOW()) \
+         ON CONFLICT (symbol) DO UPDATE SET \
+             price = $2, prev_close = $3, change_pct = $4, fetched_at = NOW()",
+    )
+    .bind(symbol)
+    .bind(price)
+    .bind(prev_close)
+    .bind(change_pct)
+    .execute(pool)
+    .await?;
     Ok(())
 }

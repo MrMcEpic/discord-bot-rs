@@ -10,10 +10,12 @@ use super::dsml::parse_dsml;
 use super::sanitize::sanitize_content;
 use super::search::web_search;
 use super::split::split_response;
-use super::tools::{is_moderation_tool, is_search_tool, tool_definitions};
+use super::tools::{is_moderation_tool, is_search_tool, is_stock_tool, tool_definitions};
 use crate::db::queries::{
-    create_tempban, get_guild_settings, mark_unbanned,
+    self, create_tempban, get_guild_settings, mark_unbanned,
 };
+use crate::stocks::api as stock_api;
+use crate::stocks::embeds as stock_embeds;
 use crate::music::embeds::{music_controls, now_playing_embed, queue_embed};
 use crate::music::player::LoopMode;
 use crate::music::track::resolve_track;
@@ -1074,6 +1076,274 @@ async fn execute_moderation_tool(
     }
 }
 
+async fn execute_stock_tool(
+    ctx: &serenity::client::Context,
+    message: &Message,
+    data: &Data,
+    name: &str,
+    args: &serde_json::Value,
+) {
+    let guild_id = match message.guild_id {
+        Some(id) => id,
+        None => return,
+    };
+
+    let api_key = match &data.config.finnhub_api_key {
+        Some(k) => k.clone(),
+        None => {
+            let _ = message
+                .reply(&ctx.http, "Stock trading is not configured.")
+                .await;
+            return;
+        }
+    };
+
+    let guild_id_str = guild_id.to_string();
+    let user_id = message.author.id.to_string();
+
+    match name {
+        "stock_buy" => {
+            let symbol = args["symbol"].as_str().unwrap_or("").to_uppercase();
+            if symbol.is_empty() {
+                let _ = message.reply(&ctx.http, "No stock symbol provided.").await;
+                return;
+            }
+
+            // Ensure portfolio exists
+            let portfolio = match queries::get_or_create_portfolio(&data.db, &guild_id_str, &user_id).await {
+                Ok(p) => p,
+                Err(e) => {
+                    let _ = message.reply(&ctx.http, format!("Database error: {e}")).await;
+                    return;
+                }
+            };
+
+            // Fetch price
+            let quote = match stock_api::get_quote(&data.http_client, &data.db, &api_key, &symbol).await {
+                Ok(q) => q,
+                Err(e) => {
+                    let _ = message.reply(&ctx.http, e).await;
+                    return;
+                }
+            };
+
+            // Determine quantity
+            let quantity = if let Some(dollars) = args["dollar_amount"].as_f64() {
+                if dollars <= 0.0 {
+                    let _ = message.reply(&ctx.http, "Amount must be positive.").await;
+                    return;
+                }
+                dollars / quote.price
+            } else if let Some(qty) = args["quantity"].as_f64() {
+                if qty <= 0.0 {
+                    let _ = message.reply(&ctx.http, "Quantity must be positive.").await;
+                    return;
+                }
+                qty
+            } else {
+                let _ = message.reply(&ctx.http, "Please specify a quantity or dollar amount.").await;
+                return;
+            };
+
+            let total = quantity * quote.price;
+            if total > portfolio.cash_balance {
+                let _ = message
+                    .reply(
+                        &ctx.http,
+                        format!(
+                            "Insufficient funds. This costs **${:.2}** but you have **${:.2}**.",
+                            total, portfolio.cash_balance
+                        ),
+                    )
+                    .await;
+                return;
+            }
+
+            match queries::buy_stock(&data.db, &guild_id_str, &user_id, &symbol, quantity, quote.price).await {
+                Ok(_) => {
+                    let new_cash = portfolio.cash_balance - total;
+                    let embed = stock_embeds::buy_embed(&symbol, quantity, quote.price, total, new_cash);
+                    let _ = message
+                        .channel_id
+                        .send_message(&ctx.http, CreateMessage::new().embed(embed).reference_message(message))
+                        .await;
+                }
+                Err(e) => {
+                    let _ = message.reply(&ctx.http, format!("Trade failed: {e}")).await;
+                }
+            }
+        }
+        "stock_sell" => {
+            let symbol = args["symbol"].as_str().unwrap_or("").to_uppercase();
+            if symbol.is_empty() {
+                let _ = message.reply(&ctx.http, "No stock symbol provided.").await;
+                return;
+            }
+
+            // Ensure portfolio exists
+            let portfolio = match queries::get_or_create_portfolio(&data.db, &guild_id_str, &user_id).await {
+                Ok(p) => p,
+                Err(e) => {
+                    let _ = message.reply(&ctx.http, format!("Database error: {e}")).await;
+                    return;
+                }
+            };
+
+            let holding = match queries::get_holding(&data.db, &guild_id_str, &user_id, &symbol).await {
+                Ok(Some(h)) => h,
+                Ok(None) => {
+                    let _ = message.reply(&ctx.http, format!("You don't own any **{symbol}** shares.")).await;
+                    return;
+                }
+                Err(e) => {
+                    let _ = message.reply(&ctx.http, format!("Database error: {e}")).await;
+                    return;
+                }
+            };
+
+            let quantity = if let Some(qty) = args["quantity"].as_f64() {
+                if qty <= 0.0 {
+                    let _ = message.reply(&ctx.http, "Quantity must be positive.").await;
+                    return;
+                }
+                if qty > holding.quantity {
+                    let _ = message
+                        .reply(&ctx.http, format!("You only have **{:.4}** shares of **{symbol}**.", holding.quantity))
+                        .await;
+                    return;
+                }
+                qty
+            } else {
+                holding.quantity // default: sell all
+            };
+
+            let quote = match stock_api::get_quote(&data.http_client, &data.db, &api_key, &symbol).await {
+                Ok(q) => q,
+                Err(e) => {
+                    let _ = message.reply(&ctx.http, e).await;
+                    return;
+                }
+            };
+
+            match queries::sell_stock(&data.db, &guild_id_str, &user_id, &symbol, quantity, quote.price).await {
+                Ok((total, realized_pnl)) => {
+                    let new_cash = portfolio.cash_balance + total;
+                    let embed = stock_embeds::sell_embed(&symbol, quantity, quote.price, total, realized_pnl, new_cash);
+                    let _ = message
+                        .channel_id
+                        .send_message(&ctx.http, CreateMessage::new().embed(embed).reference_message(message))
+                        .await;
+                }
+                Err(e) => {
+                    let _ = message.reply(&ctx.http, format!("Trade failed: {e}")).await;
+                }
+            }
+        }
+        "stock_price" => {
+            let symbol = args["symbol"].as_str().unwrap_or("").to_uppercase();
+            if symbol.is_empty() {
+                let _ = message.reply(&ctx.http, "No stock symbol provided.").await;
+                return;
+            }
+
+            match stock_api::get_quote(&data.http_client, &data.db, &api_key, &symbol).await {
+                Ok(quote) => {
+                    let embed = stock_embeds::price_embed(&quote);
+                    let _ = message
+                        .channel_id
+                        .send_message(&ctx.http, CreateMessage::new().embed(embed).reference_message(message))
+                        .await;
+                }
+                Err(e) => {
+                    let _ = message.reply(&ctx.http, e).await;
+                }
+            }
+        }
+        "stock_portfolio" => {
+            let portfolio = match queries::get_or_create_portfolio(&data.db, &guild_id_str, &user_id).await {
+                Ok(p) => p,
+                Err(e) => {
+                    let _ = message.reply(&ctx.http, format!("Database error: {e}")).await;
+                    return;
+                }
+            };
+
+            let holdings = match queries::get_holdings(&data.db, &guild_id_str, &user_id).await {
+                Ok(h) => h,
+                Err(e) => {
+                    let _ = message.reply(&ctx.http, format!("Database error: {e}")).await;
+                    return;
+                }
+            };
+
+            let mut holdings_with_quotes = Vec::new();
+            for holding in &holdings {
+                let price = match stock_api::get_quote(&data.http_client, &data.db, &api_key, &holding.symbol).await {
+                    Ok(q) => q.price,
+                    Err(_) => holding.avg_cost,
+                };
+                holdings_with_quotes.push(stock_embeds::HoldingWithQuote {
+                    holding,
+                    current_price: price,
+                });
+            }
+
+            let embed = stock_embeds::portfolio_embed(&message.author.name, portfolio.cash_balance, &holdings_with_quotes);
+            let _ = message
+                .channel_id
+                .send_message(&ctx.http, CreateMessage::new().embed(embed).reference_message(message))
+                .await;
+        }
+        "stock_leaderboard" => {
+            let portfolios = match queries::get_all_portfolios(&data.db, &guild_id_str).await {
+                Ok(p) => p,
+                Err(e) => {
+                    let _ = message.reply(&ctx.http, format!("Database error: {e}")).await;
+                    return;
+                }
+            };
+
+            let mut entries: Vec<(String, f64)> = Vec::new();
+            for p in &portfolios {
+                let holdings = match queries::get_holdings(&data.db, &guild_id_str, &p.user_id).await {
+                    Ok(h) => h,
+                    Err(_) => continue,
+                };
+                let mut total_value = p.cash_balance;
+                for h in &holdings {
+                    let price = match stock_api::get_quote(&data.http_client, &data.db, &api_key, &h.symbol).await {
+                        Ok(q) => q.price,
+                        Err(_) => h.avg_cost,
+                    };
+                    total_value += h.quantity * price;
+                }
+                entries.push((p.user_id.clone(), total_value));
+            }
+
+            entries.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+            let leaderboard_entries: Vec<stock_embeds::LeaderboardEntry> = entries
+                .iter()
+                .take(10)
+                .enumerate()
+                .map(|(i, (uid, total_value))| stock_embeds::LeaderboardEntry {
+                    rank: i + 1,
+                    user_id: uid.clone(),
+                    total_value: *total_value,
+                    pnl: *total_value - 1000.0,
+                })
+                .collect();
+
+            let embed = stock_embeds::leaderboard_embed(&leaderboard_entries);
+            let _ = message
+                .channel_id
+                .send_message(&ctx.http, CreateMessage::new().embed(embed).reference_message(message))
+                .await;
+        }
+        _ => {}
+    }
+}
+
 async fn send_audit_log(
     ctx: &serenity::client::Context,
     data: &Data,
@@ -1547,6 +1817,8 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
             if confirmed {
                 execute_moderation_tool(ctx, message, data, &tool.name, &args).await;
             }
+        } else if is_stock_tool(&tool.name) {
+            execute_stock_tool(ctx, message, data, &tool.name, &args).await;
         } else {
             execute_music_tool(ctx, message, data, &tool.name, &args).await;
         }

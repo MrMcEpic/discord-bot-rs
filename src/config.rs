@@ -6,6 +6,7 @@ pub struct Config {
     pub guild_id: String,
     pub deepseek_api_key: Option<String>,
     pub gemini_api_key: Option<String>,
+    pub finnhub_api_key: Option<String>,
     pub database_url: String,
 }
 
@@ -19,6 +20,7 @@ impl Config {
             guild_id: get_env_or_throw("GUILD_ID"),
             deepseek_api_key: env::var("DEEPSEEK_API_KEY").ok().filter(|s| !s.is_empty()),
             gemini_api_key: env::var("GEMINI_API_KEY").ok().filter(|s| !s.is_empty()),
+            finnhub_api_key: env::var("FINNHUB_API_KEY").ok().filter(|s| !s.is_empty()),
             database_url: env::var("DATABASE_URL").unwrap_or_else(|_| {
                 "postgresql://discord_bot:discord_bot_pass@localhost:5432/discord_bot".to_string()
             }),

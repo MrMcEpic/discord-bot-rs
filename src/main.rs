@@ -5,6 +5,7 @@ mod db;
 mod error;
 mod events;
 mod music;
+mod stocks;
 mod util;
 
 use dashmap::DashMap;

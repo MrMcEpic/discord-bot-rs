@@ -62,9 +62,20 @@ pub async fn help(ctx: Context<'_>) -> Result<(), BotError> {
         embed = embed.field("Admin", admin_lines.join("\n"), false);
     }
 
+    let stock_lines = [
+        "`!m stock buy <symbol> <qty/$amt>` — Buy shares",
+        "`!m stock sell <symbol> <qty/all>` — Sell shares",
+        "`!m stock portfolio [@user]` — View portfolio",
+        "`!m stock price <symbol>` — Check stock price",
+        "`!m stock leaderboard` — Top portfolios in server",
+        "`!m stock history` — Recent trades",
+        "`!m stock reset confirm` — Reset to $1,000",
+    ];
+    embed = embed.field("Stocks", stock_lines.join("\n"), false);
+
     embed = embed.field(
         "Shortcuts",
-        "`p` play · `pl` playlist · `s` skip · `r` resume · `q` queue · `np` now playing · `l` loop · `h` help",
+        "`p` play · `pl` playlist · `s` skip · `r` resume · `q` queue · `np` now playing · `l` loop · `st` stocks · `h` help",
         false,
     );
 
