@@ -40,6 +40,24 @@ pub async fn help(ctx: Context<'_>) -> Result<(), BotError> {
     ];
     embed = embed.field("Music", music_lines.join("\n"), false);
 
+    let game_lines = [
+        "`!m connections` — Play today's NYT Connections",
+        "`!m connections random` — Random puzzle",
+        "`!m connections date <YYYY-MM-DD>` — Specific date",
+    ];
+    embed = embed.field("Games", game_lines.join("\n"), false);
+
+    let stock_lines = [
+        "`!m stock buy <symbol> <qty/$amt>` — Buy shares",
+        "`!m stock sell <symbol> <qty/all>` — Sell shares",
+        "`!m stock portfolio [@user]` — View portfolio",
+        "`!m stock price <symbol>` — Check stock price",
+        "`!m stock leaderboard` — Top portfolios in server",
+        "`!m stock history` — Recent trades",
+        "`!m stock reset confirm` — Reset to $1,000",
+    ];
+    embed = embed.field("Stocks", stock_lines.join("\n"), false);
+
     if has_ban || has_manage {
         let mut mod_lines = Vec::new();
         if has_manage {
@@ -61,24 +79,6 @@ pub async fn help(ctx: Context<'_>) -> Result<(), BotError> {
         ];
         embed = embed.field("Admin", admin_lines.join("\n"), false);
     }
-
-    let stock_lines = [
-        "`!m stock buy <symbol> <qty/$amt>` — Buy shares",
-        "`!m stock sell <symbol> <qty/all>` — Sell shares",
-        "`!m stock portfolio [@user]` — View portfolio",
-        "`!m stock price <symbol>` — Check stock price",
-        "`!m stock leaderboard` — Top portfolios in server",
-        "`!m stock history` — Recent trades",
-        "`!m stock reset confirm` — Reset to $1,000",
-    ];
-    embed = embed.field("Stocks", stock_lines.join("\n"), false);
-
-    let game_lines = [
-        "`!m connections` — Play today's NYT Connections",
-        "`!m connections random` — Random puzzle",
-        "`!m connections date <YYYY-MM-DD>` — Specific date",
-    ];
-    embed = embed.field("Games", game_lines.join("\n"), false);
 
     embed = embed.field(
         "Shortcuts",
