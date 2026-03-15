@@ -1,3 +1,5 @@
 /target
 .env
 cookies.txt
+instances/*/.env
+!instances/example/.env.example

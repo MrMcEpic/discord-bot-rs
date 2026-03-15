@@ -1,0 +1,6 @@
+bot_name = "My Bot"
+command_prefix = "!"
+personality_file = "personality.txt"
+
+[features]
+minecraft = false
