@@ -233,6 +233,19 @@ pub fn tool_definitions() -> Vec<Value> {
                 }
             }
         }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "wordle_start",
+                "description": "Start a Wordle game in the current channel. Players guess a 5-letter word in 6 tries by typing words in chat.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "mode": { "type": "string", "enum": ["today", "random"], "description": "today = today's puzzle, random = random historical puzzle" }
+                    }
+                }
+            }
+        }),
     ]
 }
 
@@ -253,4 +266,8 @@ pub fn is_stock_tool(name: &str) -> bool {
 
 pub fn is_connections_tool(name: &str) -> bool {
     name == "connections_start"
+}
+
+pub fn is_wordle_tool(name: &str) -> bool {
+    name == "wordle_start"
 }

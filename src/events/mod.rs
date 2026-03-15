@@ -6,6 +6,8 @@ use serenity::all::*;
 use crate::ai::deepseek::handle_mention;
 use crate::connections::embeds as conn_embeds;
 use crate::connections::game::GuessResult;
+use crate::wordle::embeds as wordle_embeds;
+use crate::wordle::game::{self as wordle_game, GuessOutcome};
 use crate::db::queries::get_guild_settings;
 use crate::music::embeds::{music_controls, now_playing_embed, queue_embed, status_footer};
 use crate::music::voice;
@@ -60,6 +62,59 @@ async fn handle_message(ctx: &Context, message: &Message, data: &Data) {
     } else {
         false
     };
+
+    // Check for Wordle guesses: 5 alphabetic characters in a channel with an active game
+    let content = message.content.trim().to_lowercase();
+    if content.len() == 5 && content.chars().all(|c| c.is_ascii_alphabetic()) {
+        if let Some(game_arc) = data.wordle_games.get(&message.channel_id).map(|e| e.value().clone()) {
+            let mut game = game_arc.lock().await;
+            if !game.is_over() && !game.is_expired() {
+                if !wordle_game::is_valid_word(&content) {
+                    // Invalid word — ephemeral-like reply, then delete both
+                    if let Ok(reply) = message.reply(&ctx.http, "Not a valid word.").await {
+                        let http = ctx.http.clone();
+                        let ch = message.channel_id;
+                        let reply_id = reply.id;
+                        tokio::spawn(async move {
+                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                            let _ = http.delete_message(ch, reply_id, None).await;
+                        });
+                    }
+                    return;
+                }
+
+                let outcome = game.make_guess(&content);
+
+                // Delete the user's guess message
+                let _ = message.delete(&ctx.http).await;
+
+                // Update the game embed
+                let embed = match outcome {
+                    GuessOutcome::Won => wordle_embeds::game_over_embed(&game, true),
+                    GuessOutcome::Lost => wordle_embeds::game_over_embed(&game, false),
+                    GuessOutcome::Continue => wordle_embeds::game_embed(&game),
+                };
+
+                let _ = ctx.http.edit_message(
+                    game.channel_id,
+                    game.message_id,
+                    &EditMessage::new().embed(embed),
+                    vec![],
+                ).await;
+
+                // Clean up finished games
+                if game.is_over() {
+                    drop(game);
+                    data.wordle_games.remove(&message.channel_id);
+                }
+
+                return;
+            } else if game.is_expired() {
+                drop(game);
+                data.wordle_games.remove(&message.channel_id);
+            }
+        }
+    }
 
     let has_any_ai_key = data.config.deepseek_api_key.is_some() || data.config.gemini_api_key.is_some();
     if has_any_ai_key && (is_mention || is_reply_to_bot) {

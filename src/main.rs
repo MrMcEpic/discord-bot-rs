@@ -8,8 +8,10 @@ mod events;
 mod music;
 mod stocks;
 mod util;
+mod wordle;
 
 use connections::game::ConnectionsGame;
+use wordle::game::WordleGame;
 use dashmap::DashMap;
 use music::player::GuildPlayer;
 use music::voice::PlaybackContext;
@@ -36,6 +38,7 @@ pub struct Data {
     pub idle_timers: IdleTimerMap,
     pub rate_limiters: RateLimiters,
     pub connections_games: Arc<DashMap<ChannelId, Arc<Mutex<ConnectionsGame>>>>,
+    pub wordle_games: Arc<DashMap<ChannelId, Arc<Mutex<WordleGame>>>>,
     pub config: Config,
     /// When this bot instance started — bot messages before this are from a previous instance.
     pub started_at: chrono::DateTime<chrono::Utc>,
@@ -148,6 +151,7 @@ async fn main() {
                     idle_timers: Arc::new(DashMap::new()),
                     rate_limiters,
                     connections_games: Arc::new(DashMap::new()),
+                    wordle_games: Arc::new(DashMap::new()),
                     config,
                     started_at: chrono::Utc::now(),
                 })

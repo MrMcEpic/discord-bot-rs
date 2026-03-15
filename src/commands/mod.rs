@@ -4,6 +4,7 @@ pub mod help;
 pub mod moderation;
 pub mod music;
 pub mod stocks;
+pub mod wordle;
 
 use crate::error::BotError;
 use crate::Data;
@@ -32,6 +33,7 @@ use crate::Data;
         "admin::djmode",
         "stocks::stock",
         "connections::connections",
+        "wordle::wordle",
         "help::help",
     )
 )]

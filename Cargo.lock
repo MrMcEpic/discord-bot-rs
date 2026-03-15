@@ -737,7 +737,7 @@ dependencies = [
 
 [[package]]
 name = "discord-bot"
-version = "0.4.2"
+version = "0.4.5"
 dependencies = [
  "async-trait",
  "base64",

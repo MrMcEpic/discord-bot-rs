@@ -1,7 +1,10 @@
 use serenity::all::*;
+use serenity::builder::CreateEmbedFooter;
 
 use crate::error::BotError;
 use crate::Context;
+
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Show available commands
 #[poise::command(prefix_command, rename = "help", aliases("h"))]
@@ -23,7 +26,7 @@ pub async fn help(ctx: Context<'_>) -> Result<(), BotError> {
         .color(0x5865f2)
         .title("Example Bot Commands")
         .description(
-            "You can also @mention me to chat, ask questions, search the web, or control music in plain English.",
+            "@mention me to chat, search the web, play music, trade stocks, or start games — all in plain English.",
         );
 
     let music_lines = [
@@ -43,7 +46,8 @@ pub async fn help(ctx: Context<'_>) -> Result<(), BotError> {
     let game_lines = [
         "`!m connections` — Play today's NYT Connections",
         "`!m connections random` — Random puzzle",
-        "`!m connections date <YYYY-MM-DD>` — Specific date",
+        "`!m wordle` — Play today's Wordle",
+        "`!m wordle random` — Random Wordle",
     ];
     embed = embed.field("Games", game_lines.join("\n"), false);
 
@@ -82,9 +86,11 @@ pub async fn help(ctx: Context<'_>) -> Result<(), BotError> {
 
     embed = embed.field(
         "Shortcuts",
-        "`p` play · `pl` playlist · `s` skip · `r` resume · `q` queue · `np` now playing · `l` loop · `st` stocks · `conn` connections · `h` help",
+        "`p` play · `pl` playlist · `s` skip · `r` resume · `q` queue · `np` now playing · `l` loop · `st` stocks · `conn` connections · `w` wordle · `h` help",
         false,
     );
+
+    embed = embed.footer(CreateEmbedFooter::new(format!("Example Bot v{VERSION}")));
 
     ctx.send(poise::CreateReply::default().embed(embed)).await?;
     Ok(())

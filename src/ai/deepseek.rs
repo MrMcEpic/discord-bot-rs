@@ -10,13 +10,16 @@ use super::dsml::parse_dsml;
 use super::sanitize::sanitize_content;
 use super::search::web_search;
 use super::split::split_response;
-use super::tools::{is_connections_tool, is_moderation_tool, is_search_tool, is_stock_tool, tool_definitions};
+use super::tools::{is_connections_tool, is_moderation_tool, is_search_tool, is_stock_tool, is_wordle_tool, tool_definitions};
 use crate::db::queries::{
     self, create_tempban, get_guild_settings, mark_unbanned,
 };
 use crate::connections::api as conn_api;
 use crate::connections::embeds as conn_embeds;
 use crate::connections::game::ConnectionsGame;
+use crate::wordle::api as wordle_api;
+use crate::wordle::embeds as wordle_embeds;
+use crate::wordle::game::WordleGame;
 use crate::stocks::api as stock_api;
 use crate::stocks::embeds as stock_embeds;
 use crate::music::embeds::{music_controls, now_playing_embed, queue_embed};
@@ -1401,6 +1404,57 @@ async fn execute_connections_tool(
     );
 }
 
+async fn execute_wordle_tool(
+    ctx: &serenity::client::Context,
+    message: &Message,
+    data: &Data,
+    args: &serde_json::Value,
+) {
+    let mode = args["mode"].as_str().unwrap_or("today");
+    let date = match mode {
+        "random" => wordle_api::random_puzzle_date(),
+        _ => wordle_api::today_puzzle_date(),
+    };
+
+    let puzzle = match wordle_api::fetch_puzzle(&data.http_client, &date).await {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = message.reply(&ctx.http, e).await;
+            return;
+        }
+    };
+
+    let mut game = WordleGame::new(
+        puzzle.solution,
+        puzzle.date,
+        MessageId::new(1),
+        message.channel_id,
+    );
+
+    let embed = wordle_embeds::game_embed(&game);
+
+    let msg = match message
+        .channel_id
+        .send_message(
+            &ctx.http,
+            CreateMessage::new().embed(embed).reference_message(message),
+        )
+        .await
+    {
+        Ok(m) => m,
+        Err(e) => {
+            let _ = message.reply(&ctx.http, format!("Failed to start Wordle: {e}")).await;
+            return;
+        }
+    };
+
+    game.message_id = msg.id;
+    data.wordle_games.insert(
+        message.channel_id,
+        std::sync::Arc::new(tokio::sync::Mutex::new(game)),
+    );
+}
+
 async fn send_audit_log(
     ctx: &serenity::client::Context,
     data: &Data,
@@ -1878,6 +1932,8 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
             execute_stock_tool(ctx, message, data, &tool.name, &args).await;
         } else if is_connections_tool(&tool.name) {
             execute_connections_tool(ctx, message, data, &args).await;
+        } else if is_wordle_tool(&tool.name) {
+            execute_wordle_tool(ctx, message, data, &args).await;
         } else {
             execute_music_tool(ctx, message, data, &tool.name, &args).await;
         }
