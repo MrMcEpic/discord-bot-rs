@@ -27,3 +27,7 @@ symphonia = { version = "0.5.2", default-features = false, features = ["mkv", "o
 urlencoding = "2.1.3"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
 base64 = "0.22"
+
+[features]
+default = []
+minecraft = []

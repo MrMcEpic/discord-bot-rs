@@ -9,6 +9,8 @@ mod music;
 mod stocks;
 mod util;
 mod wordle;
+#[cfg(feature = "minecraft")]
+mod minecraft;
 
 use connections::game::ConnectionsGame;
 use wordle::game::WordleGame;
@@ -121,7 +123,15 @@ async fn main() {
                 mention_as_prefix: false,
                 ..Default::default()
             },
-            commands: vec![commands::m()],
+            commands: {
+                #[allow(unused_mut)]
+                let mut m_cmd = commands::m();
+                #[cfg(feature = "minecraft")]
+                {
+                    m_cmd.subcommands.push(commands::minecraft::verify());
+                }
+                vec![m_cmd]
+            },
             event_handler: |ctx, event, framework, data| {
                 Box::pin(events::event_handler(ctx, event, framework, data))
             },

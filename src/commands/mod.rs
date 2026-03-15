@@ -5,6 +5,8 @@ pub mod moderation;
 pub mod music;
 pub mod stocks;
 pub mod wordle;
+#[cfg(feature = "minecraft")]
+pub mod minecraft;
 
 use crate::error::BotError;
 use crate::Data;
