@@ -44,6 +44,7 @@ pub struct Data {
     pub wordle_games: Arc<DashMap<ChannelId, Arc<Mutex<WordleGame>>>>,
     pub config: Config,
     pub personality: String,
+    pub bot_name: String,
     /// When this bot instance started — bot messages before this are from a previous instance.
     pub started_at: chrono::DateTime<chrono::Utc>,
 }
@@ -114,6 +115,11 @@ async fn main() {
         | GatewayIntents::GUILD_VOICE_STATES
         | GatewayIntents::GUILD_MEMBERS;
 
+    let config_dir = instance_config::InstanceConfig::config_dir();
+    let instance_cfg = instance_config::InstanceConfig::load(&config_dir);
+    let personality = instance_cfg.load_personality(&config_dir);
+    tracing::info!("Instance config loaded: {} (prefix: {})", instance_cfg.bot_name, instance_cfg.command_prefix);
+
     let token = config.token.clone();
 
     let db_clone = db.clone();
@@ -121,7 +127,7 @@ async fn main() {
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
             prefix_options: poise::PrefixFrameworkOptions {
-                prefix: Some("!".to_string()),
+                prefix: Some(instance_cfg.command_prefix.clone()),
                 mention_as_prefix: false,
                 ..Default::default()
             },
@@ -154,9 +160,6 @@ async fn main() {
         })
         .setup(move |_ctx, _ready, _framework| {
             Box::pin(async move {
-                let config_dir = instance_config::InstanceConfig::config_dir();
-                let instance_cfg = instance_config::InstanceConfig::load(&config_dir);
-                let personality = instance_cfg.load_personality(&config_dir);
                 Ok(Data {
                     db,
                     http_client,
@@ -169,6 +172,7 @@ async fn main() {
                     wordle_games: Arc::new(DashMap::new()),
                     config,
                     personality,
+                    bot_name: instance_cfg.bot_name.clone(),
                     started_at: chrono::Utc::now(),
                 })
             })
