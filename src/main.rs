@@ -10,7 +10,6 @@ mod stocks;
 mod util;
 mod wordle;
 mod instance_config;
-#[cfg(feature = "minecraft")]
 mod minecraft;
 
 use connections::game::ConnectionsGame;
@@ -132,11 +131,10 @@ async fn main() {
                 ..Default::default()
             },
             commands: {
-                #[allow(unused_mut)]
                 let mut m_cmd = commands::m();
-                #[cfg(feature = "minecraft")]
-                {
+                if instance_cfg.features.minecraft {
                     m_cmd.subcommands.push(commands::minecraft::verify());
+                    tracing::info!("Minecraft verification module enabled");
                 }
                 vec![m_cmd]
             },

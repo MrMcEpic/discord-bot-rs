@@ -7,9 +7,7 @@ pub struct Config {
     pub deepseek_api_key: Option<String>,
     pub gemini_api_key: Option<String>,
     pub finnhub_api_key: Option<String>,
-    #[cfg(feature = "minecraft")]
     pub mc_verify_url: Option<String>,
-    #[cfg(feature = "minecraft")]
     pub mc_verify_secret: Option<String>,
     pub database_url: String,
 }
@@ -25,9 +23,7 @@ impl Config {
             deepseek_api_key: env::var("DEEPSEEK_API_KEY").ok().filter(|s| !s.is_empty()),
             gemini_api_key: env::var("GEMINI_API_KEY").ok().filter(|s| !s.is_empty()),
             finnhub_api_key: env::var("FINNHUB_API_KEY").ok().filter(|s| !s.is_empty()),
-            #[cfg(feature = "minecraft")]
             mc_verify_url: env::var("MC_VERIFY_URL").ok().filter(|s| !s.is_empty()),
-            #[cfg(feature = "minecraft")]
             mc_verify_secret: env::var("MC_VERIFY_SECRET").ok().filter(|s| !s.is_empty()),
             database_url: env::var("DATABASE_URL").unwrap_or_else(|_| {
                 "postgresql://discord_bot:discord_bot_pass@localhost:5432/discord_bot".to_string()

@@ -29,6 +29,3 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 base64 = "0.22"
 toml = "0.8"
 
-[features]
-default = []
-minecraft = []
