@@ -73,9 +73,16 @@ pub async fn help(ctx: Context<'_>) -> Result<(), BotError> {
     ];
     embed = embed.field("Stocks", stock_lines.join("\n"), false);
 
+    let game_lines = [
+        "`!m connections` — Play today's NYT Connections",
+        "`!m connections random` — Random puzzle",
+        "`!m connections date <YYYY-MM-DD>` — Specific date",
+    ];
+    embed = embed.field("Games", game_lines.join("\n"), false);
+
     embed = embed.field(
         "Shortcuts",
-        "`p` play · `pl` playlist · `s` skip · `r` resume · `q` queue · `np` now playing · `l` loop · `st` stocks · `h` help",
+        "`p` play · `pl` playlist · `s` skip · `r` resume · `q` queue · `np` now playing · `l` loop · `st` stocks · `conn` connections · `h` help",
         false,
     );
 

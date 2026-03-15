@@ -1,4 +1,5 @@
 pub mod admin;
+pub mod connections;
 pub mod help;
 pub mod moderation;
 pub mod music;
@@ -30,6 +31,7 @@ use crate::Data;
         "admin::djrole",
         "admin::djmode",
         "stocks::stock",
+        "connections::connections",
         "help::help",
     )
 )]

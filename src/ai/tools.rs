@@ -220,6 +220,19 @@ pub fn tool_definitions() -> Vec<Value> {
                 "parameters": { "type": "object", "properties": {} }
             }
         }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "connections_start",
+                "description": "Start a NYT Connections puzzle game in the current channel. Players work together to find groups of 4 related words.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "mode": { "type": "string", "enum": ["today", "random"], "description": "today = today's puzzle, random = random historical puzzle" }
+                    }
+                }
+            }
+        }),
     ]
 }
 
@@ -236,4 +249,8 @@ pub fn is_stock_tool(name: &str) -> bool {
         name,
         "stock_buy" | "stock_sell" | "stock_price" | "stock_portfolio" | "stock_leaderboard"
     )
+}
+
+pub fn is_connections_tool(name: &str) -> bool {
+    name == "connections_start"
 }

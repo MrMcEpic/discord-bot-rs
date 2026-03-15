@@ -1,6 +1,7 @@
 mod ai;
 mod commands;
 mod config;
+mod connections;
 mod db;
 mod error;
 mod events;
@@ -8,6 +9,7 @@ mod music;
 mod stocks;
 mod util;
 
+use connections::game::ConnectionsGame;
 use dashmap::DashMap;
 use music::player::GuildPlayer;
 use music::voice::PlaybackContext;
@@ -33,6 +35,7 @@ pub struct Data {
     /// Per-guild idle timer handles, used to cancel idle-leave when a new track starts.
     pub idle_timers: IdleTimerMap,
     pub rate_limiters: RateLimiters,
+    pub connections_games: Arc<DashMap<ChannelId, Arc<Mutex<ConnectionsGame>>>>,
     pub config: Config,
     /// When this bot instance started — bot messages before this are from a previous instance.
     pub started_at: chrono::DateTime<chrono::Utc>,
@@ -144,6 +147,7 @@ async fn main() {
                     now_playing_msgs: Arc::new(DashMap::new()),
                     idle_timers: Arc::new(DashMap::new()),
                     rate_limiters,
+                    connections_games: Arc::new(DashMap::new()),
                     config,
                     started_at: chrono::Utc::now(),
                 })

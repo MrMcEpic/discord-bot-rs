@@ -4,6 +4,8 @@ pub mod voice_state;
 use serenity::all::*;
 
 use crate::ai::deepseek::handle_mention;
+use crate::connections::embeds as conn_embeds;
+use crate::connections::game::GuessResult;
 use crate::db::queries::get_guild_settings;
 use crate::music::embeds::{music_controls, now_playing_embed, queue_embed, status_footer};
 use crate::music::voice;
@@ -71,6 +73,11 @@ async fn handle_component_interaction(
     data: &Data,
 ) {
     let custom_id = &interaction.data.custom_id;
+
+    if custom_id.starts_with("game_") {
+        handle_game_interaction(ctx, interaction, data).await;
+        return;
+    }
 
     if !custom_id.starts_with("music_") {
         return;
@@ -395,5 +402,148 @@ async fn handle_component_interaction(
                 .await;
         }
         _ => {}
+    }
+}
+
+async fn handle_game_interaction(
+    ctx: &Context,
+    interaction: &ComponentInteraction,
+    data: &Data,
+) {
+    let channel_id = interaction.channel_id;
+    let custom_id = &interaction.data.custom_id;
+
+    let game_arc = match data.connections_games.get(&channel_id) {
+        Some(entry) => entry.value().clone(),
+        None => {
+            let _ = interaction
+                .create_response(
+                    &ctx.http,
+                    CreateInteractionResponse::Message(
+                        CreateInteractionResponseMessage::new()
+                            .content("No active game in this channel. Start one with `!m connections`.")
+                            .ephemeral(true),
+                    ),
+                )
+                .await;
+            return;
+        }
+    };
+
+    let mut game = game_arc.lock().await;
+
+    // Check expiration
+    if game.is_expired() {
+        drop(game);
+        data.connections_games.remove(&channel_id);
+        let _ = interaction
+            .create_response(
+                &ctx.http,
+                CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .content("Game expired due to inactivity. Start a new one with `!m connections`.")
+                        .ephemeral(true),
+                ),
+            )
+            .await;
+        return;
+    }
+
+    // Check if game is already over
+    if game.is_over() {
+        let _ = interaction
+            .create_response(
+                &ctx.http,
+                CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .content("This game is already over. Start a new one with `!m connections`.")
+                        .ephemeral(true),
+                ),
+            )
+            .await;
+        return;
+    }
+
+    match custom_id.as_str() {
+        id if id.starts_with("game_word_") => {
+            if let Ok(index) = id.strip_prefix("game_word_").unwrap().parse::<usize>() {
+                game.toggle_select(index);
+                game.status_message = None;
+            }
+        }
+        "game_shuffle" => {
+            game.shuffle_board();
+        }
+        "game_deselect" => {
+            game.deselect_all();
+        }
+        "game_submit" => {
+            if game.selected.len() != 4 {
+                let _ = interaction
+                    .create_response(
+                        &ctx.http,
+                        CreateInteractionResponse::Message(
+                            CreateInteractionResponseMessage::new()
+                                .content("Select exactly 4 words before submitting.")
+                                .ephemeral(true),
+                        ),
+                    )
+                    .await;
+                return;
+            }
+
+            let user_mention = format!("<@{}>", interaction.user.id);
+            match game.submit_guess() {
+                GuessResult::Correct { category_index } => {
+                    let cat = &game.categories[category_index];
+                    let emoji = crate::connections::game::ConnectionsGame::difficulty_emoji(cat.difficulty);
+                    game.status_message = Some(format!(
+                        "{emoji} **{}** solved by {}!",
+                        cat.title, user_mention
+                    ));
+                }
+                GuessResult::OneAway => {
+                    game.status_message = Some(format!(
+                        "❌ One away! (guessed by {}) — {} mistakes remaining",
+                        user_mention, game.mistakes_remaining
+                    ));
+                }
+                GuessResult::Wrong => {
+                    game.status_message = Some(format!(
+                        "❌ Wrong! (guessed by {}) — {} mistakes remaining",
+                        user_mention, game.mistakes_remaining
+                    ));
+                }
+                GuessResult::AlreadyGuessed => {
+                    game.status_message = Some("Already guessed this combination.".to_string());
+                }
+            }
+        }
+        _ => return,
+    }
+
+    // Build updated embed + buttons
+    let (embed, buttons) = if game.is_over() {
+        let won = game.is_won();
+        (conn_embeds::game_over_embed(&game, won), vec![])
+    } else {
+        (conn_embeds::game_embed(&game), conn_embeds::game_buttons(&game))
+    };
+
+    let _ = interaction
+        .create_response(
+            &ctx.http,
+            CreateInteractionResponse::UpdateMessage(
+                CreateInteractionResponseMessage::new()
+                    .embed(embed)
+                    .components(buttons),
+            ),
+        )
+        .await;
+
+    // Clean up finished games
+    if game.is_over() {
+        drop(game);
+        data.connections_games.remove(&channel_id);
     }
 }
