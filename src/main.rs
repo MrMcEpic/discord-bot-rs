@@ -43,6 +43,7 @@ pub struct Data {
     pub connections_games: Arc<DashMap<ChannelId, Arc<Mutex<ConnectionsGame>>>>,
     pub wordle_games: Arc<DashMap<ChannelId, Arc<Mutex<WordleGame>>>>,
     pub config: Config,
+    pub personality: String,
     /// When this bot instance started — bot messages before this are from a previous instance.
     pub started_at: chrono::DateTime<chrono::Utc>,
 }
@@ -153,6 +154,9 @@ async fn main() {
         })
         .setup(move |_ctx, _ready, _framework| {
             Box::pin(async move {
+                let config_dir = instance_config::InstanceConfig::config_dir();
+                let instance_cfg = instance_config::InstanceConfig::load(&config_dir);
+                let personality = instance_cfg.load_personality(&config_dir);
                 Ok(Data {
                     db,
                     http_client,
@@ -164,6 +168,7 @@ async fn main() {
                     connections_games: Arc::new(DashMap::new()),
                     wordle_games: Arc::new(DashMap::new()),
                     config,
+                    personality,
                     started_at: chrono::Utc::now(),
                 })
             })

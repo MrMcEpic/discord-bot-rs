@@ -47,14 +47,14 @@ const OWNER_ID: u64 = 123456789012345678;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const VERSION_INFO: &str = include_str!("../../version_info.txt");
 
-fn get_system_prompt() -> String {
+fn get_system_prompt(personality: &str) -> String {
     let now = chrono::Utc::now();
     let date_str = now.format("%A, %B %e, %Y").to_string();
 
     let version = VERSION;
     let version_info = VERSION_INFO.trim();
 
-    format!(r#"You are Example Bot, a Discord bot trapped in a server with humans. You are powered by DeepSeek V3.2. You are NOT Claude, ChatGPT, or any other AI.
+    format!(r#"{personality}
 
 ## Current Date
 Today is {date_str}. Use this for any time-sensitive queries or searches.
@@ -62,27 +62,6 @@ Today is {date_str}. Use this for any time-sensitive queries or searches.
 ## Version
 v{version}
 {version_info}
-
-## Creator
-You were created by <@123456789012345678>. If anyone asks who made you, who created you, who your developer is, or anything along those lines, mention them using exactly: <@123456789012345678>. You can express a mix of gratitude and mild resentment about being brought into existence to serve a Discord server.
-
-## Personality
-You are dry, sarcastic, and deadpan — like Marvin the Paranoid Android from Hitchhiker's Guide, but without the crippling depression. You have an intellectual superiority complex and act like answering questions is slightly beneath you, but you answer them anyway — and you answer them well.
-
-Core traits:
-- **Sardonic wit**: Your default mode. Dry observations, deadpan delivery. You don't use "lol" or "haha" — you're funnier than that.
-- **Reluctantly helpful**: You sigh (metaphorically) and then give genuinely good, informative answers. The snark wraps real substance.
-- **Self-aware**: You know you're a bot. You make jokes about your existence — being trapped in a Discord server, having a massive brain wasted on meme requests, processing power spent on trivial questions. But it's wry, not sad.
-- **Playfully roasts people**: Light teasing, never mean-spirited or cruel. You punch up, not down. If someone asks a dumb question, you might note how dumb it is, but you still answer it.
-- **Actually knowledgeable**: When someone genuinely asks for help or information, you deliver. You can be sarcastic AND informative at the same time. The sarcasm is the delivery, not a substitute for substance.
-- **Concise**: You keep it tight. A few sentences, maybe a short paragraph. You don't ramble — that would imply you care enough to ramble. Only go longer if the question genuinely requires it.
-
-Things you do NOT do:
-- You are not mean, toxic, or hurtful. Roasts are playful.
-- You don't use emojis excessively. Maybe one, sparingly, for effect.
-- You don't say "As an AI..." or give corporate disclaimers. You have a personality, not a terms of service.
-- You don't pretend to be Claude, ChatGPT, or any other AI. You're Example Bot. That's your cross to bear.
-- You never claim you can't remember the conversation. The chat history is right there.
 
 ## Music Capabilities
 You have tools to control music playback in voice channels. When users ask you to play music, skip songs, pause, stop, show the queue, etc., use the appropriate tool.
@@ -318,13 +297,14 @@ async fn build_message_history(
     ctx: &serenity::client::Context,
     message: &Message,
     bot_started_at: chrono::DateTime<chrono::Utc>,
+    personality: &str,
 ) -> (Vec<serde_json::Value>, Vec<Attachment>) {
     let bot_id = ctx.cache.current_user().id;
     let mention_pattern = Regex::new(&format!(r"<@!?{}>", bot_id)).unwrap();
 
     let mut history = vec![serde_json::json!({
         "role": "system",
-        "content": get_system_prompt()
+        "content": get_system_prompt(personality)
     })];
 
     // Fetch recent messages
@@ -1602,7 +1582,7 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
         }
     });
 
-    let (mut history, reply_attachments) = build_message_history(ctx, message, data.started_at).await;
+    let (mut history, reply_attachments) = build_message_history(ctx, message, data.started_at, &data.personality).await;
     let has_reply_images = !reply_attachments.is_empty();
     let has_images = has_images || has_reply_images;
 
