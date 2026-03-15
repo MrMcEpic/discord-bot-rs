@@ -1,0 +1,5 @@
+target/
+.git/
+instances/*/.env
+docs/
+*.md

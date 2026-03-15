@@ -1,0 +1,34 @@
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: discord_bot
+      POSTGRES_PASSWORD: discord_bot_pass
+      POSTGRES_DB: discord_bot
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U discord_bot"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  examplebot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: instances/examplebot/.env
+    environment:
+      CONFIG_DIR: /config
+    volumes:
+      - ./instances/examplebot:/config:ro
+    tmpfs:
+      - /tmp:size=500M
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
