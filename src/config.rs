@@ -9,6 +9,7 @@ pub struct Config {
     pub finnhub_api_key: Option<String>,
     pub mc_verify_url: Option<String>,
     pub mc_verify_secret: Option<String>,
+    pub db_schema: String,
     pub database_url: String,
 }
 
@@ -25,6 +26,7 @@ impl Config {
             finnhub_api_key: env::var("FINNHUB_API_KEY").ok().filter(|s| !s.is_empty()),
             mc_verify_url: env::var("MC_VERIFY_URL").ok().filter(|s| !s.is_empty()),
             mc_verify_secret: env::var("MC_VERIFY_SECRET").ok().filter(|s| !s.is_empty()),
+            db_schema: env::var("DB_SCHEMA").unwrap_or_else(|_| "public".to_string()),
             database_url: env::var("DATABASE_URL").unwrap_or_else(|_| {
                 "postgresql://discord_bot:discord_bot_pass@localhost:5432/discord_bot".to_string()
             }),

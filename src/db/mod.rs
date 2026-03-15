@@ -1,12 +1,32 @@
 pub mod models;
 pub mod queries;
 
-use sqlx::PgPool;
+use sqlx::postgres::PgPoolOptions;
+use sqlx::{Connection, Executor, PgPool};
 
-pub async fn init_pool(database_url: &str) -> Result<PgPool, sqlx::Error> {
-    let pool = PgPool::connect(database_url).await?;
+pub async fn init_pool(database_url: &str, schema: &str) -> Result<PgPool, sqlx::Error> {
+    // Create schema on a one-off connection
+    let mut conn = sqlx::postgres::PgConnection::connect(database_url).await?;
+    conn.execute(format!("CREATE SCHEMA IF NOT EXISTS \"{}\"", schema).as_str()).await?;
+    drop(conn);
+
+    // Build pool with after_connect that sets search_path on every new connection
+    let schema_owned = schema.to_string();
+    let pool = PgPoolOptions::new()
+        .after_connect(move |conn, _meta| {
+            let schema = schema_owned.clone();
+            Box::pin(async move {
+                conn.execute(
+                    format!("SET search_path TO \"{}\"", schema).as_str()
+                ).await?;
+                Ok(())
+            })
+        })
+        .connect(database_url)
+        .await?;
+
     migrate(&pool).await?;
-    tracing::info!("Database initialized.");
+    tracing::info!("Database initialized (schema: {}).", schema);
     Ok(pool)
 }
 
@@ -27,8 +47,7 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
     .await?;
 
     sqlx::query(
-        "CREATE INDEX IF NOT EXISTS idx_tempbans_active \
-         ON tempbans (guild_id, expires_at) WHERE unbanned = FALSE",
+        "CREATE INDEX IF NOT EXISTS idx_tempbans_active          ON tempbans (guild_id, expires_at) WHERE unbanned = FALSE",
     )
     .execute(pool)
     .await?;
@@ -72,8 +91,7 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
     .await?;
 
     sqlx::query(
-        "CREATE INDEX IF NOT EXISTS idx_stock_holdings_user \
-         ON stock_holdings (guild_id, user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_stock_holdings_user          ON stock_holdings (guild_id, user_id)",
     )
     .execute(pool)
     .await?;
@@ -95,8 +113,7 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
     .await?;
 
     sqlx::query(
-        "CREATE INDEX IF NOT EXISTS idx_stock_transactions_user \
-         ON stock_transactions (guild_id, user_id, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_stock_transactions_user          ON stock_transactions (guild_id, user_id, created_at DESC)",
     )
     .execute(pool)
     .await?;

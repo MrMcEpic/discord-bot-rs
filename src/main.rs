@@ -98,7 +98,7 @@ async fn main() {
     let config = Config::load();
     tracing::info!("Config loaded. Client ID: {}", config.client_id);
 
-    let db = db::init_pool(&config.database_url)
+    let db = db::init_pool(&config.database_url, &config.db_schema)
         .await
         .expect("Failed to connect to database");
 
