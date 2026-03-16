@@ -56,5 +56,22 @@ services:
       timeout: 5s
       retries: 12
 
+  mcp-gateway:
+    build:
+      context: ./mcp-gateway
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9100:9100"
+    environment:
+      GATEWAY_PORT: "9100"
+      INSTANCES: "examplebot=http://examplebot:9090,secondbot=http://secondbot:9090"
+      MCP_AUTH_TOKEN: "${MCP_GATEWAY_AUTH_TOKEN:-}"
+    depends_on:
+      examplebot:
+        condition: service_healthy
+      secondbot:
+        condition: service_healthy
+
 volumes:
   pgdata:
