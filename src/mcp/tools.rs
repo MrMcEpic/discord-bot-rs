@@ -37,6 +37,8 @@ macro_rules! discord_call {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CreateChannelParams {
+    /// Guild/server ID (optional, defaults to configured guild)
+    pub guild_id: Option<String>,
     pub name: String,
     /// text, voice, category, forum, or stage
     #[serde(default = "default_text")]
@@ -49,11 +51,15 @@ fn default_text() -> String { "text".to_string() }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ChannelIdParam {
+    /// Guild/server ID (optional, defaults to configured guild)
+    pub guild_id: Option<String>,
     pub channel_id: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct EditChannelParams {
+    /// Guild/server ID (optional, defaults to configured guild)
+    pub guild_id: Option<String>,
     pub channel_id: String,
     pub name: Option<String>,
     pub topic: Option<String>,
@@ -64,6 +70,8 @@ pub struct EditChannelParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct MoveChannelParams {
+    /// Guild/server ID (optional, defaults to configured guild)
+    pub guild_id: Option<String>,
     pub channel_id: String,
     pub position: u16,
     pub category_id: Option<String>,
@@ -71,6 +79,8 @@ pub struct MoveChannelParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SetChannelPermsParams {
+    /// Guild/server ID (optional, defaults to configured guild)
+    pub guild_id: Option<String>,
     pub channel_id: String,
     /// "role" or "member"
     pub target_type: String,
@@ -83,6 +93,8 @@ pub struct SetChannelPermsParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CreateRoleParams {
+    /// Guild/server ID (optional, defaults to configured guild)
+    pub guild_id: Option<String>,
     pub name: String,
     pub color: Option<u32>,
     pub permissions: Option<String>,
@@ -92,11 +104,15 @@ pub struct CreateRoleParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RoleIdParam {
+    /// Guild/server ID (optional, defaults to configured guild)
+    pub guild_id: Option<String>,
     pub role_id: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct EditRoleParams {
+    /// Guild/server ID (optional, defaults to configured guild)
+    pub guild_id: Option<String>,
     pub role_id: String,
     pub name: Option<String>,
     pub color: Option<u32>,
@@ -107,6 +123,8 @@ pub struct EditRoleParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListMembersParams {
+    /// Guild/server ID (optional, defaults to configured guild)
+    pub guild_id: Option<String>,
     /// Max members (1-1000, default 100)
     pub limit: Option<u64>,
     /// User ID to paginate after
@@ -115,17 +133,23 @@ pub struct ListMembersParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct UserIdParam {
+    /// Guild/server ID (optional, defaults to configured guild)
+    pub guild_id: Option<String>,
     pub user_id: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct UserRoleParams {
+    /// Guild/server ID (optional, defaults to configured guild)
+    pub guild_id: Option<String>,
     pub user_id: String,
     pub role_id: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct BanParams {
+    /// Guild/server ID (optional, defaults to configured guild)
+    pub guild_id: Option<String>,
     pub user_id: String,
     pub reason: Option<String>,
     /// Days of messages to delete (0-7)
@@ -134,12 +158,16 @@ pub struct BanParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct KickParams {
+    /// Guild/server ID (optional, defaults to configured guild)
+    pub guild_id: Option<String>,
     pub user_id: String,
     pub reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TimeoutParams {
+    /// Guild/server ID (optional, defaults to configured guild)
+    pub guild_id: Option<String>,
     pub user_id: String,
     /// e.g. "1h", "30m", "7d"
     pub duration: String,
@@ -148,15 +176,25 @@ pub struct TimeoutParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SendMessageParams {
+    /// Guild/server ID (optional, defaults to configured guild)
+    pub guild_id: Option<String>,
     pub channel_id: String,
     pub content: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DeleteMessagesParams {
+    /// Guild/server ID (optional, defaults to configured guild)
+    pub guild_id: Option<String>,
     pub channel_id: String,
     /// Number of recent messages (1-100)
     pub count: u8,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct OptionalGuildParam {
+    /// Guild/server ID (optional, defaults to configured guild)
+    pub guild_id: Option<String>,
 }
 
 // --- Helpers ---
@@ -188,6 +226,16 @@ fn parse_duration_secs(s: &str) -> Result<i64, McpError> {
 }
 
 // --- Tools ---
+
+impl DiscordTools {
+    fn resolve_guild(&self, guild_id: Option<&str>) -> Result<GuildId, McpError> {
+        match guild_id.filter(|s| !s.is_empty()) {
+            Some(id) => Ok(GuildId::new(parse_id(id)?)),
+            None => Ok(self.guild_id),
+        }
+    }
+}
+
 
 impl ServerHandler for DiscordTools {
     fn get_info(&self) -> ServerInfo {
@@ -225,13 +273,25 @@ impl DiscordTools {
         }
     }
 
+    // ===== GUILDS =====
+
+    #[tool(description = "List all Discord servers (guilds) this bot is connected to")]
+    async fn list_guilds(&self) -> Result<CallToolResult, McpError> {
+        let guilds = discord_call!(self.http.get_guilds(None, None));
+        let lines: Vec<String> = guilds.iter().map(|g| {
+            format!("{} | ID: {}", g.name, g.id)
+        }).collect();
+        Ok(CallToolResult::success(vec![Content::text(format!("{} server(s):\n{}", lines.len(), lines.join("\n")))]))
+    }
+
     // ===== SERVER =====
 
-    #[tool(description = "Get info about the Discord server")]
-    async fn get_guild_info(&self) -> Result<CallToolResult, McpError> {
-        let guild = discord_call!(self.http.get_guild(self.guild_id));
-        let channels = discord_call!(self.http.get_channels(self.guild_id));
-        let roles = discord_call!(self.http.get_guild_roles(self.guild_id));
+    #[tool(description = "Get info about a Discord server")]
+    async fn get_guild_info(&self, params: Parameters<OptionalGuildParam>) -> Result<CallToolResult, McpError> {
+        let gid = self.resolve_guild(params.0.guild_id.as_deref())?;
+        let guild = discord_call!(self.http.get_guild(gid));
+        let channels = discord_call!(self.http.get_channels(gid));
+        let roles = discord_call!(self.http.get_guild_roles(gid));
         let text = format!(
             "Server: {}\nID: {}\nOwner: <@{}>\nApprox Members: {}\nChannels: {}\nRoles: {}",
             guild.name, guild.id, guild.owner_id,
@@ -244,6 +304,7 @@ impl DiscordTools {
     #[tool(description = "Send a message to a channel. PRIVILEGED — recommend manual approval.")]
     async fn send_message(&self, params: Parameters<SendMessageParams>) -> Result<CallToolResult, McpError> {
         let p = params.0;
+        let gid = self.resolve_guild(p.guild_id.as_deref())?;
         let channel_id = ChannelId::new(parse_id(&p.channel_id)?);
         let map = serde_json::json!({ "content": p.content });
         let msg = discord_call!(self.http.send_message(channel_id, vec![], &map));
@@ -253,6 +314,7 @@ impl DiscordTools {
     #[tool(description = "Delete recent messages from a channel (bulk delete, 1-100)")]
     async fn delete_messages(&self, params: Parameters<DeleteMessagesParams>) -> Result<CallToolResult, McpError> {
         let p = params.0;
+        let gid = self.resolve_guild(p.guild_id.as_deref())?;
         let channel_id = ChannelId::new(parse_id(&p.channel_id)?);
         let count = p.count.min(100).max(1);
         let messages = discord_call!(
@@ -270,8 +332,9 @@ impl DiscordTools {
     // ===== CHANNELS =====
 
     #[tool(description = "List all channels in the server with IDs, types, and positions")]
-    async fn list_channels(&self) -> Result<CallToolResult, McpError> {
-        let channels = discord_call!(self.http.get_channels(self.guild_id));
+    async fn list_channels(&self, params: Parameters<OptionalGuildParam>) -> Result<CallToolResult, McpError> {
+        let gid = self.resolve_guild(params.0.guild_id.as_deref())?;
+        let channels = discord_call!(self.http.get_channels(gid));
         let mut lines: Vec<String> = channels.iter().map(|ch| {
             let parent = ch.parent_id.map(|p| format!(" (in {})", p)).unwrap_or_default();
             format!("#{} | ID: {} | {:?} | pos: {}{}", ch.name, ch.id, ch.kind, ch.position, parent)
@@ -283,6 +346,7 @@ impl DiscordTools {
     #[tool(description = "Create a new channel (text, voice, category, forum, or stage)")]
     async fn create_channel(&self, params: Parameters<CreateChannelParams>) -> Result<CallToolResult, McpError> {
         let p = params.0;
+        let gid = self.resolve_guild(p.guild_id.as_deref())?;
         let mut map = serde_json::json!({
             "name": p.name,
             "type": channel_type_num(&p.channel_type),
@@ -296,7 +360,7 @@ impl DiscordTools {
         if let Some(nsfw) = p.nsfw {
             map["nsfw"] = serde_json::Value::Bool(nsfw);
         }
-        let ch = discord_call!(self.http.create_channel(self.guild_id, &map, None));
+        let ch = discord_call!(self.http.create_channel(gid, &map, None));
         Ok(CallToolResult::success(vec![Content::text(format!("Created #{} (ID: {})", ch.name, ch.id))]))
     }
 
@@ -310,6 +374,7 @@ impl DiscordTools {
     #[tool(description = "Edit a channel (name, topic, nsfw, slowmode, category)")]
     async fn edit_channel(&self, params: Parameters<EditChannelParams>) -> Result<CallToolResult, McpError> {
         let p = params.0;
+        let gid = self.resolve_guild(p.guild_id.as_deref())?;
         let channel_id = ChannelId::new(parse_id(&p.channel_id)?);
         let mut map = serde_json::Map::new();
         if let Some(name) = p.name { map.insert("name".into(), serde_json::json!(name)); }
@@ -324,16 +389,18 @@ impl DiscordTools {
     #[tool(description = "Move a channel to a new position or category")]
     async fn move_channel(&self, params: Parameters<MoveChannelParams>) -> Result<CallToolResult, McpError> {
         let p = params.0;
+        let gid = self.resolve_guild(p.guild_id.as_deref())?;
         let channel_id = parse_id(&p.channel_id)?;
         let mut obj = serde_json::json!({ "id": channel_id.to_string(), "position": p.position });
         if let Some(cat) = p.category_id { obj["parent_id"] = serde_json::json!(cat); }
-        discord_call!(self.http.edit_guild_channel_positions(self.guild_id, &serde_json::Value::Array(vec![obj])));
+        discord_call!(self.http.edit_guild_channel_positions(gid, &serde_json::Value::Array(vec![obj])));
         Ok(CallToolResult::success(vec![Content::text(format!("Channel moved to position {}", p.position))]))
     }
 
     #[tool(description = "Set permission overrides for a role or member on a channel")]
     async fn set_channel_permissions(&self, params: Parameters<SetChannelPermsParams>) -> Result<CallToolResult, McpError> {
         let p = params.0;
+        let gid = self.resolve_guild(p.guild_id.as_deref())?;
         let channel_id = ChannelId::new(parse_id(&p.channel_id)?);
         let target_id = parse_id(&p.target_id)?;
         let allow = p.allow.as_deref().unwrap_or("0").parse::<u64>().unwrap_or(0);
@@ -357,8 +424,9 @@ impl DiscordTools {
     // ===== ROLES =====
 
     #[tool(description = "List all roles with IDs, colors, positions, and permissions")]
-    async fn list_roles(&self) -> Result<CallToolResult, McpError> {
-        let roles = discord_call!(self.http.get_guild_roles(self.guild_id));
+    async fn list_roles(&self, params: Parameters<OptionalGuildParam>) -> Result<CallToolResult, McpError> {
+        let gid = self.resolve_guild(params.0.guild_id.as_deref())?;
+        let roles = discord_call!(self.http.get_guild_roles(gid));
         let lines: Vec<String> = roles.iter().map(|r| {
             format!("@{} | ID: {} | color: #{:06X} | pos: {} | perms: {} | hoist: {}",
                 r.name, r.id, r.colour.0, r.position, r.permissions.bits(), r.hoist)
@@ -369,25 +437,28 @@ impl DiscordTools {
     #[tool(description = "Create a new role")]
     async fn create_role(&self, params: Parameters<CreateRoleParams>) -> Result<CallToolResult, McpError> {
         let p = params.0;
+        let gid = self.resolve_guild(p.guild_id.as_deref())?;
         let mut map = serde_json::json!({ "name": p.name });
         if let Some(c) = p.color { map["color"] = serde_json::json!(c); }
         if let Some(ref perms) = p.permissions { map["permissions"] = serde_json::json!(perms); }
         if let Some(h) = p.hoist { map["hoist"] = serde_json::json!(h); }
         if let Some(m) = p.mentionable { map["mentionable"] = serde_json::json!(m); }
-        let role = discord_call!(self.http.create_role(self.guild_id, &map, None));
+        let role = discord_call!(self.http.create_role(gid, &map, None));
         Ok(CallToolResult::success(vec![Content::text(format!("Created @{} (ID: {})", role.name, role.id))]))
     }
 
     #[tool(description = "Delete a role")]
     async fn delete_role(&self, params: Parameters<RoleIdParam>) -> Result<CallToolResult, McpError> {
+        let gid = self.resolve_guild(params.0.guild_id.as_deref())?;
         let role_id = RoleId::new(parse_id(&params.0.role_id)?);
-        discord_call!(self.http.delete_role(self.guild_id, role_id, None));
+        discord_call!(self.http.delete_role(gid, role_id, None));
         Ok(CallToolResult::success(vec![Content::text("Role deleted")]))
     }
 
     #[tool(description = "Edit a role (name, color, permissions, hoist, mentionable)")]
     async fn edit_role(&self, params: Parameters<EditRoleParams>) -> Result<CallToolResult, McpError> {
         let p = params.0;
+        let gid = self.resolve_guild(p.guild_id.as_deref())?;
         let role_id = RoleId::new(parse_id(&p.role_id)?);
         let mut map = serde_json::Map::new();
         if let Some(name) = p.name { map.insert("name".into(), serde_json::json!(name)); }
@@ -395,7 +466,7 @@ impl DiscordTools {
         if let Some(perms) = p.permissions { map.insert("permissions".into(), serde_json::json!(perms)); }
         if let Some(h) = p.hoist { map.insert("hoist".into(), serde_json::json!(h)); }
         if let Some(m) = p.mentionable { map.insert("mentionable".into(), serde_json::json!(m)); }
-        discord_call!(self.http.edit_role(self.guild_id, role_id, &serde_json::Value::Object(map), None));
+        discord_call!(self.http.edit_role(gid, role_id, &serde_json::Value::Object(map), None));
         Ok(CallToolResult::success(vec![Content::text("Role updated")]))
     }
 
@@ -404,9 +475,10 @@ impl DiscordTools {
     #[tool(description = "List server members (max 1000 per call, use 'after' to paginate)")]
     async fn list_members(&self, params: Parameters<ListMembersParams>) -> Result<CallToolResult, McpError> {
         let p = params.0;
+        let gid = self.resolve_guild(p.guild_id.as_deref())?;
         let limit = p.limit.unwrap_or(100).min(1000);
         let after = p.after.as_deref().and_then(|s| s.parse::<u64>().ok());
-        let members = discord_call!(self.http.get_guild_members(self.guild_id, Some(limit), after));
+        let members = discord_call!(self.http.get_guild_members(gid, Some(limit), after));
         let lines: Vec<String> = members.iter().map(|m| {
             let roles: Vec<String> = m.roles.iter().map(|r| r.to_string()).collect();
             format!("{} (ID: {}) | roles: [{}]", m.display_name(), m.user.id, roles.join(", "))
@@ -416,8 +488,9 @@ impl DiscordTools {
 
     #[tool(description = "Get detailed info about a server member")]
     async fn get_member(&self, params: Parameters<UserIdParam>) -> Result<CallToolResult, McpError> {
+        let gid = self.resolve_guild(params.0.guild_id.as_deref())?;
         let user_id = UserId::new(parse_id(&params.0.user_id)?);
-        let m = discord_call!(self.http.get_member(self.guild_id, user_id));
+        let m = discord_call!(self.http.get_member(gid, user_id));
         let roles: Vec<String> = m.roles.iter().map(|r| r.to_string()).collect();
         let text = format!("User: {} (ID: {})\nDisplay: {}\nRoles: [{}]\nJoined: {:?}\nBot: {}",
             m.user.name, m.user.id, m.display_name(), roles.join(", "), m.joined_at, m.user.bot);
@@ -427,54 +500,60 @@ impl DiscordTools {
     #[tool(description = "Assign a role to a member")]
     async fn assign_role(&self, params: Parameters<UserRoleParams>) -> Result<CallToolResult, McpError> {
         let p = params.0;
+        let gid = self.resolve_guild(p.guild_id.as_deref())?;
         let user_id = UserId::new(parse_id(&p.user_id)?);
         let role_id = RoleId::new(parse_id(&p.role_id)?);
-        discord_call!(self.http.add_member_role(self.guild_id, user_id, role_id, None));
+        discord_call!(self.http.add_member_role(gid, user_id, role_id, None));
         Ok(CallToolResult::success(vec![Content::text("Role assigned")]))
     }
 
     #[tool(description = "Remove a role from a member")]
     async fn remove_role(&self, params: Parameters<UserRoleParams>) -> Result<CallToolResult, McpError> {
         let p = params.0;
+        let gid = self.resolve_guild(p.guild_id.as_deref())?;
         let user_id = UserId::new(parse_id(&p.user_id)?);
         let role_id = RoleId::new(parse_id(&p.role_id)?);
-        discord_call!(self.http.remove_member_role(self.guild_id, user_id, role_id, None));
+        discord_call!(self.http.remove_member_role(gid, user_id, role_id, None));
         Ok(CallToolResult::success(vec![Content::text("Role removed")]))
     }
 
     #[tool(description = "Ban a user from the server")]
     async fn ban_member(&self, params: Parameters<BanParams>) -> Result<CallToolResult, McpError> {
         let p = params.0;
+        let gid = self.resolve_guild(p.guild_id.as_deref())?;
         let user_id = UserId::new(parse_id(&p.user_id)?);
         let dmd = p.delete_message_days.unwrap_or(0).min(7);
-        discord_call!(self.http.ban_user(self.guild_id, user_id, dmd, p.reason.as_deref()));
+        discord_call!(self.http.ban_user(gid, user_id, dmd, p.reason.as_deref()));
         Ok(CallToolResult::success(vec![Content::text("User banned")]))
     }
 
     #[tool(description = "Unban a user")]
     async fn unban_member(&self, params: Parameters<UserIdParam>) -> Result<CallToolResult, McpError> {
+        let gid = self.resolve_guild(params.0.guild_id.as_deref())?;
         let user_id = UserId::new(parse_id(&params.0.user_id)?);
-        discord_call!(self.http.remove_ban(self.guild_id, user_id, None));
+        discord_call!(self.http.remove_ban(gid, user_id, None));
         Ok(CallToolResult::success(vec![Content::text("User unbanned")]))
     }
 
     #[tool(description = "Kick a member from the server")]
     async fn kick_member(&self, params: Parameters<KickParams>) -> Result<CallToolResult, McpError> {
         let p = params.0;
+        let gid = self.resolve_guild(p.guild_id.as_deref())?;
         let user_id = UserId::new(parse_id(&p.user_id)?);
-        discord_call!(self.http.kick_member(self.guild_id, user_id, p.reason.as_deref()));
+        discord_call!(self.http.kick_member(gid, user_id, p.reason.as_deref()));
         Ok(CallToolResult::success(vec![Content::text("User kicked")]))
     }
 
     #[tool(description = "Timeout (mute) a member for a duration (e.g. '1h', '30m', '7d')")]
     async fn timeout_member(&self, params: Parameters<TimeoutParams>) -> Result<CallToolResult, McpError> {
         let p = params.0;
+        let gid = self.resolve_guild(p.guild_id.as_deref())?;
         let user_id = UserId::new(parse_id(&p.user_id)?);
         let secs = parse_duration_secs(&p.duration)?;
         let until = chrono::Utc::now() + chrono::Duration::seconds(secs);
         let ts = Timestamp::from(until);
         let map = serde_json::json!({ "communication_disabled_until": ts.to_string() });
-        discord_call!(self.http.edit_member(self.guild_id, user_id, &map, None));
+        discord_call!(self.http.edit_member(gid, user_id, &map, None));
         Ok(CallToolResult::success(vec![Content::text(format!("User timed out for {}", p.duration))]))
     }
 }
