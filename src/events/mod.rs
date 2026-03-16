@@ -23,6 +23,18 @@ pub async fn event_handler(
     match event {
         poise::serenity_prelude::FullEvent::Ready { data_about_bot, .. } => {
             ready::handle_ready(ctx, data_about_bot).await;
+
+            // Start MCP server (only once, guard against reconnect re-fires)
+            if !data.mcp_started.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                let http = ctx.http.clone();
+                let guild_id = GuildId::new(data.config.guild_id.parse().expect("Invalid GUILD_ID"));
+                let mcp_port = data.config.mcp_port;
+                let mcp_bind_addr = data.config.mcp_bind_addr.clone();
+                let mcp_auth_token = data.config.mcp_auth_token.clone();
+                tokio::spawn(async move {
+                    crate::mcp::start(http, guild_id, mcp_port, mcp_bind_addr, mcp_auth_token).await;
+                });
+            }
         }
         poise::serenity_prelude::FullEvent::VoiceStateUpdate { old, new } => {
             voice_state::handle_voice_state_update(ctx, data, old, new).await;

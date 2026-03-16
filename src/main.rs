@@ -10,6 +10,7 @@ mod stocks;
 mod util;
 mod wordle;
 mod instance_config;
+mod mcp;
 mod minecraft;
 
 use connections::game::ConnectionsGame;
@@ -21,6 +22,7 @@ use serenity::all::*;
 use songbird::SerenityInit;
 use songbird::tracks::TrackHandle;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::Mutex;
 
 use config::Config;
@@ -44,6 +46,7 @@ pub struct Data {
     pub config: Config,
     pub personality: String,
     pub bot_name: String,
+    pub mcp_started: AtomicBool,
     /// When this bot instance started — bot messages before this are from a previous instance.
     pub started_at: chrono::DateTime<chrono::Utc>,
 }
@@ -171,6 +174,7 @@ async fn main() {
                     config,
                     personality,
                     bot_name: instance_cfg.bot_name.clone(),
+                    mcp_started: AtomicBool::new(false),
                     started_at: chrono::Utc::now(),
                 })
             })

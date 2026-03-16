@@ -30,7 +30,7 @@ base64 = "0.22"
 toml = "0.8"
 axum = "0.8"
 rmcp = { version = "1", features = ["server", "transport-streamable-http-server"] }
-schemars = "0.8"
+schemars = "1"
 tower = { version = "0.5", features = ["limit"] }
 tower-http = { version = "0.6", features = ["cors"] }
 
