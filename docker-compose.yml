@@ -22,6 +22,8 @@ services:
     env_file: instances/examplebot/.env
     environment:
       CONFIG_DIR: /config
+    ports:
+      - "127.0.0.1:9090:9090"
     volumes:
       - ./instances/examplebot:/config:ro
     tmpfs:
