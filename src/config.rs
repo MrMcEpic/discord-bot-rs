@@ -10,6 +10,9 @@ pub struct Config {
     pub mc_verify_url: Option<String>,
     pub mc_verify_secret: Option<String>,
     pub db_schema: String,
+    pub mcp_port: u16,
+    pub mcp_bind_addr: String,
+    pub mcp_auth_token: String,
     pub database_url: String,
 }
 
@@ -26,6 +29,9 @@ impl Config {
             finnhub_api_key: env::var("FINNHUB_API_KEY").ok().filter(|s| !s.is_empty()),
             mc_verify_url: env::var("MC_VERIFY_URL").ok().filter(|s| !s.is_empty()),
             mc_verify_secret: env::var("MC_VERIFY_SECRET").ok().filter(|s| !s.is_empty()),
+            mcp_port: env::var("MCP_PORT").unwrap_or_else(|_| "9090".to_string()).parse().expect("MCP_PORT must be a number"),
+            mcp_bind_addr: env::var("MCP_BIND_ADDR").unwrap_or_else(|_| "127.0.0.1".to_string()),
+            mcp_auth_token: env::var("MCP_AUTH_TOKEN").unwrap_or_else(|_| String::new()),
             db_schema: env::var("DB_SCHEMA").unwrap_or_else(|_| "public".to_string()),
             database_url: env::var("DATABASE_URL").unwrap_or_else(|_| {
                 "postgresql://discord_bot:discord_bot_pass@localhost:5432/discord_bot".to_string()
