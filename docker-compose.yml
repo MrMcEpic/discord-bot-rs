@@ -22,8 +22,6 @@ services:
     env_file: instances/examplebot/.env
     environment:
       CONFIG_DIR: /config
-    ports:
-      - "127.0.0.1:9090:9090"
     volumes:
       - ./instances/examplebot:/config:ro
     tmpfs:
@@ -31,6 +29,32 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "-X", "POST", "-H", "Content-Type: application/json", "-H", "Accept: application/json, text/event-stream", "-d", "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}", "http://localhost:9090/mcp"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  secondbot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: instances/secondbot/.env
+    environment:
+      CONFIG_DIR: /config
+    volumes:
+      - ./instances/secondbot:/config:ro
+    tmpfs:
+      - /tmp:size=500M
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "-X", "POST", "-H", "Content-Type: application/json", "-H", "Accept: application/json, text/event-stream", "-d", "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}", "http://localhost:9090/mcp"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
 
 volumes:
   pgdata:
