@@ -42,7 +42,7 @@ struct ApiEndpoint {
     api_key: String,
 }
 const FETCH_LIMIT: u8 = 100;
-const MAX_RELEVANT: usize = 20;
+const MAX_RELEVANT: usize = 10;
 const OWNER_ID: u64 = 123456789012345678;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const VERSION_INFO: &str = include_str!("../../version_info.txt");
@@ -342,9 +342,14 @@ async fn build_message_history(
             break;
         }
 
-        // Skip messages from before this bot instance started — they're from a
-        // previous instance and the model will act on them if it can see them.
+        // Skip messages from before this bot instance started
         if *msg.timestamp < bot_started_at {
+            continue;
+        }
+
+        // Skip messages older than 30 minutes — prevents stale context bleed
+        let age = chrono::Utc::now() - *msg.timestamp;
+        if age > chrono::Duration::minutes(30) {
             continue;
         }
 
