@@ -33,7 +33,7 @@ pub async fn verify(
 
     let resp = http_client
         .post(&url)
-        .header("Authorization", format!("Bearer {}", secret))
+        .header("Authorization", format!("Bearer {secret}"))
         .json(&request)
         .send()
         .await
