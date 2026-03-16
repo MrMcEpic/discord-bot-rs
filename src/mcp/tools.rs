@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use rmcp::{ErrorData as McpError, ServerHandler, model::*, tool, tool_handler, tool_router, handler::server::router::tool::ToolRouter};
+use rmcp::{ErrorData as McpError, RoleServer, ServerHandler, model::*, tool, tool_router, handler::server::router::tool::ToolRouter, handler::server::tool::ToolCallContext, service::RequestContext};
 use rmcp::handler::server::wrapper::Parameters;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -189,8 +189,31 @@ fn parse_duration_secs(s: &str) -> Result<i64, McpError> {
 
 // --- Tools ---
 
-#[tool_handler(router = self.tool_router)]
-impl ServerHandler for DiscordTools {}
+impl ServerHandler for DiscordTools {
+    fn get_info(&self) -> ServerInfo {
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    }
+
+    fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> impl std::future::Future<Output = Result<ListToolsResult, McpError>> + Send + '_ {
+        std::future::ready(Ok(ListToolsResult {
+            tools: self.tool_router.list_all(),
+            ..Default::default()
+        }))
+    }
+
+    fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> impl std::future::Future<Output = Result<CallToolResult, McpError>> + Send + '_ {
+        let ctx = ToolCallContext::new(self, request, context);
+        self.tool_router.call(ctx)
+    }
+}
 
 #[tool_router(router = tool_router)]
 impl DiscordTools {
