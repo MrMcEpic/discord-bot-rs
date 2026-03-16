@@ -1,14 +1,20 @@
+use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use tokio::sync::{Mutex, oneshot};
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct BackendClient {
     pub name: String,
     pub base_url: String,
     http: Client,
     session_id: Option<String>,
+    /// Pending response waiters: request_id -> oneshot sender
+    pending: Arc<Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -20,14 +26,13 @@ struct JsonRpcRequest {
     params: Option<Value>,
 }
 
-#[derive(Debug, Deserialize)]
-struct JsonRpcResponse {
+#[derive(Debug, Deserialize, Clone)]
+pub struct JsonRpcResponse {
     #[allow(dead_code)]
-    jsonrpc: String,
-    #[allow(dead_code)]
-    id: Option<u64>,
-    result: Option<Value>,
-    error: Option<JsonRpcError>,
+    pub jsonrpc: Option<String>,
+    pub id: Option<u64>,
+    pub result: Option<Value>,
+    pub error: Option<JsonRpcError>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -44,39 +49,43 @@ fn next_id() -> u64 {
     REQUEST_ID.fetch_add(1, Ordering::Relaxed)
 }
 
-/// Parse a JSON-RPC response from either plain JSON or SSE event stream.
-fn parse_response(content_type: &str, body: &str) -> Result<JsonRpcResponse, String> {
-    if content_type.contains("text/event-stream") {
-        for line in body.lines().rev() {
-            let line = line.trim();
-            if let Some(data) = line.strip_prefix("data:") {
-                let data = data.trim();
-                if data.starts_with('{') {
-                    return serde_json::from_str(data)
-                        .map_err(|e| format!("Failed to parse SSE JSON: {}", e));
+/// Try to extract a JSON-RPC response from an SSE buffer.
+/// Returns Some(response) if found, None if not yet available.
+fn try_parse_sse_json(buffer: &str) -> Option<JsonRpcResponse> {
+    for line in buffer.lines() {
+        let line = line.trim();
+        if let Some(data) = line.strip_prefix("data:") {
+            let data = data.trim();
+            if data.starts_with('{') {
+                if let Ok(parsed) = serde_json::from_str::<JsonRpcResponse>(data) {
+                    return Some(parsed);
                 }
             }
         }
-        Err("No JSON-RPC response found in SSE stream".to_string())
-    } else {
-        serde_json::from_str(body)
-            .map_err(|e| format!("Failed to parse JSON response: {}", e))
     }
+    None
 }
 
 impl BackendClient {
     pub fn new(name: String, base_url: String) -> Self {
         let http = Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
             .build()
             .expect("Failed to build HTTP client");
-        Self { name, base_url, http, session_id: None }
+        Self {
+            name,
+            base_url,
+            http,
+            session_id: None,
+            pending: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 
+    /// Initialize MCP session and keep SSE stream alive for receiving responses
     pub async fn initialize(&mut self) -> Result<(), String> {
+        let init_id = next_id();
         let req = JsonRpcRequest {
             jsonrpc: "2.0",
-            id: Some(next_id()),
+            id: Some(init_id),
             method: "initialize".to_string(),
             params: Some(serde_json::json!({
                 "protocolVersion": "2025-03-26",
@@ -97,79 +106,188 @@ impl BackendClient {
             .await
             .map_err(|e| format!("Failed to connect to {}: {}", self.name, e))?;
 
-        if let Some(sid) = resp.headers().get("mcp-session-id") {
-            self.session_id = Some(sid.to_str().unwrap_or("").to_string());
-        }
-
-        let content_type = resp.headers().get("content-type")
+        let status = resp.status();
+        let session_header = resp.headers().get("mcp-session-id")
             .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string();
-        let body_text = resp.text().await
-            .map_err(|e| format!("Failed to read response from {}: {}", self.name, e))?;
+            .map(String::from);
 
-        let parsed = parse_response(&content_type, &body_text)?;
-        if let Some(err) = parsed.error {
-            return Err(format!("Backend {} returned error: {}", self.name, err.message));
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("{} returned HTTP {}: {}", self.name, status, body));
         }
 
-        // Send initialized notification
-        let notif = JsonRpcRequest {
-            jsonrpc: "2.0",
-            id: None,
-            method: "notifications/initialized".to_string(),
-            params: None,
-        };
+        if let Some(sid) = session_header {
+            self.session_id = Some(sid);
+        }
 
-        let mut req_builder = self.http
+        let session_id = self.session_id.clone()
+            .ok_or_else(|| format!("{}: no session ID received", self.name))?;
+
+        // Read SSE stream: first find the initialize result, then keep reading for future responses
+        let mut stream = resp.bytes_stream();
+        let mut buffer = String::new();
+        let mut init_result: Option<JsonRpcResponse> = None;
+
+        // Phase 1: Read until we find the initialize response
+        loop {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                stream.next(),
+            ).await {
+                Ok(Some(Ok(chunk))) => {
+                    buffer.push_str(&String::from_utf8_lossy(&chunk));
+                    if let Some(resp) = try_parse_sse_json(&buffer) {
+                        init_result = Some(resp);
+                        buffer.clear();
+                        break;
+                    }
+                }
+                Ok(Some(Err(e))) => {
+                    return Err(format!("{}: stream error during init: {}", self.name, e));
+                }
+                Ok(None) => {
+                    return Err(format!("{}: stream ended during init", self.name));
+                }
+                Err(_) => {
+                    return Err(format!("{}: timeout waiting for init response. Buffer: {}",
+                        self.name, &buffer[..buffer.len().min(200)]));
+                }
+            }
+        }
+
+        let init_result = init_result.unwrap();
+        if let Some(err) = init_result.error {
+            return Err(format!("{} init error: {}", self.name, err.message));
+        }
+
+        tracing::info!("{}: initialized, session={}", self.name, session_id);
+
+        // Send initialized notification (fire and forget)
+        let _ = self.http
             .post(format!("{}/mcp", self.base_url))
             .header("Content-Type", "application/json")
-            .json(&notif);
+            .header("Accept", "application/json, text/event-stream")
+            .header("Mcp-Session-Id", &session_id)
+            .json(&JsonRpcRequest {
+                jsonrpc: "2.0",
+                id: None,
+                method: "notifications/initialized".to_string(),
+                params: None,
+            })
+            .send()
+            .await;
 
-        if let Some(ref sid) = self.session_id {
-            req_builder = req_builder.header("Mcp-Session-Id", sid);
-        }
+        // Phase 2: Keep the SSE stream alive in background, dispatching responses to pending waiters
+        let pending = self.pending.clone();
+        let name = self.name.clone();
+        tokio::spawn(async move {
+            // Process any leftover data in buffer
+            Self::dispatch_responses(&buffer, &pending).await;
+            let mut buffer = String::new();
 
-        let _ = req_builder.send().await;
+            while let Some(chunk) = stream.next().await {
+                match chunk {
+                    Ok(bytes) => {
+                        buffer.push_str(&String::from_utf8_lossy(&bytes));
+                        Self::dispatch_responses(&buffer, &pending).await;
+                        // Clear processed events (everything before the last incomplete event)
+                        if let Some(pos) = buffer.rfind("\n\n") {
+                            buffer = buffer[pos + 2..].to_string();
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("{}: SSE stream error: {}", name, e);
+                        break;
+                    }
+                }
+            }
+            tracing::warn!("{}: SSE stream ended", name);
+        });
 
-        tracing::info!("Initialized MCP session with {} (session: {:?})", self.name, self.session_id);
         Ok(())
     }
 
+    /// Parse SSE buffer for JSON-RPC responses and dispatch to pending waiters
+    async fn dispatch_responses(buffer: &str, pending: &Arc<Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>>) {
+        for line in buffer.lines() {
+            let line = line.trim();
+            if let Some(data) = line.strip_prefix("data:") {
+                let data = data.trim();
+                if data.starts_with('{') {
+                    if let Ok(resp) = serde_json::from_str::<JsonRpcResponse>(data) {
+                        if let Some(id) = resp.id {
+                            let mut pending = pending.lock().await;
+                            if let Some(tx) = pending.remove(&id) {
+                                let _ = tx.send(resp);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Send a JSON-RPC request. Response comes on the POST's own SSE stream.
     pub async fn call(&self, method: &str, params: Option<Value>) -> Result<Value, String> {
+        let id = next_id();
         let req = JsonRpcRequest {
             jsonrpc: "2.0",
-            id: Some(next_id()),
+            id: Some(id),
             method: method.to_string(),
             params,
         };
 
-        let mut req_builder = self.http
+        let session_id = self.session_id.as_ref()
+            .ok_or_else(|| format!("{}: not initialized", self.name))?;
+
+        // Send POST request
+        let resp = self.http
             .post(format!("{}/mcp", self.base_url))
             .header("Content-Type", "application/json")
             .header("Accept", "application/json, text/event-stream")
-            .json(&req);
-
-        if let Some(ref sid) = self.session_id {
-            req_builder = req_builder.header("Mcp-Session-Id", sid);
-        }
-
-        let resp = req_builder.send().await
+            .header("Mcp-Session-Id", session_id)
+            .json(&req)
+            .send()
+            .await
             .map_err(|e| format!("Request to {} failed: {}", self.name, e))?;
 
-        let content_type = resp.headers().get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string();
-        let body_text = resp.text().await
-            .map_err(|e| format!("Failed to read response from {}: {}", self.name, e))?;
-
-        let parsed = parse_response(&content_type, &body_text)?;
-        if let Some(err) = parsed.error {
-            return Err(format!("Backend error: {}", err.message));
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("HTTP {} from {}: {}", status, self.name, body));
         }
 
-        parsed.result.ok_or_else(|| format!("No result from {}", self.name))
+        // Read the response from this POST's SSE stream
+        let mut stream = resp.bytes_stream();
+        let mut buffer = String::new();
+
+        loop {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                stream.next(),
+            ).await {
+                Ok(Some(Ok(chunk))) => {
+                    buffer.push_str(&String::from_utf8_lossy(&chunk));
+                    if let Some(parsed) = try_parse_sse_json(&buffer) {
+                        if let Some(err) = parsed.error {
+                            return Err(format!("Backend error from {}: {}", self.name, err.message));
+                        }
+                        return parsed.result.ok_or_else(|| format!("No result from {}", self.name));
+                    }
+                }
+                Ok(Some(Err(e))) => {
+                    return Err(format!("{}: stream error: {}", self.name, e));
+                }
+                Ok(None) => {
+                    return Err(format!("{}: stream ended without response. Buffer: {}",
+                        self.name, &buffer[..buffer.len().min(200)]));
+                }
+                Err(_) => {
+                    return Err(format!("{}: request timed out after 15s. Buffer: {}",
+                        self.name, &buffer[..buffer.len().min(200)]));
+                }
+            }
+        }
     }
 
     pub async fn list_tools(&self) -> Result<Value, String> {
@@ -210,25 +328,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_sse_response() {
-        let body = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[]}}\n\n";
-        let parsed = parse_response("text/event-stream", body).unwrap();
-        assert!(parsed.result.is_some());
-        assert!(parsed.error.is_none());
+    fn try_parse_sse_finds_json() {
+        let buffer = "data: \nid: 0\nretry: 3000\n\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[]}}\n\n";
+        let result = try_parse_sse_json(buffer);
+        assert!(result.is_some());
+        assert!(result.unwrap().result.is_some());
     }
 
     #[test]
-    fn parse_json_response() {
-        let body = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[]}}";
-        let parsed = parse_response("application/json", body).unwrap();
-        assert!(parsed.result.is_some());
+    fn try_parse_sse_skips_empty_data() {
+        let buffer = "data: \nid: 0\nretry: 3000\n\n";
+        let result = try_parse_sse_json(buffer);
+        assert!(result.is_none());
     }
 
     #[test]
-    fn parse_sse_error_response() {
-        let body = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-1,\"message\":\"fail\"}}\n\n";
-        let parsed = parse_response("text/event-stream", body).unwrap();
-        assert!(parsed.error.is_some());
-        assert_eq!(parsed.error.unwrap().message, "fail");
+    fn try_parse_sse_error() {
+        let buffer = "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-1,\"message\":\"fail\"}}\n\n";
+        let result = try_parse_sse_json(buffer);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().error.unwrap().message, "fail");
     }
 }

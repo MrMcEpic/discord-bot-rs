@@ -5,7 +5,6 @@ COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/app/target \
     cargo build --release && \
     cp target/release/mcp-gateway /usr/local/bin/mcp-gateway
 
