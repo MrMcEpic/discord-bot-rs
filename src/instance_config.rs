@@ -10,6 +10,7 @@ pub struct InstanceConfig {
     #[serde(default)]
     pub features: Features,
     pub auto_role: Option<AutoRoleConfig>,
+    pub donator_sync: Option<DonatorSyncConfig>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -18,6 +19,8 @@ pub struct Features {
     pub minecraft: bool,
     #[serde(default)]
     pub auto_role: bool,
+    #[serde(default)]
+    pub donator_sync: bool,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -30,6 +33,18 @@ pub struct AutoRoleConfig {
     pub min_messages: i64,
     #[serde(default)]
     pub require_all: bool,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct DonatorSyncConfig {
+    pub supporter_role: String,
+    pub premium_role: String,
+    #[serde(default = "default_check_interval")]
+    pub check_interval: u64,
+}
+
+fn default_check_interval() -> u64 {
+    300
 }
 
 fn default_min_age() -> String {

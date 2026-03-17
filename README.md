@@ -62,11 +62,80 @@ personality_file = "personality.txt"
 
 [features]
 minecraft = false
+auto_role = false
+donator_sync = false
+
+# Required if auto_role = true
+[auto_role]
+from_role = "ROLE_ID"       # Role to remove on promotion
+to_role = "ROLE_ID"         # Role to grant on promotion
+min_age = "3d"              # Minimum account age in guild (e.g. "3d", "1w")
+min_messages = 20           # Minimum messages sent
+require_all = false         # true = both criteria required, false = either
+
+# Required if donator_sync = true (also needs MC_VERIFY_URL + MC_VERIFY_SECRET)
+[donator_sync]
+supporter_role = "ROLE_ID"  # Discord role for supporter tier
+premium_role = "ROLE_ID"    # Discord role for premium tier
+check_interval = 300        # Poll interval in seconds (default: 300)
 ```
 
 ### personality.txt
 
 Free-form text that defines the bot's AI personality. This becomes the system prompt for AI conversations. See `instances/example/personality.txt` for a starting template.
+
+## Features
+
+### Auto-Role
+
+Automatically promotes members from one role to another based on activity. When enabled, a background task runs every 60 seconds checking if members meet the configured criteria (time in server, message count, or both).
+
+### Donator Sync (MC → Discord)
+
+Syncs donator tiers from a Minecraft server to Discord roles. A background task polls the MC server's `/api/donators` endpoint at the configured interval, then adds/removes Supporter and Premium roles accordingly. When a player's subscription expires (Tebex removes the LuckPerms rank), they disappear from the API response and the bot removes their Discord role.
+
+Requires `MC_VERIFY_URL` and `MC_VERIFY_SECRET` in `.env`.
+
+**MC Plugin API endpoint:**
+
+```
+GET {MC_VERIFY_URL}/api/donators
+Authorization: Bearer {MC_VERIFY_SECRET}
+
+Response 200:
+{
+  "donators": [
+    {
+      "uuid": "550e8400-e29b-41d4-a716-446655440000",
+      "username": "Steve",
+      "discord_id": "123456789012345678",
+      "tier": "supporter"
+    }
+  ]
+}
+```
+
+- `tier`: `"supporter"` or `"premium"`
+- Only returns linked players with an active donator rank
+- On fetch error, the bot logs a warning and skips that cycle (does not remove roles)
+
+### Minecraft Verification
+
+Links Discord accounts to Minecraft accounts. Players run a command on the MC server to get a code, then use `!m verify <code>` in Discord. The bot calls the MC plugin's `/api/verify` endpoint to confirm the link.
+
+### Music
+
+Queue-based music player using yt-dlp + ffmpeg with OGG/Opus passthrough. Supports loop, shuffle, skip, and interactive button controls.
+
+### AI Chat
+
+Responds to @mentions using DeepSeek V3.2 (or Gemini as fallback). Each instance has its own personality defined in `personality.txt`.
+
+### Games
+
+- **Wordle** — daily word guessing game
+- **Connections** — group words by hidden categories
+- **Stock Trading** — virtual stock portfolio with real market data from Finnhub
 
 ## MCP Server (Discord Management API)
 

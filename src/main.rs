@@ -4,6 +4,7 @@ mod commands;
 mod config;
 mod connections;
 mod db;
+mod donatorsync;
 mod error;
 mod events;
 mod music;
@@ -48,6 +49,7 @@ pub struct Data {
     pub personality: String,
     pub bot_name: String,
     pub auto_role_config: Option<instance_config::AutoRoleConfig>,
+    pub donator_sync_config: Option<instance_config::DonatorSyncConfig>,
     pub mcp_started: AtomicBool,
     /// When this bot instance started — bot messages before this are from a previous instance.
     pub started_at: chrono::DateTime<chrono::Utc>,
@@ -140,8 +142,26 @@ async fn main() {
         None
     };
 
+    let donator_sync_config = if instance_cfg.features.donator_sync {
+        match &instance_cfg.donator_sync {
+            Some(cfg) => {
+                tracing::info!("Donator sync module enabled (supporter_role={}, premium_role={}, interval={}s)",
+                    cfg.supporter_role, cfg.premium_role, cfg.check_interval);
+                Some(cfg.clone())
+            }
+            None => {
+                tracing::warn!("Donator sync feature enabled but [donator_sync] config section missing");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let token = config.token.clone();
     let guild_id_for_tasks = config.guild_id.clone();
+    let mc_verify_url_for_tasks = config.mc_verify_url.clone();
+    let mc_verify_secret_for_tasks = config.mc_verify_secret.clone();
 
     let db_clone = db.clone();
 
@@ -194,6 +214,7 @@ async fn main() {
                     personality,
                     bot_name: instance_cfg.bot_name.clone(),
                     auto_role_config,
+                    donator_sync_config,
                     mcp_started: AtomicBool::new(false),
                     started_at: chrono::Utc::now(),
                 })
@@ -267,6 +288,49 @@ async fn main() {
                     tokio::time::sleep(std::time::Duration::from_secs(60)).await;
                 }
             });
+        }
+    }
+
+    // Donator sync background task: poll MC server for donator status
+    if let Some(ref ds_config) = instance_cfg.donator_sync {
+        if instance_cfg.features.donator_sync {
+            if let (Some(ref verify_url), Some(ref verify_secret)) = (&mc_verify_url_for_tasks, &mc_verify_secret_for_tasks) {
+                let http_ds = client.http.clone();
+                let http_client_ds = reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(10))
+                    .build()
+                    .expect("HTTP client for donator sync");
+                let ds_config = ds_config.clone();
+                let verify_url = verify_url.clone();
+                let verify_secret = verify_secret.clone();
+                let guild_id_ds = guild_id_for_tasks.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                    tracing::info!("Donator sync checker started ({}s interval).", ds_config.check_interval);
+                    loop {
+                        match donatorsync::fetch_donators(&http_client_ds, &verify_url, &verify_secret).await {
+                            Ok(donators) => {
+                                if let Ok(gid) = guild_id_ds.parse::<u64>() {
+                                    if let Err(e) = donatorsync::sync_roles(
+                                        &http_ds,
+                                        GuildId::new(gid),
+                                        &donators,
+                                        &ds_config,
+                                    ).await {
+                                        tracing::warn!("Donator sync error: {e}");
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!("Donator sync: failed to fetch donators: {e}");
+                            }
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(ds_config.check_interval)).await;
+                    }
+                });
+            } else {
+                tracing::warn!("Donator sync enabled but MC_VERIFY_URL or MC_VERIFY_SECRET not set");
+            }
         }
     }
 
