@@ -31,8 +31,28 @@ pub async fn event_handler(
                 let mcp_port = data.config.mcp_port;
                 let mcp_bind_addr = data.config.mcp_bind_addr.clone();
                 let mcp_auth_token = data.config.mcp_auth_token.clone();
+
+                // Build webhook router if chargeback is enabled
+                let webhook_router = if let Some(ref mc_cfg) = data.minecraft_config {
+                    if mc_cfg.chargeback {
+                        mc_cfg.chargeback_config.as_ref().and_then(|cb_cfg| {
+                            let verify_url = data.mc_verify_url.as_ref()?;
+                            let verify_secret = data.mc_verify_secret.as_ref()?;
+                            let state = crate::minecraft::chargeback::WebhookState {
+                                http: ctx.http.clone(),
+                                http_client: data.http_client.clone(),
+                                guild_id,
+                                chargeback_config: cb_cfg.clone(),
+                                mc_verify_url: verify_url.clone(),
+                                mc_verify_secret: verify_secret.clone(),
+                            };
+                            Some(crate::minecraft::chargeback::build_webhook_router(state))
+                        })
+                    } else { None }
+                } else { None };
+
                 tokio::spawn(async move {
-                    crate::mcp::start(http, guild_id, mcp_port, mcp_bind_addr, mcp_auth_token).await;
+                    crate::mcp::start(http, guild_id, mcp_port, mcp_bind_addr, mcp_auth_token, webhook_router).await;
                 });
             }
         }
@@ -162,6 +182,11 @@ async fn handle_component_interaction(
 
     if custom_id.starts_with("game_") {
         handle_game_interaction(ctx, interaction, data).await;
+        return;
+    }
+
+    if custom_id.starts_with("cb_") {
+        crate::minecraft::chargeback::handle_button(ctx, interaction, data).await;
         return;
     }
 

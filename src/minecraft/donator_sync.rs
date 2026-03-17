@@ -47,6 +47,7 @@ pub async fn sync_roles(
     guild_id: GuildId,
     donators: &[DonatorInfo],
     config: &DonatorSyncConfig,
+    restricted_role: Option<RoleId>,
 ) -> Result<(), String> {
     let supporter_role = config.supporter_role.parse::<u64>()
         .map_err(|_| "Invalid supporter_role ID")?;
@@ -73,10 +74,10 @@ pub async fn sync_roles(
     }
 
     // Fetch guild members who currently have either role
-    // We need to iterate all members since there's no "get members by role" API
     let mut after = None;
     let mut current_supporters: HashSet<UserId> = HashSet::new();
     let mut current_premium: HashSet<UserId> = HashSet::new();
+    let mut restricted_users: HashSet<UserId> = HashSet::new();
 
     loop {
         let members = http
@@ -95,6 +96,11 @@ pub async fn sync_roles(
             if member.roles.contains(&premium_role_id) {
                 current_premium.insert(member.user.id);
             }
+            if let Some(ref restricted) = restricted_role {
+                if member.roles.contains(restricted) {
+                    restricted_users.insert(member.user.id);
+                }
+            }
         }
 
         after = members.last().map(|m| m.user.id.get());
@@ -105,6 +111,7 @@ pub async fn sync_roles(
 
     // Add missing roles
     for &user_id in &should_have_supporter {
+        if restricted_users.contains(&user_id) { continue; }
         if !current_supporters.contains(&user_id) {
             match http.add_member_role(guild_id, user_id, supporter_role_id, Some("Donator sync: supporter tier")).await {
                 Ok(_) => tracing::info!("Donator sync: added Supporter role to {}", user_id),
@@ -114,6 +121,7 @@ pub async fn sync_roles(
     }
 
     for &user_id in &should_have_premium {
+        if restricted_users.contains(&user_id) { continue; }
         if !current_premium.contains(&user_id) {
             match http.add_member_role(guild_id, user_id, premium_role_id, Some("Donator sync: premium tier")).await {
                 Ok(_) => tracing::info!("Donator sync: added Premium role to {}", user_id),
@@ -124,6 +132,7 @@ pub async fn sync_roles(
 
     // Remove stale roles (user has role but MC says they shouldn't)
     for &user_id in &current_supporters {
+        if restricted_users.contains(&user_id) { continue; }
         if !should_have_supporter.contains(&user_id) {
             match http.remove_member_role(guild_id, user_id, supporter_role_id, Some("Donator sync: supporter expired")).await {
                 Ok(_) => tracing::info!("Donator sync: removed Supporter role from {}", user_id),
@@ -133,6 +142,7 @@ pub async fn sync_roles(
     }
 
     for &user_id in &current_premium {
+        if restricted_users.contains(&user_id) { continue; }
         if !should_have_premium.contains(&user_id) {
             match http.remove_member_role(guild_id, user_id, premium_role_id, Some("Donator sync: premium expired")).await {
                 Ok(_) => tracing::info!("Donator sync: removed Premium role from {}", user_id),
@@ -143,6 +153,7 @@ pub async fn sync_roles(
 
     // Handle tier changes: if someone has supporter but should be premium, swap
     for &user_id in &should_have_premium {
+        if restricted_users.contains(&user_id) { continue; }
         if current_supporters.contains(&user_id) && !should_have_supporter.contains(&user_id) {
             match http.remove_member_role(guild_id, user_id, supporter_role_id, Some("Donator sync: upgraded to premium")).await {
                 Ok(_) => tracing::info!("Donator sync: removed Supporter (upgraded to Premium) for {}", user_id),
@@ -152,6 +163,7 @@ pub async fn sync_roles(
     }
 
     for &user_id in &should_have_supporter {
+        if restricted_users.contains(&user_id) { continue; }
         if current_premium.contains(&user_id) && !should_have_premium.contains(&user_id) {
             match http.remove_member_role(guild_id, user_id, premium_role_id, Some("Donator sync: downgraded to supporter")).await {
                 Ok(_) => tracing::info!("Donator sync: removed Premium (downgraded to Supporter) for {}", user_id),

@@ -61,9 +61,8 @@ command_prefix = "!"
 personality_file = "personality.txt"
 
 [features]
-minecraft = false
+minecraft = false     # Kill switch for all MC features
 auto_role = false
-donator_sync = false
 
 # Required if auto_role = true
 [auto_role]
@@ -73,11 +72,22 @@ min_age = "3d"              # Minimum account age in guild (e.g. "3d", "1w")
 min_messages = 20           # Minimum messages sent
 require_all = false         # true = both criteria required, false = either
 
-# Required if donator_sync = true (also needs MC_VERIFY_URL + MC_VERIFY_SECRET)
-[donator_sync]
+# Minecraft module — requires features.minecraft = true
+[minecraft]
+verify = true               # !m verify command (default: true)
+donator_sync = false        # Poll MC server for donator role sync
+chargeback = false          # Webhook listener for chargeback alerts
+
+# Required if minecraft.donator_sync = true (also needs MC_VERIFY_URL + MC_VERIFY_SECRET)
+[minecraft.donator_sync_config]
 supporter_role = "ROLE_ID"  # Discord role for supporter tier
 premium_role = "ROLE_ID"    # Discord role for premium tier
 check_interval = 300        # Poll interval in seconds (default: 300)
+
+# Required if minecraft.chargeback = true (also needs MC_VERIFY_URL + MC_VERIFY_SECRET)
+[minecraft.chargeback_config]
+staff_channel = "CHANNEL_ID"   # Channel for chargeback alerts
+restricted_role = "ROLE_ID"    # Role applied to chargeback users
 ```
 
 ### personality.txt
@@ -92,7 +102,7 @@ Automatically promotes members from one role to another based on activity. When 
 
 ### Donator Sync (MC → Discord)
 
-Syncs donator tiers from a Minecraft server to Discord roles. A background task polls the MC server's `/api/donators` endpoint at the configured interval, then adds/removes Supporter and Premium roles accordingly. When a player's subscription expires (Tebex removes the LuckPerms rank), they disappear from the API response and the bot removes their Discord role.
+Syncs donator tiers from a Minecraft server to Discord roles. Configured under `[minecraft]`. A background task polls the MC server's `/api/donators` endpoint at the configured interval, then adds/removes Supporter and Premium roles accordingly. When a player's subscription expires (Tebex removes the LuckPerms rank), they disappear from the API response and the bot removes their Discord role. Users with the restricted role (from chargebacks) are skipped.
 
 Requires `MC_VERIFY_URL` and `MC_VERIFY_SECRET` in `.env`.
 
@@ -118,6 +128,12 @@ Response 200:
 - `tier`: `"supporter"` or `"premium"`
 - Only returns linked players with an active donator rank
 - On fetch error, the bot logs a warning and skips that cycle (does not remove roles)
+
+### Chargeback Alerts (MC → Discord)
+
+Real-time chargeback notifications from the Minecraft server. When a player charges back a Tebex purchase, the MC plugin POSTs to the bot's `/webhook/chargeback` endpoint. The bot immediately strips all Discord roles, applies a restricted role, and posts an interactive alert to the configured staff channel.
+
+Staff can click **Ban** (Discord + MC ban) or **Dismiss** (keep restricted, no ban). Requires `MC_VERIFY_URL` and `MC_VERIFY_SECRET` in `.env`.
 
 ### Minecraft Verification
 

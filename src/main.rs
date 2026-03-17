@@ -4,7 +4,6 @@ mod commands;
 mod config;
 mod connections;
 mod db;
-mod donatorsync;
 mod error;
 mod events;
 mod music;
@@ -49,7 +48,9 @@ pub struct Data {
     pub personality: String,
     pub bot_name: String,
     pub auto_role_config: Option<instance_config::AutoRoleConfig>,
-    pub donator_sync_config: Option<instance_config::DonatorSyncConfig>,
+    pub minecraft_config: Option<instance_config::MinecraftConfig>,
+    pub mc_verify_url: Option<String>,
+    pub mc_verify_secret: Option<String>,
     pub mcp_started: AtomicBool,
     /// When this bot instance started — bot messages before this are from a previous instance.
     pub started_at: chrono::DateTime<chrono::Utc>,
@@ -142,15 +143,30 @@ async fn main() {
         None
     };
 
-    let donator_sync_config = if instance_cfg.features.donator_sync {
-        match &instance_cfg.donator_sync {
-            Some(cfg) => {
-                tracing::info!("Donator sync module enabled (supporter_role={}, premium_role={}, interval={}s)",
-                    cfg.supporter_role, cfg.premium_role, cfg.check_interval);
-                Some(cfg.clone())
+    let minecraft_config = if instance_cfg.features.minecraft {
+        match &instance_cfg.minecraft {
+            Some(mc) => {
+                if mc.donator_sync {
+                    match &mc.donator_sync_config {
+                        Some(ds) => tracing::info!("Donator sync enabled (supporter={}, premium={}, interval={}s)",
+                            ds.supporter_role, ds.premium_role, ds.check_interval),
+                        None => tracing::warn!("minecraft.donator_sync = true but [minecraft.donator_sync_config] missing"),
+                    }
+                }
+                if mc.chargeback {
+                    match &mc.chargeback_config {
+                        Some(cb) => tracing::info!("Chargeback alerts enabled (staff_channel={}, restricted_role={})",
+                            cb.staff_channel, cb.restricted_role),
+                        None => tracing::warn!("minecraft.chargeback = true but [minecraft.chargeback_config] missing"),
+                    }
+                }
+                if mc.verify {
+                    tracing::info!("Minecraft verification module enabled");
+                }
+                Some(mc.clone())
             }
             None => {
-                tracing::warn!("Donator sync feature enabled but [donator_sync] config section missing");
+                tracing::warn!("features.minecraft = true but [minecraft] config section missing");
                 None
             }
         }
@@ -175,8 +191,11 @@ async fn main() {
             commands: {
                 let mut m_cmd = commands::m();
                 if instance_cfg.features.minecraft {
-                    m_cmd.subcommands.push(commands::minecraft::verify());
-                    tracing::info!("Minecraft verification module enabled");
+                    if let Some(ref mc) = instance_cfg.minecraft {
+                        if mc.verify {
+                            m_cmd.subcommands.push(commands::minecraft::verify());
+                        }
+                    }
                 }
                 vec![m_cmd]
             },
@@ -200,6 +219,8 @@ async fn main() {
         })
         .setup(move |_ctx, _ready, _framework| {
             Box::pin(async move {
+                let mc_verify_url = config.mc_verify_url.clone();
+                let mc_verify_secret = config.mc_verify_secret.clone();
                 Ok(Data {
                     db,
                     http_client,
@@ -214,7 +235,9 @@ async fn main() {
                     personality,
                     bot_name: instance_cfg.bot_name.clone(),
                     auto_role_config,
-                    donator_sync_config,
+                    minecraft_config,
+                    mc_verify_url,
+                    mc_verify_secret,
                     mcp_started: AtomicBool::new(false),
                     started_at: chrono::Utc::now(),
                 })
@@ -292,44 +315,49 @@ async fn main() {
     }
 
     // Donator sync background task: poll MC server for donator status
-    if let Some(ref ds_config) = instance_cfg.donator_sync {
-        if instance_cfg.features.donator_sync {
-            if let (Some(ref verify_url), Some(ref verify_secret)) = (&mc_verify_url_for_tasks, &mc_verify_secret_for_tasks) {
-                let http_ds = client.http.clone();
-                let http_client_ds = reqwest::Client::builder()
-                    .timeout(std::time::Duration::from_secs(10))
-                    .build()
-                    .expect("HTTP client for donator sync");
-                let ds_config = ds_config.clone();
-                let verify_url = verify_url.clone();
-                let verify_secret = verify_secret.clone();
-                let guild_id_ds = guild_id_for_tasks.clone();
-                tokio::spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_secs(15)).await;
-                    tracing::info!("Donator sync checker started ({}s interval).", ds_config.check_interval);
-                    loop {
-                        match donatorsync::fetch_donators(&http_client_ds, &verify_url, &verify_secret).await {
-                            Ok(donators) => {
-                                if let Ok(gid) = guild_id_ds.parse::<u64>() {
-                                    if let Err(e) = donatorsync::sync_roles(
-                                        &http_ds,
-                                        GuildId::new(gid),
-                                        &donators,
-                                        &ds_config,
-                                    ).await {
-                                        tracing::warn!("Donator sync error: {e}");
+    if let Some(ref mc_cfg) = instance_cfg.minecraft {
+        if instance_cfg.features.minecraft && mc_cfg.donator_sync {
+            if let Some(ref ds_config) = mc_cfg.donator_sync_config {
+                if let (Some(ref verify_url), Some(ref verify_secret)) = (&mc_verify_url_for_tasks, &mc_verify_secret_for_tasks) {
+                    let http_ds = client.http.clone();
+                    let http_client_ds = reqwest::Client::builder()
+                        .timeout(std::time::Duration::from_secs(10))
+                        .build()
+                        .expect("HTTP client for donator sync");
+                    let ds_config = ds_config.clone();
+                    let restricted_role = mc_cfg.chargeback_config.as_ref()
+                        .and_then(|cb| cb.restricted_role.parse::<u64>().ok().map(RoleId::new));
+                    let verify_url = verify_url.clone();
+                    let verify_secret = verify_secret.clone();
+                    let guild_id_ds = guild_id_for_tasks.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                        tracing::info!("Donator sync checker started ({}s interval).", ds_config.check_interval);
+                        loop {
+                            match minecraft::donator_sync::fetch_donators(&http_client_ds, &verify_url, &verify_secret).await {
+                                Ok(donators) => {
+                                    if let Ok(gid) = guild_id_ds.parse::<u64>() {
+                                        if let Err(e) = minecraft::donator_sync::sync_roles(
+                                            &http_ds,
+                                            GuildId::new(gid),
+                                            &donators,
+                                            &ds_config,
+                                            restricted_role,
+                                        ).await {
+                                            tracing::warn!("Donator sync error: {e}");
+                                        }
                                     }
                                 }
+                                Err(e) => {
+                                    tracing::warn!("Donator sync: failed to fetch donators: {e}");
+                                }
                             }
-                            Err(e) => {
-                                tracing::warn!("Donator sync: failed to fetch donators: {e}");
-                            }
+                            tokio::time::sleep(std::time::Duration::from_secs(ds_config.check_interval)).await;
                         }
-                        tokio::time::sleep(std::time::Duration::from_secs(ds_config.check_interval)).await;
-                    }
-                });
-            } else {
-                tracing::warn!("Donator sync enabled but MC_VERIFY_URL or MC_VERIFY_SECRET not set");
+                    });
+                } else {
+                    tracing::warn!("Donator sync enabled but MC_VERIFY_URL or MC_VERIFY_SECRET not set");
+                }
             }
         }
     }

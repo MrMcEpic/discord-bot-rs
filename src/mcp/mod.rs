@@ -14,6 +14,7 @@ pub async fn start(
     port: u16,
     bind_addr: String,
     auth_token: String,
+    webhook_router: Option<axum::Router>,
 ) {
     let session_manager = Arc::new(LocalSessionManager::default());
     let config = StreamableHttpServerConfig::default();
@@ -51,6 +52,12 @@ pub async fn start(
     let app = Router::new()
         .nest_service("/mcp", mcp_service)
         .layer(auth_middleware);
+
+    let app = if let Some(webhook) = webhook_router {
+        app.merge(webhook)
+    } else {
+        app
+    };
 
     let addr = format!("{}:{}", bind_addr, port);
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();

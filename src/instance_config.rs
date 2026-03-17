@@ -10,7 +10,7 @@ pub struct InstanceConfig {
     #[serde(default)]
     pub features: Features,
     pub auto_role: Option<AutoRoleConfig>,
-    pub donator_sync: Option<DonatorSyncConfig>,
+    pub minecraft: Option<MinecraftConfig>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -19,8 +19,24 @@ pub struct Features {
     pub minecraft: bool,
     #[serde(default)]
     pub auto_role: bool,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct MinecraftConfig {
+    #[serde(default = "default_true")]
+    pub verify: bool,
     #[serde(default)]
     pub donator_sync: bool,
+    #[serde(default)]
+    pub chargeback: bool,
+    pub donator_sync_config: Option<DonatorSyncConfig>,
+    pub chargeback_config: Option<ChargebackConfig>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct ChargebackConfig {
+    pub staff_channel: String,
+    pub restricted_role: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -41,6 +57,10 @@ pub struct DonatorSyncConfig {
     pub premium_role: String,
     #[serde(default = "default_check_interval")]
     pub check_interval: u64,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_check_interval() -> u64 {
