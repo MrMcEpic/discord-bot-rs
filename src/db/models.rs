@@ -66,3 +66,13 @@ pub struct StockPriceCache {
     pub change_pct: f64,
     pub fetched_at: DateTime<Utc>,
 }
+
+#[derive(Debug, FromRow)]
+#[allow(dead_code)]
+pub struct MemberActivity {
+    pub guild_id: String,
+    pub user_id: String,
+    pub message_count: i32,
+    pub first_seen: DateTime<Utc>,
+    pub promoted: bool,
+}

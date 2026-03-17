@@ -67,6 +67,7 @@ services:
       GATEWAY_PORT: "9100"
       INSTANCES: "examplebot=http://examplebot:9090,secondbot=http://secondbot:9090"
       MCP_AUTH_TOKEN: "${MCP_GATEWAY_AUTH_TOKEN:-}"
+      RUST_LOG: "info"
     depends_on:
       examplebot:
         condition: service_healthy

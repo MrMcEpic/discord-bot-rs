@@ -58,6 +58,25 @@ async fn handle_message(ctx: &Context, message: &Message, data: &Data) {
         return;
     }
 
+    // Auto-role: track message count and check promotion
+    if let (Some(ref ar_config), Some(guild_id)) = (&data.auto_role_config, message.guild_id) {
+        let gid = guild_id.to_string();
+        let uid = message.author.id.to_string();
+        if let Ok(activity) = crate::db::queries::increment_message_count(&data.db, &gid, &uid).await {
+            if !activity.promoted && crate::autorole::meets_criteria(&activity, ar_config) {
+                let http = ctx.http.clone();
+                let pool = data.db.clone();
+                let config = ar_config.clone();
+                let author_id = message.author.id;
+                tokio::spawn(async move {
+                    if let Err(e) = crate::autorole::try_promote(&http, &pool, guild_id, author_id, &config).await {
+                        tracing::warn!("Auto-role promotion failed for {}: {}", author_id, e);
+                    }
+                });
+            }
+        }
+    }
+
     let bot_id = ctx.cache.current_user().id;
 
     let is_mention = message.mentions.iter().any(|u| u.id == bot_id);

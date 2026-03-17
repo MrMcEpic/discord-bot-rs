@@ -63,6 +63,29 @@ impl GatewayState {
     }
 
     pub async fn refresh_guild_map(&self) {
+        // First, re-initialize any backends with stale sessions
+        let stale: Vec<String> = {
+            let backends = self.backends.read().await;
+            let mut stale = Vec::new();
+            for (name, client) in backends.iter() {
+                if !client.health_check().await {
+                    stale.push(name.clone());
+                }
+            }
+            stale
+        };
+        if !stale.is_empty() {
+            let mut backends = self.backends.write().await;
+            for name in &stale {
+                if let Some(client) = backends.get_mut(name) {
+                    tracing::warn!("{}: health check failed, re-initializing...", name);
+                    if let Err(e) = client.initialize().await {
+                        tracing::error!("{}: re-initialization failed: {}", name, e);
+                    }
+                }
+            }
+        }
+
         let backends = self.backends.read().await;
         for (name, client) in backends.iter() {
             match client.list_guilds().await {
@@ -247,11 +270,35 @@ async fn handle_tool_call(
 
     let crate::routing::RouteTarget::Instance(name, _) = target;
 
-    let backends = state.backends.read().await;
-    let client = backends.get(&name)
-        .ok_or_else(|| format!("Backend '{}' not found", name))?;
+    // Try the call, and if session is stale, re-initialize and retry once
+    let args_for_retry = arguments.clone();
 
-    client.call_tool(tool_name, arguments).await
+    let result = {
+        let backends = state.backends.read().await;
+        let client = backends.get(&name)
+            .ok_or_else(|| format!("Backend '{}' not found", name))?;
+        client.call_tool(tool_name, arguments).await
+    };
+
+    match result {
+        Ok(val) => Ok(val),
+        Err(e) if e.contains("Session not found") || e.contains("404 Not Found") => {
+            tracing::warn!("{}: session expired, re-initializing...", name);
+            {
+                let mut backends = state.backends.write().await;
+                if let Some(client) = backends.get_mut(&name) {
+                    if let Err(reinit_err) = client.initialize().await {
+                        return Err(format!("Re-init of {} failed: {}", name, reinit_err));
+                    }
+                }
+            }
+            let backends = state.backends.read().await;
+            let client = backends.get(&name)
+                .ok_or_else(|| format!("Backend '{}' not found after re-init", name))?;
+            client.call_tool(tool_name, args_for_retry).await
+        }
+        Err(e) => Err(e),
+    }
 }
 
 async fn handle_list_instances(state: &GatewayState) -> Result<Value, String> {

@@ -130,5 +130,18 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS member_activity (
+            guild_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            message_count INTEGER NOT NULL DEFAULT 0,
+            first_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            promoted BOOLEAN NOT NULL DEFAULT FALSE,
+            PRIMARY KEY (guild_id, user_id)
+        )",
+    )
+    .execute(pool)
+    .await?;
+
     Ok(())
 }

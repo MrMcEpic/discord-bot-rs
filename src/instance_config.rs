@@ -9,12 +9,35 @@ pub struct InstanceConfig {
     pub personality_file: String,
     #[serde(default)]
     pub features: Features,
+    pub auto_role: Option<AutoRoleConfig>,
 }
 
 #[derive(Debug, Deserialize, Default)]
 pub struct Features {
     #[serde(default)]
     pub minecraft: bool,
+    #[serde(default)]
+    pub auto_role: bool,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct AutoRoleConfig {
+    pub from_role: String,
+    pub to_role: String,
+    #[serde(default = "default_min_age")]
+    pub min_age: String,
+    #[serde(default = "default_min_messages")]
+    pub min_messages: i64,
+    #[serde(default)]
+    pub require_all: bool,
+}
+
+fn default_min_age() -> String {
+    "3d".to_string()
+}
+
+fn default_min_messages() -> i64 {
+    20
 }
 
 fn default_personality_file() -> String {

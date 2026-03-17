@@ -1,4 +1,5 @@
 mod ai;
+mod autorole;
 mod commands;
 mod config;
 mod connections;
@@ -46,6 +47,7 @@ pub struct Data {
     pub config: Config,
     pub personality: String,
     pub bot_name: String,
+    pub auto_role_config: Option<instance_config::AutoRoleConfig>,
     pub mcp_started: AtomicBool,
     /// When this bot instance started — bot messages before this are from a previous instance.
     pub started_at: chrono::DateTime<chrono::Utc>,
@@ -122,7 +124,24 @@ async fn main() {
     let personality = instance_cfg.load_personality(&config_dir);
     tracing::info!("Instance config loaded: {} (prefix: {})", instance_cfg.bot_name, instance_cfg.command_prefix);
 
+    let auto_role_config = if instance_cfg.features.auto_role {
+        match &instance_cfg.auto_role {
+            Some(cfg) => {
+                tracing::info!("Auto-role module enabled (from={}, to={}, min_age={}, min_messages={}, require_all={})",
+                    cfg.from_role, cfg.to_role, cfg.min_age, cfg.min_messages, cfg.require_all);
+                Some(cfg.clone())
+            }
+            None => {
+                tracing::warn!("Auto-role feature enabled but [auto_role] config section missing");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let token = config.token.clone();
+    let guild_id_for_tasks = config.guild_id.clone();
 
     let db_clone = db.clone();
 
@@ -174,6 +193,7 @@ async fn main() {
                     config,
                     personality,
                     bot_name: instance_cfg.bot_name.clone(),
+                    auto_role_config,
                     mcp_started: AtomicBool::new(false),
                     started_at: chrono::Utc::now(),
                 })
@@ -216,8 +236,39 @@ async fn main() {
         }
     });
 
-    // Rate limiter cleanup every 5 minutes
-    // (can't easily access data here, so we'll do it in the event handler)
+    // Auto-role background task: check time-based promotions every 60s
+    if let Some(ref ar_config) = instance_cfg.auto_role {
+        if instance_cfg.features.auto_role {
+            let http_ar = client.http.clone();
+            let db_ar = db_clone.clone();
+            let ar_config = ar_config.clone();
+            let guild_id_str = guild_id_for_tasks.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                tracing::info!("Auto-role time checker started (60s interval).");
+                loop {
+                    if let Ok(members) = db::queries::get_unpromoted_members(&db_ar, &guild_id_str).await {
+                        for activity in members {
+                            if autorole::meets_criteria(&activity, &ar_config) {
+                                if let Ok(uid) = activity.user_id.parse::<u64>() {
+                                    if let Ok(gid) = activity.guild_id.parse::<u64>() {
+                                        if let Err(e) = autorole::try_promote(
+                                            &http_ar, &db_ar,
+                                            GuildId::new(gid), UserId::new(uid),
+                                            &ar_config,
+                                        ).await {
+                                            tracing::warn!("Auto-role time promotion failed for {}: {}", uid, e);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                }
+            });
+        }
+    }
 
     tracing::info!("Starting bot...");
     if let Err(e) = client.start().await {

@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 
-use super::models::{GuildSettings, StockHolding, StockPortfolio, StockPriceCache, StockTransaction, Tempban};
+use super::models::{GuildSettings, MemberActivity, StockHolding, StockPortfolio, StockPriceCache, StockTransaction, Tempban};
 
 pub async fn get_guild_settings(pool: &PgPool, guild_id: &str) -> Option<GuildSettings> {
     sqlx::query_as::<_, GuildSettings>("SELECT * FROM guild_settings WHERE guild_id = $1")
@@ -408,6 +408,52 @@ pub async fn upsert_cached_price(
     .bind(price)
     .bind(prev_close)
     .bind(change_pct)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+// ── Auto-role queries ──
+
+pub async fn increment_message_count(
+    pool: &PgPool,
+    guild_id: &str,
+    user_id: &str,
+) -> Result<MemberActivity, sqlx::Error> {
+    sqlx::query_as::<_, MemberActivity>(
+        "INSERT INTO member_activity (guild_id, user_id, message_count) \
+         VALUES ($1, $2, 1) \
+         ON CONFLICT (guild_id, user_id) DO UPDATE SET message_count = member_activity.message_count + 1 \
+         RETURNING *",
+    )
+    .bind(guild_id)
+    .bind(user_id)
+    .fetch_one(pool)
+    .await
+}
+
+pub async fn get_unpromoted_members(
+    pool: &PgPool,
+    guild_id: &str,
+) -> Result<Vec<MemberActivity>, sqlx::Error> {
+    sqlx::query_as::<_, MemberActivity>(
+        "SELECT * FROM member_activity WHERE guild_id = $1 AND promoted = FALSE",
+    )
+    .bind(guild_id)
+    .fetch_all(pool)
+    .await
+}
+
+pub async fn mark_promoted(
+    pool: &PgPool,
+    guild_id: &str,
+    user_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE member_activity SET promoted = TRUE WHERE guild_id = $1 AND user_id = $2",
+    )
+    .bind(guild_id)
+    .bind(user_id)
     .execute(pool)
     .await?;
     Ok(())
