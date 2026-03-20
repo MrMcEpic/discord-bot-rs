@@ -11,6 +11,8 @@ pub struct InstanceConfig {
     pub features: Features,
     pub auto_role: Option<AutoRoleConfig>,
     pub minecraft: Option<MinecraftConfig>,
+    pub join_role: Option<JoinRoleConfig>,
+    pub welcome: Option<WelcomeConfig>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -19,6 +21,10 @@ pub struct Features {
     pub minecraft: bool,
     #[serde(default)]
     pub auto_role: bool,
+    #[serde(default)]
+    pub join_role: bool,
+    #[serde(default)]
+    pub welcome: bool,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -59,6 +65,18 @@ pub struct DonatorSyncConfig {
     pub check_interval: u64,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub struct JoinRoleConfig {
+    pub role: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct WelcomeConfig {
+    pub channel: String,
+    #[serde(default = "default_welcome_prompt_file")]
+    pub prompt_file: String,
+}
+
 fn default_true() -> bool {
     true
 }
@@ -79,6 +97,10 @@ fn default_personality_file() -> String {
     "personality.txt".to_string()
 }
 
+fn default_welcome_prompt_file() -> String {
+    "welcome_prompt.txt".to_string()
+}
+
 impl InstanceConfig {
     pub fn load(config_dir: &Path) -> Self {
         let config_path = config_dir.join("config.toml");
@@ -96,6 +118,22 @@ impl InstanceConfig {
             panic!("Personality file {} is empty", path.display());
         }
         content
+    }
+
+    pub fn load_welcome_prompt(&self, config_dir: &Path) -> Option<String> {
+        let wc = self.welcome.as_ref()?;
+        let path = config_dir.join(&wc.prompt_file);
+        match std::fs::read_to_string(&path) {
+            Ok(content) if !content.trim().is_empty() => Some(content),
+            Ok(_) => {
+                tracing::warn!("Welcome prompt file {} is empty", path.display());
+                None
+            }
+            Err(e) => {
+                tracing::warn!("Failed to read welcome prompt file {}: {e}", path.display());
+                None
+            }
+        }
     }
 
     pub fn config_dir() -> PathBuf {
