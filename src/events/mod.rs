@@ -1,3 +1,4 @@
+pub mod member_join;
 pub mod ready;
 pub mod voice_state;
 
@@ -66,6 +67,9 @@ pub async fn event_handler(
             interaction: Interaction::Component(interaction),
         } => {
             handle_component_interaction(ctx, interaction, data).await;
+        }
+        poise::serenity_prelude::FullEvent::GuildMemberAddition { new_member } => {
+            member_join::handle_member_join(ctx, new_member, data).await;
         }
         _ => {}
     }
