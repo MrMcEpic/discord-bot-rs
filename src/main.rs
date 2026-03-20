@@ -49,6 +49,10 @@ pub struct Data {
     pub bot_name: String,
     pub auto_role_config: Option<instance_config::AutoRoleConfig>,
     pub minecraft_config: Option<instance_config::MinecraftConfig>,
+    pub join_role_config: Option<instance_config::JoinRoleConfig>,
+    pub welcome_config: Option<instance_config::WelcomeConfig>,
+    pub welcome_prompt: Option<String>,
+    pub last_welcome: Arc<Mutex<Option<std::time::Instant>>>,
     pub mc_verify_url: Option<String>,
     pub mc_verify_secret: Option<String>,
     pub mcp_started: AtomicBool,
@@ -174,6 +178,48 @@ async fn main() {
         None
     };
 
+    let join_role_config = if instance_cfg.features.join_role {
+        match &instance_cfg.join_role {
+            Some(cfg) => {
+                tracing::info!("Join-role module enabled (role={})", cfg.role);
+                Some(cfg.clone())
+            }
+            None => {
+                tracing::warn!("Join-role feature enabled but [join_role] config section missing");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let welcome_prompt = if instance_cfg.features.welcome {
+        match instance_cfg.load_welcome_prompt(&config_dir) {
+            Some(prompt) => {
+                tracing::info!("Welcome module enabled");
+                Some(prompt)
+            }
+            None => {
+                tracing::warn!("Welcome feature enabled but prompt file missing or empty");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let welcome_config = if instance_cfg.features.welcome && welcome_prompt.is_some() {
+        instance_cfg.welcome.clone()
+    } else {
+        None
+    };
+
+    if welcome_config.is_some() {
+        if config.deepseek_api_key.is_none() && config.gemini_api_key.is_none() {
+            tracing::warn!("Welcome feature enabled but no AI API key (DEEPSEEK_API_KEY or GEMINI_API_KEY) configured");
+        }
+    }
+
     let token = config.token.clone();
     let guild_id_for_tasks = config.guild_id.clone();
     let mc_verify_url_for_tasks = config.mc_verify_url.clone();
@@ -236,6 +282,10 @@ async fn main() {
                     bot_name: instance_cfg.bot_name.clone(),
                     auto_role_config,
                     minecraft_config,
+                    join_role_config,
+                    welcome_config,
+                    welcome_prompt,
+                    last_welcome: Arc::new(Mutex::new(None)),
                     mc_verify_url,
                     mc_verify_secret,
                     mcp_started: AtomicBool::new(false),
