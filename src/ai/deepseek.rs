@@ -644,7 +644,10 @@ async fn execute_music_tool(
 
             let display_name = member.nick.as_deref().unwrap_or(&message.author.name);
             match resolve_track(query, display_name).await {
-                Ok(track) => {
+                Ok((track, cookies_stale)) => {
+                    if cookies_stale {
+                        let _ = message.channel_id.say(&ctx.http, "⚠️ YouTube cookies are expired. Music still works but age-restricted content won't. Someone needs to refresh `cookies.txt`.").await;
+                    }
                     // Join voice
                     if let Err(e) = voice::join_channel(ctx, guild_id, channel_id).await {
                         let _ = message.reply(&ctx.http, format!("Failed to join voice: {e}")).await;

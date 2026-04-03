@@ -87,7 +87,7 @@ pub async fn play(
         .map(|m| m.display_name().to_string())
         .unwrap_or_else(|| ctx.author().name.clone());
 
-    let track = match resolve_track(&query, &display_name).await {
+    let (track, cookies_stale) = match resolve_track(&query, &display_name).await {
         Ok(t) => t,
         Err(e) => {
             tracing::error!("Track resolve failed: {e}");
@@ -95,6 +95,9 @@ pub async fn play(
             return Ok(());
         }
     };
+    if cookies_stale {
+        ctx.say("⚠️ YouTube cookies are expired. Music still works but age-restricted content won't. Someone needs to refresh `cookies.txt`.").await?;
+    }
 
     voice::join_channel(ctx.serenity_context(), guild_id, channel_id).await?;
 
@@ -157,8 +160,8 @@ pub async fn playlist(
         .map(|m| m.display_name().to_string())
         .unwrap_or_else(|| ctx.author().name.clone());
 
-    let tracks = match resolve_tracks(&query, &display_name, false).await {
-        Ok(t) if !t.is_empty() => t,
+    let (tracks, cookies_stale) = match resolve_tracks(&query, &display_name, false).await {
+        Ok((t, stale)) if !t.is_empty() => (t, stale),
         Ok(_) => { ctx.say("No tracks found in that playlist.").await?; return Ok(()); }
         Err(e) => {
             tracing::error!("Playlist resolve failed: {e}");
@@ -166,6 +169,9 @@ pub async fn playlist(
             return Ok(());
         }
     };
+    if cookies_stale {
+        ctx.say("⚠️ YouTube cookies are expired. Music still works but age-restricted content won't. Someone needs to refresh `cookies.txt`.").await?;
+    }
 
     voice::join_channel(ctx.serenity_context(), guild_id, channel_id).await?;
 
