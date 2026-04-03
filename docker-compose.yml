@@ -23,7 +23,7 @@ services:
     environment:
       CONFIG_DIR: /config
     volumes:
-      - ./instances/examplebot:/config:ro
+      - ./instances/examplebot:/config
     tmpfs:
       - /tmp:size=500M
     depends_on:
@@ -44,7 +44,7 @@ services:
     environment:
       CONFIG_DIR: /config
     volumes:
-      - ./instances/secondbot:/config:ro
+      - ./instances/secondbot:/config
     tmpfs:
       - /tmp:size=500M
     depends_on:
