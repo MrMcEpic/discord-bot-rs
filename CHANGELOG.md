@@ -108,8 +108,8 @@ Bootstrap entry. This release represents the project state at the time of public
 - Health checks for all services
 
 ### Known Issues
-- AI context bleed: the message history builder can mix context from concurrent conversations in the same channel. Tracked in a known-issue GitHub issue.
-- MCP OAuth: bearer-token auth works but Claude Code's HTTP transport expects OAuth 2.1. Currently running without auth on localhost only. Tracked in a known-issue GitHub issue.
+- AI context bleed: the message history builder can mix context from concurrent conversations in the same channel. Tracked in [#1](https://github.com/MrMcEpic/discord-bot-rs/issues/1).
+- MCP OAuth: bearer-token auth works but Claude Code's HTTP transport expects OAuth 2.1. Currently running without auth on localhost only. Tracked in [#2](https://github.com/MrMcEpic/discord-bot-rs/issues/2).
 
 [Unreleased]: https://github.com/MrMcEpic/discord-bot-rs/compare/v0.5.0...HEAD
 [0.5.0]: https://github.com/MrMcEpic/discord-bot-rs/releases/tag/v0.5.0
