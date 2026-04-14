@@ -31,18 +31,9 @@ jobs:
             | tar -xz -C /usr/local/bin
       - name: Build book
         run: mdbook build
-      - name: Assemble Pages site
-        run: |
-          mkdir -p _site
-          cp -r book _site/book
-          if [ -f landing/index.html ]; then
-            cp landing/index.html _site/index.html
-          else
-            printf '%s\n' '<!DOCTYPE html>' '<meta http-equiv="refresh" content="0; url=./book/">' '<title>discord-bot-rs</title>' > _site/index.html
-          fi
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: _site
+          path: ./book
 
   deploy:
     name: Deploy to GitHub Pages
