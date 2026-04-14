@@ -38,11 +38,7 @@ jobs:
           if [ -f landing/index.html ]; then
             cp landing/index.html _site/index.html
           else
-            cat > _site/index.html <<'HTML'
-          <!DOCTYPE html>
-          <meta http-equiv="refresh" content="0; url=./book/">
-          <title>discord-bot-rs</title>
-          HTML
+            printf '%s\n' '<!DOCTYPE html>' '<meta http-equiv="refresh" content="0; url=./book/">' '<title>discord-bot-rs</title>' > _site/index.html
           fi
       - uses: actions/upload-pages-artifact@v3
         with:
