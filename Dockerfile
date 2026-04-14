@@ -3,7 +3,6 @@ FROM rust:bookworm AS builder
 RUN apt-get update && apt-get install -y cmake libopus-dev libsodium-dev && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
-COPY version_info.txt ./
 COPY src ./src
 RUN --mount=type=cache,target=/usr/local/cargo/registry     --mount=type=cache,target=/app/target     cargo build --release && cp target/release/discord-bot /usr/local/bin/discord-bot
 

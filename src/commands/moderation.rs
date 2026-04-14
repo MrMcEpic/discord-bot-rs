@@ -5,8 +5,6 @@ use crate::error::BotError;
 use crate::util::duration::{format_duration_ms, parse_duration};
 use crate::Context;
 
-const OWNER_ID: u64 = 123456789012345678;
-
 /// Temporarily ban a user
 #[poise::command(prefix_command, rename = "ban", required_permissions = "BAN_MEMBERS")]
 pub async fn ban(
@@ -16,11 +14,6 @@ pub async fn ban(
     #[description = "Reason"] #[rest] reason: Option<String>,
 ) -> Result<(), BotError> {
     let guild_id = ctx.guild_id().ok_or(BotError::Other("Not in a guild".into()))?;
-
-    if target.user.id.get() == OWNER_ID {
-        ctx.say("I can't ban the bot owner.").await?;
-        return Ok(());
-    }
 
     let duration_ms = match parse_duration(&duration_str) {
         Some(ms) => ms,
