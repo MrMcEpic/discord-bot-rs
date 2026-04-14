@@ -61,7 +61,7 @@ pub async fn join_channel(
     {
         let mut handler = _call.lock().await;
         let _ = handler.deafen(true).await;
-        handler.set_bitrate(Bitrate::BitsPerSecond(256_000));
+        handler.set_bitrate(Bitrate::Bits(256_000));
     }
 
     Ok(())
