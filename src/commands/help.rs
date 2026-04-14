@@ -23,9 +23,11 @@ pub async fn help(ctx: Context<'_>) -> Result<(), BotError> {
 	let has_manage = perms.contains(Permissions::MANAGE_MESSAGES);
 	let is_admin = perms.contains(Permissions::ADMINISTRATOR);
 
+	let bot_name = &ctx.data().bot_name;
+
 	let mut embed = CreateEmbed::new()
         .color(0x5865f2)
-        .title("Example Bot Commands")
+        .title(format!("{bot_name} Commands"))
         .description(
             "@mention me to chat, search the web, play music, trade stocks, or start games — all in plain English.",
         );
@@ -91,7 +93,7 @@ pub async fn help(ctx: Context<'_>) -> Result<(), BotError> {
         false,
     );
 
-	embed = embed.footer(CreateEmbedFooter::new(format!("Example Bot v{VERSION}")));
+	embed = embed.footer(CreateEmbedFooter::new(format!("{bot_name} v{VERSION}")));
 
 	ctx.send(poise::CreateReply::default().embed(embed)).await?;
 	Ok(())

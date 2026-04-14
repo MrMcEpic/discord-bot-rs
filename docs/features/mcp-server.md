@@ -206,16 +206,17 @@ expose this server on a network without setting `MCP_AUTH_TOKEN`.**
 
 ## The MCP gateway
 
-If you run multiple bot instances out of the same host (examplebot,
-secondbot, staging, …), each one binds its own port and exposes its own
-catalog. Pointing Claude Code at all of them individually means
-maintaining a list of URLs and switching between them.
+If you run multiple bot instances out of the same host (production
+and staging, or two community bots, etc.), each one binds its own port
+and exposes its own catalog. Pointing Claude Code at all of them
+individually means maintaining a list of URLs and switching between
+them.
 
 The repository ships a separate `mcp-gateway` service that solves
 this. It listens on a single port, multiplexes requests to whichever
 bot's MCP endpoint they belong to, and presents a unified tool list
-to clients (with each tool prefixed by an instance name, so
-`examplebot__list_channels` vs `secondbot__list_channels`).
+to clients (with each tool prefixed by the instance name from the
+`INSTANCES` env var, so `bot_a__list_channels` vs `bot_b__list_channels`).
 
 The gateway is the recommended entry point in production — see
 [Architecture: MCP Gateway Routing](../architecture/mcp-gateway-routing.md)

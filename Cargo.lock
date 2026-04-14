@@ -823,7 +823,7 @@ dependencies = [
 
 [[package]]
 name = "discord-bot"
-version = "0.4.6"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "axum",

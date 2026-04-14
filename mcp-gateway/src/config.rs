@@ -20,8 +20,9 @@ impl GatewayConfig {
 			.parse()
 			.expect("GATEWAY_PORT must be a valid port number");
 
-		let instances_str = std::env::var("INSTANCES")
-            .expect("INSTANCES env var required (e.g., examplebot=http://examplebot:9090,secondbot=http://secondbot:9090)");
+		let instances_str = std::env::var("INSTANCES").expect(
+			"INSTANCES env var required (e.g., bot1=http://bot1:9090,bot2=http://bot2:9090)",
+		);
 
 		let instances: Vec<Instance> = instances_str
 			.split(',')

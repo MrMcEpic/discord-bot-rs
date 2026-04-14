@@ -76,19 +76,19 @@ mod tests {
 
 	fn test_router() -> Router {
 		let mut instances = HashMap::new();
-		instances.insert("examplebot".to_string(), "http://examplebot:9090".to_string());
-		instances.insert("secondbot".to_string(), "http://secondbot:9090".to_string());
+		instances.insert("bot_a".to_string(), "http://bot_a:9090".to_string());
+		instances.insert("bot_b".to_string(), "http://bot_b:9090".to_string());
 		Router::new(instances)
 	}
 
 	#[tokio::test]
 	async fn resolve_explicit_instance() {
 		let router = test_router();
-		let result = router.resolve(Some("secondbot"), None).await.unwrap();
+		let result = router.resolve(Some("bot_b"), None).await.unwrap();
 		match result {
 			RouteTarget::Instance(name, url) => {
-				assert_eq!(name, "secondbot");
-				assert_eq!(url, "http://secondbot:9090");
+				assert_eq!(name, "bot_b");
+				assert_eq!(url, "http://bot_b:9090");
 			}
 		}
 	}
@@ -104,14 +104,14 @@ mod tests {
 	async fn resolve_by_guild_id() {
 		let router = test_router();
 		router
-			.update_guild_map("secondbot", vec!["123456789012345678".to_string()])
+			.update_guild_map("bot_b", vec!["123456789012345678".to_string()])
 			.await;
 		let result = router
 			.resolve(None, Some("123456789012345678"))
 			.await
 			.unwrap();
 		match result {
-			RouteTarget::Instance(name, _) => assert_eq!(name, "secondbot"),
+			RouteTarget::Instance(name, _) => assert_eq!(name, "bot_b"),
 		}
 	}
 
@@ -133,11 +133,11 @@ mod tests {
 	async fn explicit_instance_overrides_guild() {
 		let router = test_router();
 		router
-			.update_guild_map("secondbot", vec!["123".to_string()])
+			.update_guild_map("bot_b", vec!["123".to_string()])
 			.await;
-		let result = router.resolve(Some("examplebot"), Some("123")).await.unwrap();
+		let result = router.resolve(Some("bot_a"), Some("123")).await.unwrap();
 		match result {
-			RouteTarget::Instance(name, _) => assert_eq!(name, "examplebot"),
+			RouteTarget::Instance(name, _) => assert_eq!(name, "bot_a"),
 		}
 	}
 
@@ -145,10 +145,10 @@ mod tests {
 	async fn guild_map_updates_replace_old_entries() {
 		let router = test_router();
 		router
-			.update_guild_map("secondbot", vec!["111".to_string(), "222".to_string()])
+			.update_guild_map("bot_b", vec!["111".to_string(), "222".to_string()])
 			.await;
 		router
-			.update_guild_map("secondbot", vec!["333".to_string()])
+			.update_guild_map("bot_b", vec!["333".to_string()])
 			.await;
 		assert!(router.resolve(None, Some("111")).await.is_err());
 		assert!(router.resolve(None, Some("222")).await.is_err());
