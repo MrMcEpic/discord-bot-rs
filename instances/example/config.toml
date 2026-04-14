@@ -18,7 +18,8 @@
 # Display name shown in bot output (help text, welcome messages, etc.)
 bot_name = "Example Bot"
 
-# Prefix for text-based commands. Slash commands are always available regardless.
+# Prefix for all user commands. discord-bot-rs uses prefix commands only
+# (no slash commands), so this is the single prefix every user sees.
 command_prefix = "!"
 
 # Path to the personality file (system prompt for AI chat), relative to this
