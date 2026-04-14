@@ -1,6 +1,107 @@
-bot_name = "My Bot"
+# ============================================================================
+# discord-bot-rs — Example Instance Configuration
+# ============================================================================
+#
+# This file is the authoritative reference for every config.toml option.
+# Copy this whole directory to create a new instance:
+#
+#     cp -r instances/example instances/mybot
+#
+# Then edit this file, instances/mybot/.env, and instances/mybot/personality.txt.
+#
+# Full documentation: https://mrmcepic.github.io/discord-bot-rs/configuration/
+# ============================================================================
+
+
+# ----- Identity -------------------------------------------------------------
+
+# Display name shown in bot output (help text, welcome messages, etc.)
+bot_name = "Example Bot"
+
+# Prefix for text-based commands. Slash commands are always available regardless.
 command_prefix = "!"
+
+# Path to the personality file (system prompt for AI chat), relative to this
+# config file. Default: "personality.txt"
 personality_file = "personality.txt"
 
+
+# ----- Feature Flags --------------------------------------------------------
+#
+# Each flag gates a whole feature area. Setting to false disables the feature
+# entirely — the corresponding config section below is not required.
+
 [features]
-minecraft = false
+minecraft = false     # Minecraft verification + donator sync + chargeback alerts
+auto_role = false     # Automatic role promotion based on activity
+join_role = false     # Assign a role to new members on join
+welcome = false       # AI-generated welcome message on join
+
+
+# ----- Auto-Role Promotion --------------------------------------------------
+#
+# Required when features.auto_role = true.
+# Promotes members from `from_role` to `to_role` once they meet activity
+# criteria. Runs periodically; the first pass happens at bot startup.
+
+# [auto_role]
+# from_role = "ROLE_ID"       # Snowflake of the role to remove
+# to_role = "ROLE_ID"         # Snowflake of the role to grant
+# min_age = "3d"              # Time in guild before eligible (e.g. "1h", "3d", "1w")
+# min_messages = 20           # Messages sent in the guild before eligible
+# require_all = false         # true = both criteria required, false = either
+
+
+# ----- Join Role ------------------------------------------------------------
+#
+# Required when features.join_role = true.
+# Assigns this role to every new member on join. Typically used to mark
+# unverified/new members.
+
+# [join_role]
+# role = "ROLE_ID"            # Snowflake of the role to grant on join
+
+
+# ----- Welcome Messages -----------------------------------------------------
+#
+# Required when features.welcome = true.
+# Sends an AI-generated welcome message to the specified channel when a new
+# member joins. The prompt file controls tone and content.
+
+# [welcome]
+# channel = "CHANNEL_ID"
+# prompt_file = "welcome_prompt.txt"   # Relative to this config file
+
+
+# ----- Minecraft Module -----------------------------------------------------
+#
+# Required when features.minecraft = true.
+# Any sub-feature can be independently toggled.
+# MC_VERIFY_URL and MC_VERIFY_SECRET in .env are required for all sub-features.
+
+# [minecraft]
+# verify = true               # !m verify command (default: true)
+# donator_sync = false        # Poll MC server for donator tier role sync
+# chargeback = false          # Webhook listener for chargeback alerts
+
+
+# ----- Donator Sync ---------------------------------------------------------
+#
+# Required when minecraft.donator_sync = true.
+# Polls the MC server on interval and syncs donator roles based on response.
+
+# [minecraft.donator_sync_config]
+# supporter_role = "ROLE_ID"
+# premium_role = "ROLE_ID"
+# check_interval = 300        # Poll interval in seconds (default: 300)
+
+
+# ----- Chargeback Alerts ----------------------------------------------------
+#
+# Required when minecraft.chargeback = true.
+# Webhook endpoint (POST /webhook/chargeback) strips roles, applies restricted
+# role, posts interactive staff alert with Ban/Dismiss buttons.
+
+# [minecraft.chargeback_config]
+# staff_channel = "CHANNEL_ID"
+# restricted_role = "ROLE_ID"
