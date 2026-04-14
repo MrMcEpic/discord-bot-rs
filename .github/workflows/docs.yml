@@ -39,11 +39,19 @@ jobs:
       - name: Build book
         if: steps.check.outputs.exists == 'true'
         run: mdbook build
+      - name: Assemble Pages site (landing + book)
+        if: steps.check.outputs.exists == 'true'
+        run: |
+          mkdir -p _site
+          cp -r book _site/book
+          if [ -f landing/index.html ]; then
+            cp landing/index.html _site/index.html
+          fi
       - name: Upload Pages artifact
         if: steps.check.outputs.exists == 'true'
         uses: actions/upload-pages-artifact@v3
         with:
-          path: ./book
+          path: ./_site
 
   deploy:
     name: Deploy to GitHub Pages

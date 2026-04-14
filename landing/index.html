@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="discord-bot-rs is a multi-instance Discord bot framework written in Rust. AI chat, music, games, moderation, Minecraft integration, and a Model Context Protocol server.">
+<meta property="og:title" content="discord-bot-rs">
+<meta property="og:description" content="Multi-instance Discord bot framework written in Rust.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://mrmcepic.github.io/discord-bot-rs/">
+<title>discord-bot-rs — Multi-instance Discord bot framework</title>
+<style>
+:root {
+    --bg: #0f1419;
+    --bg-elevated: #171c22;
+    --bg-code: #1a1f26;
+    --border: #272e37;
+    --fg: #d4d4d4;
+    --fg-dim: #8a9199;
+    --fg-bright: #f2f2f2;
+    --accent: #ff9940;
+    --accent-dim: #3e4b59;
+    --radius: 8px;
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Ubuntu, sans-serif;
+    --mono: "SF Mono", Monaco, Menlo, "Cascadia Code", Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+
+body {
+    margin: 0;
+    padding: 0;
+    font-family: var(--font);
+    background: var(--bg);
+    color: var(--fg);
+    line-height: 1.6;
+    font-size: 16px;
+    -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.wrap { max-width: 960px; margin: 0 auto; padding: 0 24px; }
+
+header.hero {
+    padding: 96px 24px 64px;
+    text-align: center;
+    border-bottom: 1px solid var(--border);
+}
+
+.hero h1 {
+    font-size: clamp(2.25rem, 5vw, 3.5rem);
+    margin: 0 0 16px;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    color: var(--fg-bright);
+    font-family: var(--mono);
+}
+
+.hero .tagline {
+    font-size: clamp(1.05rem, 2vw, 1.25rem);
+    color: var(--fg-dim);
+    margin: 0 auto 32px;
+    max-width: 640px;
+}
+
+.hero .cta {
+    display: flex;
+    gap: 12px;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+.btn {
+    display: inline-block;
+    padding: 12px 24px;
+    border-radius: var(--radius);
+    font-weight: 600;
+    font-size: 0.95rem;
+    border: 1px solid transparent;
+    transition: all 0.15s ease;
+}
+
+.btn-primary {
+    background: var(--accent);
+    color: #0f1419;
+}
+
+.btn-primary:hover {
+    background: #ffab66;
+    text-decoration: none;
+}
+
+.btn-secondary {
+    background: transparent;
+    color: var(--fg-bright);
+    border-color: var(--border);
+}
+
+.btn-secondary:hover {
+    background: var(--bg-elevated);
+    text-decoration: none;
+}
+
+section {
+    padding: 72px 24px;
+    border-bottom: 1px solid var(--border);
+}
+
+section:last-of-type { border-bottom: none; }
+
+section h2 {
+    font-size: clamp(1.5rem, 3vw, 2rem);
+    margin: 0 0 12px;
+    color: var(--fg-bright);
+    letter-spacing: -0.01em;
+    font-weight: 700;
+}
+
+section .lead {
+    color: var(--fg-dim);
+    margin: 0 0 40px;
+    max-width: 640px;
+}
+
+.feature-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 20px;
+}
+
+.feature {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 24px;
+    transition: border-color 0.15s ease;
+}
+
+.feature:hover {
+    border-color: var(--accent-dim);
+}
+
+.feature h3 {
+    margin: 0 0 8px;
+    color: var(--fg-bright);
+    font-size: 1.1rem;
+    font-weight: 700;
+}
+
+.feature p {
+    margin: 0;
+    color: var(--fg-dim);
+    font-size: 0.95rem;
+    line-height: 1.55;
+}
+
+pre.code {
+    background: var(--bg-code);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px 24px;
+    overflow-x: auto;
+    margin: 0;
+}
+
+pre.code code {
+    font-family: var(--mono);
+    font-size: 0.88rem;
+    line-height: 1.7;
+    color: var(--fg);
+}
+
+pre.code .comment { color: var(--fg-dim); }
+pre.code .prompt { color: var(--accent); user-select: none; }
+
+.code-caption {
+    color: var(--fg-dim);
+    font-size: 0.9rem;
+    margin: 16px 0 0;
+}
+
+.stack {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
+.stack .chip {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 6px 14px;
+    font-size: 0.85rem;
+    color: var(--fg-dim);
+    font-family: var(--mono);
+}
+
+footer {
+    padding: 48px 24px;
+    text-align: center;
+    color: var(--fg-dim);
+    font-size: 0.9rem;
+}
+
+footer a { color: var(--fg-dim); }
+footer a:hover { color: var(--fg); }
+
+@media (max-width: 680px) {
+    header.hero { padding: 64px 20px 48px; }
+    section { padding: 56px 20px; }
+    .feature-grid { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+
+<header class="hero">
+    <div class="wrap">
+        <h1>discord-bot-rs</h1>
+        <p class="tagline">A multi-instance Discord bot framework written in Rust. AI chat, music, games, moderation, Minecraft integration, and a Model Context Protocol server — all from a single binary.</p>
+        <div class="cta">
+            <a class="btn btn-primary" href="./book/">Read the docs</a>
+            <a class="btn btn-secondary" href="https://github.com/MrMcEpic/discord-bot-rs">View on GitHub</a>
+        </div>
+    </div>
+</header>
+
+<section id="features">
+    <div class="wrap">
+        <h2>Features</h2>
+        <p class="lead">Everything the framework ships with. Every feature is opt-in, per instance, via config flags.</p>
+        <div class="feature-grid">
+
+            <article class="feature">
+                <h3>Multi-instance, one binary</h3>
+                <p>Run one bot or fifty from a single Rust process. Each instance has its own Discord app, personality, database schema, and feature set.</p>
+            </article>
+
+            <article class="feature">
+                <h3>AI chat with tool use</h3>
+                <p>@mention the bot for DeepSeek-powered conversations shaped by your personality file. Web search, moderation, and music tools available to the AI.</p>
+            </article>
+
+            <article class="feature">
+                <h3>Music with passthrough audio</h3>
+                <p>yt-dlp plus ffmpeg produce 256 kbps OGG/Opus that songbird plays without transcoding. Queue, loop, shuffle, button controls.</p>
+            </article>
+
+            <article class="feature">
+                <h3>Built-in games</h3>
+                <p>Wordle, Connections, and virtual stock trading with real-time market data. Each game has its own per-instance state.</p>
+            </article>
+
+            <article class="feature">
+                <h3>Minecraft integration</h3>
+                <p>Discord-to-Minecraft account linking, donator role sync from your Tebex server, and real-time chargeback alerts with interactive staff moderation.</p>
+            </article>
+
+            <article class="feature">
+                <h3>MCP server for Claude Code</h3>
+                <p>Embedded Model Context Protocol server exposing 22 Discord management tools. Plug Claude Code in and manage servers with an AI assistant.</p>
+            </article>
+
+        </div>
+    </div>
+</section>
+
+<section id="quickstart">
+    <div class="wrap">
+        <h2>Quick start</h2>
+        <p class="lead">Clone, configure, and run. Full ten-minute walkthrough in the docs.</p>
+        <pre class="code"><code><span class="prompt">$</span> git clone https://github.com/MrMcEpic/discord-bot-rs.git
+<span class="prompt">$</span> cd discord-bot-rs
+<span class="prompt">$</span> cp -r instances/example instances/mybot
+<span class="prompt">$</span> cp instances/mybot/.env.example instances/mybot/.env
+<span class="comment"># Edit instances/mybot/.env with your Discord token + API keys</span>
+<span class="prompt">$</span> INSTANCE_DIR=./instances/mybot docker compose up -d</code></pre>
+        <p class="code-caption">The walkthrough, prerequisites, and troubleshooting live in <a href="./book/getting-started/">Getting Started</a>.</p>
+    </div>
+</section>
+
+<section id="stack">
+    <div class="wrap">
+        <h2>Built with</h2>
+        <p class="lead">Real open source, no reinventing.</p>
+        <div class="stack">
+            <span class="chip">Rust stable</span>
+            <span class="chip">serenity</span>
+            <span class="chip">poise</span>
+            <span class="chip">songbird</span>
+            <span class="chip">sqlx + PostgreSQL</span>
+            <span class="chip">rmcp</span>
+            <span class="chip">axum</span>
+            <span class="chip">Docker Compose</span>
+            <span class="chip">yt-dlp + ffmpeg</span>
+            <span class="chip">DeepSeek + Gemini</span>
+        </div>
+    </div>
+</section>
+
+<footer>
+    <div class="wrap">
+        <p>
+            <a href="./book/">Documentation</a> &middot;
+            <a href="https://github.com/MrMcEpic/discord-bot-rs">GitHub</a> &middot;
+            <a href="https://github.com/MrMcEpic/discord-bot-rs/blob/master/LICENSE">AGPL-3.0-or-later</a>
+        </p>
+        <p>Built by <a href="https://github.com/MrMcEpic">MrMcEpic</a> and contributors.</p>
+    </div>
+</footer>
+
+</body>
+</html>

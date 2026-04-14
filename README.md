@@ -1,240 +1,155 @@
-# Discord Bot RS
+# discord-bot-rs
 
-A multi-instance Discord bot written in Rust. Supports AI chat (DeepSeek/Gemini), music playback, virtual stock trading, word games, moderation, and Minecraft account verification.
+**A multi-instance Discord bot framework written in Rust.**
+
+[![CI](https://github.com/MrMcEpic/discord-bot-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/MrMcEpic/discord-bot-rs/actions/workflows/ci.yml)
+[![Docs](https://github.com/MrMcEpic/discord-bot-rs/actions/workflows/docs.yml/badge.svg)](https://mrmcepic.github.io/discord-bot-rs/)
+[![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-stable-orange.svg)](https://rustup.rs)
+[![ghcr.io](https://img.shields.io/badge/ghcr.io-discord--bot--rs-2596be)](https://github.com/MrMcEpic/discord-bot-rs/pkgs/container/discord-bot-rs)
+
+---
+
+discord-bot-rs is a batteries-included Discord bot framework you can self-host. Run one bot or fifty from a single Rust binary, each with its own personality, database schema, and feature set. Ships with AI chat, music, games, moderation, a Minecraft module, and a Model Context Protocol server for programmatic Discord management from Claude Code or any MCP client.
+
+<!-- Screenshots will be added post-launch. -->
+<!-- <img src="docs/assets/screenshots/ai-chat.png" alt="AI chat in a Discord channel" width="720"> -->
+<!-- <img src="docs/assets/screenshots/music.png" alt="Music now playing embed" width="720"> -->
+<!-- <img src="docs/assets/screenshots/wordle.png" alt="Wordle game in progress" width="720"> -->
+<!-- <img src="docs/assets/screenshots/mcp.png" alt="Claude Code using MCP tools" width="720"> -->
+
+## Features
+
+### Multi-instance, one binary
+
+One Rust binary runs any number of bot instances simultaneously, each with its own Discord application, personality file, database schema, and feature flags. Adding a bot is copying a directory and editing three text files.
+
+```bash
+cp -r instances/example instances/mybot
+# Edit instances/mybot/.env and instances/mybot/config.toml
+INSTANCE_DIR=./instances/mybot docker compose up -d
+```
+
+### AI chat with real tool use
+
+@mention the bot and it replies with a DeepSeek-powered conversation shaped by the personality file you wrote. Gemini is the fallback provider when DeepSeek errors. The AI can invoke tools: web search, moderation actions, music control, user confirmations.
+
+### Music with passthrough audio
+
+yt-dlp and ffmpeg produce a 256 kbps OGG/Opus stream that [songbird](https://github.com/serenity-rs/songbird) plays without transcoding. Very low CPU. Supports YouTube, SoundCloud, Bandcamp, and anything yt-dlp knows about. Interactive button controls, queue with loop and shuffle, auto-leave on empty voice channel.
+
+### Built-in games
+
+Daily Wordle, Connections (group-by-category), and virtual stock trading with real-time Finnhub data. Each game has its own schema isolation per instance, so running two bots doesn't share state.
+
+### Minecraft integration
+
+Link Discord accounts to Minecraft accounts via `!m verify`. Optional donator role sync polls your Tebex-backed MC server and applies Discord roles based on tier. Optional real-time chargeback alerts ship an interactive staff embed the moment a player charges back.
+
+### MCP server for Claude Code
+
+An embedded Model Context Protocol server exposes 22 Discord management tools. Plug Claude Code into `http://localhost:9090/mcp` and manage guilds, channels, roles, and members from an AI assistant. A companion mcp-gateway service routes tool calls across multiple bot instances when you run more than one.
 
 ## Quick Start
 
 ```bash
 git clone https://github.com/MrMcEpic/discord-bot-rs.git
 cd discord-bot-rs
-
-# Create your instance from the example
 cp -r instances/example instances/mybot
-
-# Configure your instance
 cp instances/mybot/.env.example instances/mybot/.env
-# Edit instances/mybot/.env with your Discord token and API keys
-# Edit instances/mybot/config.toml for bot name, prefix, and features
-# Edit instances/mybot/personality.txt for AI personality
-
-# Update docker-compose.yml to point to your instance
-# (replace "examplebot" service with your instance name and path)
-
-# Start
-docker compose up -d
+# Edit instances/mybot/.env with your Discord token + API keys
+INSTANCE_DIR=./instances/mybot docker compose up -d
 ```
 
-## Instance Configuration
+The full ten-minute walkthrough is in [docs/getting-started/quickstart.md](https://mrmcepic.github.io/discord-bot-rs/book/getting-started/quickstart.html). First-timers who want the hand-held version should start with the [First Bot Tutorial](https://mrmcepic.github.io/discord-bot-rs/book/getting-started/first-bot-tutorial.html).
 
-Each bot instance has its own config directory under `instances/`:
+## Architecture
 
-```
-instances/mybot/
-├── .env              # Secrets: Discord token, API keys, DB schema
-├── config.toml       # Bot name, command prefix, feature toggles
-└── personality.txt   # AI system prompt / personality
-```
-
-### .env
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `DISCORD_TOKEN` | Yes | Discord bot token |
-| `CLIENT_ID` | Yes | Discord application client ID |
-| `GUILD_ID` | Yes | Discord server ID |
-| `DATABASE_URL` | Yes | PostgreSQL connection string |
-| `DB_SCHEMA` | Yes | Postgres schema name (isolates data per instance) |
-| `DEEPSEEK_API_KEY` | No | DeepSeek API key for AI chat |
-| `GEMINI_API_KEY` | No | Google Gemini API key (fallback AI) |
-| `FINNHUB_API_KEY` | No | Finnhub API key for stock trading |
-| `MC_VERIFY_URL` | No | Minecraft verification plugin URL |
-| `MC_VERIFY_SECRET` | No | Shared secret for MC verification |
-| `MCP_PORT` | No | MCP server port (default: 9090) |
-| `MCP_BIND_ADDR` | No | MCP server bind address (default: 127.0.0.1) |
-| `MCP_AUTH_TOKEN` | No | Bearer token for MCP auth (empty = no auth) |
-
-### config.toml
-
-```toml
-bot_name = "My Bot"
-command_prefix = "!"
-personality_file = "personality.txt"
-
-[features]
-minecraft = false     # Kill switch for all MC features
-auto_role = false
-
-# Required if auto_role = true
-[auto_role]
-from_role = "ROLE_ID"       # Role to remove on promotion
-to_role = "ROLE_ID"         # Role to grant on promotion
-min_age = "3d"              # Minimum account age in guild (e.g. "3d", "1w")
-min_messages = 20           # Minimum messages sent
-require_all = false         # true = both criteria required, false = either
-
-# Minecraft module — requires features.minecraft = true
-[minecraft]
-verify = true               # !m verify command (default: true)
-donator_sync = false        # Poll MC server for donator role sync
-chargeback = false          # Webhook listener for chargeback alerts
-
-# Required if minecraft.donator_sync = true (also needs MC_VERIFY_URL + MC_VERIFY_SECRET)
-[minecraft.donator_sync_config]
-supporter_role = "ROLE_ID"  # Discord role for supporter tier
-premium_role = "ROLE_ID"    # Discord role for premium tier
-check_interval = 300        # Poll interval in seconds (default: 300)
-
-# Required if minecraft.chargeback = true (also needs MC_VERIFY_URL + MC_VERIFY_SECRET)
-[minecraft.chargeback_config]
-staff_channel = "CHANNEL_ID"   # Channel for chargeback alerts
-restricted_role = "ROLE_ID"    # Role applied to chargeback users
+```mermaid
+graph TB
+    subgraph "Bot Process"
+        Gateway[Discord Gateway<br/>serenity]
+        Handler[Event Handler<br/>poise]
+        Commands[Commands<br/>src/commands/]
+        AI[AI Pipeline<br/>src/ai/]
+        Music[Music Player<br/>src/music/]
+        Games[Games<br/>wordle / connections / stocks]
+        DB[(PostgreSQL<br/>sqlx, schema-per-instance)]
+        MCP[MCP Server<br/>src/mcp/ + axum]
+    end
+    Discord[Discord API] <--> Gateway
+    Gateway --> Handler
+    Handler --> Commands
+    Handler --> AI
+    Handler --> Music
+    Commands --> DB
+    AI --> DB
+    Games --> DB
+    Handler --> Games
+    Claude[Claude Code / MCP Client] --> MCP
+    MCP --> Handler
 ```
 
-### personality.txt
+Each bot instance is one process with its own shared `Data` struct holding a PostgreSQL pool, configuration, AI state, per-guild music players, and more. Commands reach state through `ctx.data()`. Events flow Discord → serenity → poise → handlers → database. See [docs/architecture/](https://mrmcepic.github.io/discord-bot-rs/book/architecture/) for the deep dive, including multi-instance topology, the AI pipeline, the music pipeline, the MCP gateway, and the database schema.
 
-Free-form text that defines the bot's AI personality. This becomes the system prompt for AI conversations. See `instances/example/personality.txt` for a starting template.
+## Configuration
 
-## Features
+Configuration is split across three files per instance:
 
-### Auto-Role
+| File              | What lives here                                     | Documented in                                                                                            |
+| ----------------- | --------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `.env`            | Secrets, tokens, API keys, database connection      | [docs/configuration/environment-variables.md](https://mrmcepic.github.io/discord-bot-rs/book/configuration/environment-variables.html) |
+| `config.toml`     | Bot identity, command prefix, feature flags         | [docs/configuration/instance-config.md](https://mrmcepic.github.io/discord-bot-rs/book/configuration/instance-config.html)              |
+| `personality.txt` | AI system prompt (free-form prose)                  | [docs/configuration/personality.md](https://mrmcepic.github.io/discord-bot-rs/book/configuration/personality.html)                      |
 
-Automatically promotes members from one role to another based on activity. When enabled, a background task runs every 60 seconds checking if members meet the configured criteria (time in server, message count, or both).
+The full configuration model, including how instances are isolated and how to run more than one, is in [docs/configuration/](https://mrmcepic.github.io/discord-bot-rs/book/configuration/).
 
-### Donator Sync (MC → Discord)
+## Feature Reference
 
-Syncs donator tiers from a Minecraft server to Discord roles. Configured under `[minecraft]`. A background task polls the MC server's `/api/donators` endpoint at the configured interval, then adds/removes Supporter and Premium roles accordingly. When a player's subscription expires (Tebex removes the LuckPerms rank), they disappear from the API response and the bot removes their Discord role. Users with the restricted role (from chargebacks) are skipped.
+- [AI Chat](https://mrmcepic.github.io/discord-bot-rs/book/features/ai-chat.html) — DeepSeek + Gemini, @mention conversations with tool use
+- [Music](https://mrmcepic.github.io/discord-bot-rs/book/features/music.html) — yt-dlp + ffmpeg passthrough, queue controls, auto-leave
+- [Wordle](https://mrmcepic.github.io/discord-bot-rs/book/features/games-wordle.html), [Connections](https://mrmcepic.github.io/discord-bot-rs/book/features/games-connections.html), [Virtual Stocks](https://mrmcepic.github.io/discord-bot-rs/book/features/games-stocks.html) — built-in games with per-instance state
+- [Moderation](https://mrmcepic.github.io/discord-bot-rs/book/features/moderation.html) — tempban, unban, banlist, nuke
+- [Auto-Role Promotion](https://mrmcepic.github.io/discord-bot-rs/book/features/auto-role.html) — activity-based role advancement
+- [Member Join](https://mrmcepic.github.io/discord-bot-rs/book/features/join-features.html) — join role + AI welcome
+- [Minecraft Module](https://mrmcepic.github.io/discord-bot-rs/book/features/minecraft-verify.html) — account verify, donator sync, chargeback alerts
+- [MCP Server](https://mrmcepic.github.io/discord-bot-rs/book/features/mcp-server.html) — programmatic Discord management for Claude Code
 
-Requires `MC_VERIFY_URL` and `MC_VERIFY_SECRET` in `.env`.
+## Documentation
 
-**MC Plugin API endpoint:**
+Full documentation: **<https://mrmcepic.github.io/discord-bot-rs/>**
 
-```
-GET {MC_VERIFY_URL}/api/donators
-Authorization: Bearer {MC_VERIFY_SECRET}
+Highlights:
 
-Response 200:
-{
-  "donators": [
-    {
-      "uuid": "550e8400-e29b-41d4-a716-446655440000",
-      "username": "Steve",
-      "discord_id": "123456789012345678",
-      "tier": "supporter"
-    }
-  ]
-}
-```
+- [Getting Started](https://mrmcepic.github.io/discord-bot-rs/book/getting-started/) — install, quickstart, first-bot tutorial, setup verification
+- [Configuration](https://mrmcepic.github.io/discord-bot-rs/book/configuration/) — env vars, config.toml reference, secrets management
+- [Features](https://mrmcepic.github.io/discord-bot-rs/book/features/) — deep dive per feature
+- [Architecture](https://mrmcepic.github.io/discord-bot-rs/book/architecture/) — how it's built, with diagrams
+- [Development](https://mrmcepic.github.io/discord-bot-rs/book/development/) — codebase tour, adding a command, contributing workflow
+- [Reference](https://mrmcepic.github.io/discord-bot-rs/book/reference/) — command list, MCP tool catalog, FAQ, glossary
 
-- `tier`: `"supporter"` or `"premium"`
-- Only returns linked players with an active donator rank
-- On fetch error, the bot logs a warning and skips that cycle (does not remove roles)
+## Contributing
 
-### Chargeback Alerts (MC → Discord)
+Contributions welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) for the dev setup, code style, and PR workflow. The [Codebase Tour](https://mrmcepic.github.io/discord-bot-rs/book/development/codebase-tour.html) is the best place to start if you're new to the project. Security issues should follow [SECURITY.md](SECURITY.md) — please do not open public issues for vulnerabilities.
 
-Real-time chargeback notifications from the Minecraft server. When a player charges back a Tebex purchase, the MC plugin POSTs to the bot's `/webhook/chargeback` endpoint. The bot immediately strips all Discord roles, applies a restricted role, and posts an interactive alert to the configured staff channel.
+## License
 
-Staff can click **Ban** (Discord + MC ban) or **Dismiss** (keep restricted, no ban). Requires `MC_VERIFY_URL` and `MC_VERIFY_SECRET` in `.env`.
+**AGPL-3.0-or-later.** See [LICENSE](LICENSE) for the full text.
 
-### Minecraft Verification
+In plain English: you can run, modify, and distribute this bot freely. If you run a modified version as a public service (including a hosted Discord bot others interact with), you must publish your changes under the same license. The copyleft extends over the network, which is the "A" in AGPL.
 
-Links Discord accounts to Minecraft accounts. Players run a command on the MC server to get a code, then use `!m verify <code>` in Discord. The bot calls the MC plugin's `/api/verify` endpoint to confirm the link.
+If this restriction is a problem for your use case, let's talk — open an issue.
 
-### Music
+## Acknowledgements
 
-Queue-based music player using yt-dlp + ffmpeg with OGG/Opus passthrough. Supports loop, shuffle, skip, and interactive button controls.
+This project stands on the shoulders of excellent open-source work:
 
-### AI Chat
-
-Responds to @mentions using DeepSeek V3.2 (or Gemini as fallback). Each instance has its own personality defined in `personality.txt`.
-
-### Games
-
-- **Wordle** — daily word guessing game
-- **Connections** — group words by hidden categories
-- **Stock Trading** — virtual stock portfolio with real market data from Finnhub
-
-## MCP Server (Discord Management API)
-
-The bot embeds an MCP (Model Context Protocol) server that exposes Discord server management tools. Claude Code or any MCP client can connect to it for programmatic server management.
-
-### Available Tools (22)
-
-| Category | Tools |
-|----------|-------|
-| **Guilds** | `list_guilds` |
-| **Server** | `get_guild_info`, `send_message`, `delete_messages` |
-| **Channels** | `list_channels`, `create_channel`, `delete_channel`, `edit_channel`, `move_channel`, `set_channel_permissions` |
-| **Roles** | `list_roles`, `create_role`, `delete_role`, `edit_role` |
-| **Members** | `list_members`, `get_member`, `assign_role`, `remove_role`, `ban_member`, `unban_member`, `kick_member`, `timeout_member` |
-
-All tools accept an optional `guild_id` parameter to target any server the bot is in. If omitted, defaults to the configured `GUILD_ID`.
-
-### Connecting Claude Code
-
-Add to `~/.claude.json` (user scope) or project `.mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "discord": {
-      "type": "http",
-      "url": "http://localhost:9090/mcp"
-    }
-  }
-}
-```
-
-### Docker Port Exposure
-
-To expose the MCP port, add to the service in `docker-compose.yml`:
-
-```yaml
-ports:
-  - "127.0.0.1:9090:9090"  # localhost only
-```
-
-## Known Issues / TODO
-
-- **AI context bleed**: The bot's message history builder can still mix context from concurrent conversations in the same channel. Currently mitigated with a 30-minute window and 10-message limit, but needs a proper conversation-thread-based approach.
-- **MCP authentication**: Bearer token auth is implemented but Claude Code's HTTP transport expects OAuth. Currently running without auth (localhost-only). Needs OAuth 2.1 support or a workaround.
-
-## Adding Another Instance
-
-1. Create a new instance directory:
-   ```bash
-   cp -r instances/example instances/newbot
-   ```
-2. Configure `.env`, `config.toml`, and `personality.txt`
-3. Add a service to `docker-compose.yml`:
-   ```yaml
-   newbot:
-     build:
-       context: .
-       dockerfile: Dockerfile
-     restart: unless-stopped
-     env_file: instances/newbot/.env
-     environment:
-       CONFIG_DIR: /config
-     volumes:
-       - ./instances/newbot:/config:ro
-     tmpfs:
-       - /tmp:size=500M
-     depends_on:
-       postgres:
-         condition: service_healthy
-   ```
-4. Start it:
-   ```bash
-   docker compose up -d newbot
-   ```
-
-Each instance auto-creates its database schema on first startup.
-
-## Tech Stack
-
-- **Rust** with [poise](https://github.com/serenity-rs/poise) / [serenity](https://github.com/serenity-rs/serenity)
-- **PostgreSQL** via [sqlx](https://github.com/launchbadge/sqlx) (per-instance schema isolation)
-- **Docker Compose** for deployment
-- **DeepSeek V3.2 / Gemini** for AI chat
-- **Songbird** + yt-dlp + ffmpeg for music
-- **rmcp** + axum for MCP server (Discord management API)
+- [serenity](https://github.com/serenity-rs/serenity) and [poise](https://github.com/serenity-rs/poise) — Discord API and command framework
+- [songbird](https://github.com/serenity-rs/songbird) — voice engine
+- [sqlx](https://github.com/launchbadge/sqlx) — async SQL toolkit
+- [rmcp](https://github.com/modelcontextprotocol/rust-sdk) — Rust MCP SDK
+- [axum](https://github.com/tokio-rs/axum) and [tower](https://github.com/tower-rs/tower) — HTTP server stack
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp) and [ffmpeg](https://ffmpeg.org/) — audio pipeline
+- [DeepSeek](https://www.deepseek.com/) and [Google Gemini](https://ai.google.dev/) — language models
+- [Finnhub](https://finnhub.io/) — market data
+- [Anthropic](https://www.anthropic.com/) — the Model Context Protocol spec and Claude Code
