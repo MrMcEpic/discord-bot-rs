@@ -116,12 +116,11 @@ pub fn portfolio_embed(
 
 		let arrow = if pnl >= 0.0 { "📈" } else { "📉" };
 		lines.push(format!(
-			"{arrow} **{sym}**: {qty:.4} shares @ ${price:.2} = ${val:.2} ({pnl})",
+			"{arrow} **{sym}**: {qty:.4} shares @ ${price:.2} = ${val:.2} ({pnl_pct:+.2}%)",
 			sym = h.holding.symbol,
 			qty = h.holding.quantity,
 			price = h.current_price,
 			val = market_value,
-			pnl = format!("{:+.2}%", pnl_pct),
 		));
 	}
 

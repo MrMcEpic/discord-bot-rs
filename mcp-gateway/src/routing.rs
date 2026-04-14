@@ -10,7 +10,11 @@ pub struct Router {
 
 #[derive(Debug)]
 pub enum RouteTarget {
-	Instance(String, String),
+	// Tuple: (instance name, backend URL). The URL is only consumed by the
+	// router's own tests; production callers look up the backend by name from
+	// `ServerState::backends`. Kept on the enum so the test surface stays
+	// honest about what `resolve` actually returns.
+	Instance(String, #[allow(dead_code)] String),
 }
 
 #[derive(Debug, thiserror::Error)]

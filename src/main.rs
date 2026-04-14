@@ -21,7 +21,7 @@ use music::voice::PlaybackContext;
 use serenity::all::*;
 use songbird::tracks::TrackHandle;
 use songbird::SerenityInit;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use wordle::game::WordleGame;
@@ -223,10 +223,11 @@ async fn main() {
 		None
 	};
 
-	if welcome_config.is_some() {
-		if config.deepseek_api_key.is_none() && config.gemini_api_key.is_none() {
-			tracing::warn!("Welcome feature enabled but no AI API key (DEEPSEEK_API_KEY or GEMINI_API_KEY) configured");
-		}
+	if welcome_config.is_some()
+		&& config.deepseek_api_key.is_none()
+		&& config.gemini_api_key.is_none()
+	{
+		tracing::warn!("Welcome feature enabled but no AI API key (DEEPSEEK_API_KEY or GEMINI_API_KEY) configured");
 	}
 
 	let token = config.token.clone();

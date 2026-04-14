@@ -2,6 +2,12 @@ use crate::error::BotError;
 use crate::minecraft::api;
 use crate::Context;
 
+// `BotError` is the project-wide error type used by every poise command in this
+// crate; its largest variant (`Serenity(serenity::Error)`) trips the
+// `result_large_err` lint here even though every command in the codebase returns
+// the same type. Boxing the enum would be a cross-cutting refactor with no
+// runtime benefit for a small helper; allow locally instead.
+#[allow(clippy::result_large_err)]
 fn require_mc_config(ctx: Context<'_>) -> Result<(String, String), BotError> {
 	let url = ctx.data().config.mc_verify_url.clone().ok_or_else(|| {
 		BotError::Other("MC verification is not configured. Set `MC_VERIFY_URL` in .env".into())

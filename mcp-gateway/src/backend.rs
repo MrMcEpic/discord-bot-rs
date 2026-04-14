@@ -131,17 +131,15 @@ impl BackendClient {
 		// Read SSE stream: first find the initialize result, then keep reading for future responses
 		let mut stream = resp.bytes_stream();
 		let mut buffer = String::new();
-		let mut init_result: Option<JsonRpcResponse> = None;
 
 		// Phase 1: Read until we find the initialize response
-		loop {
+		let init_result: JsonRpcResponse = loop {
 			match tokio::time::timeout(std::time::Duration::from_secs(10), stream.next()).await {
 				Ok(Some(Ok(chunk))) => {
 					buffer.push_str(&String::from_utf8_lossy(&chunk));
 					if let Some(resp) = try_parse_sse_json(&buffer) {
-						init_result = Some(resp);
 						buffer.clear();
-						break;
+						break resp;
 					}
 				}
 				Ok(Some(Err(e))) => {
@@ -158,9 +156,8 @@ impl BackendClient {
 					));
 				}
 			}
-		}
+		};
 
-		let init_result = init_result.unwrap();
 		if let Some(err) = init_result.error {
 			return Err(format!("{} init error: {}", self.name, err.message));
 		}

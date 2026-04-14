@@ -26,10 +26,9 @@ pub async fn start(
 
 	// Wrap with auth check using axum
 	use axum::{
-		body::Body,
 		extract::Request,
 		middleware::{self, Next},
-		response::{IntoResponse, Response},
+		response::IntoResponse,
 		Router,
 	};
 	use http::StatusCode;

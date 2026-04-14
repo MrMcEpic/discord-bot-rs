@@ -8,6 +8,12 @@ use crate::Context;
 #[allow(unused_imports)]
 use sqlx;
 
+// `BotError` is the project-wide error type used by every poise command in this
+// crate; its largest variant (`Serenity(serenity::Error)`) trips the
+// `result_large_err` lint here even though every command in the codebase returns
+// the same type. Boxing the enum would be a cross-cutting refactor with no
+// runtime benefit for a small helper; allow locally instead.
+#[allow(clippy::result_large_err)]
 fn require_finnhub_key(ctx: Context<'_>) -> Result<String, BotError> {
 	ctx.data().config.finnhub_api_key.clone().ok_or_else(|| {
 		BotError::Other(

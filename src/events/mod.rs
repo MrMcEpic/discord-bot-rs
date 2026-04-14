@@ -41,14 +41,15 @@ pub async fn event_handler(
 				let webhook_router = if let Some(ref mc_cfg) = data.minecraft_config {
 					if mc_cfg.chargeback {
 						mc_cfg.chargeback_config.as_ref().and_then(|cb_cfg| {
-							let verify_url = data.mc_verify_url.as_ref()?;
+							// Gate: chargeback router only spins up when both MC verify URL
+							// and secret are configured. The URL itself isn't stored on
+							// WebhookState — buttons read it from `Data` at click time.
+							data.mc_verify_url.as_ref()?;
 							let verify_secret = data.mc_verify_secret.as_ref()?;
 							let state = crate::minecraft::chargeback::WebhookState {
 								http: ctx.http.clone(),
-								http_client: data.http_client.clone(),
 								guild_id,
 								chargeback_config: cb_cfg.clone(),
-								mc_verify_url: verify_url.clone(),
 								mc_verify_secret: verify_secret.clone(),
 							};
 							Some(crate::minecraft::chargeback::build_webhook_router(state))

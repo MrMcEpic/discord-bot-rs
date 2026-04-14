@@ -3,8 +3,11 @@ use rmcp::{
 	handler::server::router::tool::ToolRouter, handler::server::tool::ToolCallContext, model::*,
 	service::RequestContext, tool, tool_router, ErrorData as McpError, RoleServer, ServerHandler,
 };
+// Disambiguate: both `rmcp::model::*` and `serenity::all::*` export a `Content` symbol.
+// We want the MCP one (a type alias for `Annotated<RawContent>`) for tool results.
+use rmcp::model::Content;
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serenity::all::*;
 use std::sync::Arc;
 use std::time::Duration;
@@ -56,7 +59,10 @@ fn default_text() -> String {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ChannelIdParam {
-	/// Guild/server ID (optional, defaults to configured guild)
+	/// Guild/server ID (optional, defaults to configured guild).
+	/// Part of the public MCP tool schema; channel-scoped operations don't need
+	/// it at the API layer but callers may still pass it for clarity.
+	#[allow(dead_code)]
 	pub guild_id: Option<String>,
 	pub channel_id: String,
 }
@@ -176,6 +182,9 @@ pub struct TimeoutParams {
 	pub user_id: String,
 	/// e.g. "1h", "30m", "7d"
 	pub duration: String,
+	/// Audit-log reason. Part of the public MCP tool schema; the underlying
+	/// `edit_member` call doesn't currently thread it through to Discord.
+	#[allow(dead_code)]
 	pub reason: Option<String>,
 }
 
@@ -331,7 +340,8 @@ impl DiscordTools {
 		params: Parameters<SendMessageParams>,
 	) -> Result<CallToolResult, McpError> {
 		let p = params.0;
-		let gid = self.resolve_guild(p.guild_id.as_deref())?;
+		// _gid: validate guild id parameter shape; channel ops are scoped by channel_id.
+		let _gid = self.resolve_guild(p.guild_id.as_deref())?;
 		let channel_id = ChannelId::new(parse_id(&p.channel_id)?);
 		let map = serde_json::json!({ "content": p.content });
 		let msg = discord_call!(self.http.send_message(channel_id, vec![], &map));
@@ -347,9 +357,10 @@ impl DiscordTools {
 		params: Parameters<DeleteMessagesParams>,
 	) -> Result<CallToolResult, McpError> {
 		let p = params.0;
-		let gid = self.resolve_guild(p.guild_id.as_deref())?;
+		// _gid: validate guild id parameter shape; channel ops are scoped by channel_id.
+		let _gid = self.resolve_guild(p.guild_id.as_deref())?;
 		let channel_id = ChannelId::new(parse_id(&p.channel_id)?);
-		let count = p.count.min(100).max(1);
+		let count = p.count.clamp(1, 100);
 		let messages =
 			discord_call!(channel_id.messages(&*self.http, GetMessages::new().limit(count)));
 		let ids: Vec<MessageId> = messages.iter().map(|m| m.id).collect();
@@ -437,7 +448,8 @@ impl DiscordTools {
 		params: Parameters<EditChannelParams>,
 	) -> Result<CallToolResult, McpError> {
 		let p = params.0;
-		let gid = self.resolve_guild(p.guild_id.as_deref())?;
+		// _gid: validate guild id parameter shape; channel ops are scoped by channel_id.
+		let _gid = self.resolve_guild(p.guild_id.as_deref())?;
 		let channel_id = ChannelId::new(parse_id(&p.channel_id)?);
 		let mut map = serde_json::Map::new();
 		if let Some(name) = p.name {
@@ -490,7 +502,8 @@ impl DiscordTools {
 		params: Parameters<SetChannelPermsParams>,
 	) -> Result<CallToolResult, McpError> {
 		let p = params.0;
-		let gid = self.resolve_guild(p.guild_id.as_deref())?;
+		// _gid: validate guild id parameter shape; channel ops are scoped by channel_id.
+		let _gid = self.resolve_guild(p.guild_id.as_deref())?;
 		let channel_id = ChannelId::new(parse_id(&p.channel_id)?);
 		let target_id = parse_id(&p.target_id)?;
 		let allow = p
@@ -500,8 +513,6 @@ impl DiscordTools {
 			.parse::<u64>()
 			.unwrap_or(0);
 		let deny = p.deny.as_deref().unwrap_or("0").parse::<u64>().unwrap_or(0);
-		let perm_type = if p.target_type == "member" { "1" } else { "0" };
-		let map = serde_json::json!({ "allow": allow.to_string(), "deny": deny.to_string(), "type": perm_type });
 		let target = if p.target_type == "member" {
 			serenity::all::PermissionOverwriteType::Member(UserId::new(target_id))
 		} else {

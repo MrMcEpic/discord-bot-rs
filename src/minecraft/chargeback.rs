@@ -5,7 +5,6 @@ use axum::response::IntoResponse;
 use axum::{extract::State, middleware, routing::post, Json, Router};
 use serde::{Deserialize, Serialize};
 use serenity::all::*;
-use serenity::builder::*;
 use std::sync::Arc;
 
 use crate::instance_config::ChargebackConfig;
@@ -13,10 +12,8 @@ use crate::instance_config::ChargebackConfig;
 #[derive(Clone)]
 pub struct WebhookState {
 	pub http: Arc<Http>,
-	pub http_client: reqwest::Client,
 	pub guild_id: GuildId,
 	pub chargeback_config: ChargebackConfig,
-	pub mc_verify_url: String,
 	pub mc_verify_secret: String,
 }
 

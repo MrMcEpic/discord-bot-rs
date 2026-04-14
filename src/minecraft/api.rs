@@ -11,7 +11,11 @@ pub struct VerifyResponse {
 	pub success: bool,
 	#[serde(default)]
 	pub username: Option<String>,
+	/// Captured from the MC server response for completeness; not currently
+	/// surfaced to the user, but kept on the wire-format struct so we don't
+	/// silently drop the field if a future flow needs it.
 	#[serde(default)]
+	#[allow(dead_code)]
 	pub uuid: Option<String>,
 	#[serde(default)]
 	pub error: Option<String>,
