@@ -1,0 +1,72 @@
+name: Bug Report
+description: Something is broken or behaving unexpectedly.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report! Please fill out the sections below.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What's the bug? What did you expect to happen?
+      placeholder: |
+        When I run `!m verify`, the bot replies with an error even though my code is valid...
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: How can someone else trigger this bug?
+      placeholder: |
+        1. Configure features.minecraft = true
+        2. Set MC_VERIFY_URL to my server
+        3. Run !m verify <valid-code>
+        4. Observe error
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version / Commit
+      description: What version or commit hash are you running?
+      placeholder: "v0.4.6 or abcdef0"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant bot logs. **Redact tokens and secrets.**
+      render: shell
+      placeholder: |
+        2026-04-14 ... ERROR ...
+    validations:
+      required: false
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Configuration (optional)
+      description: Your `config.toml`, redacted if you prefer.
+      render: toml
+    validations:
+      required: false
+
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment Method
+      options:
+        - Docker Compose (bundled)
+        - Docker (standalone)
+        - Cargo run (no Docker)
+        - Other
+    validations:
+      required: true

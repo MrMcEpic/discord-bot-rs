@@ -1,7 +1,16 @@
 [package]
 name = "discord-bot"
-version = "0.4.6"
+version = "0.5.0"
 edition = "2021"
+description = "Multi-instance Discord bot framework written in Rust. AI chat, music, games, moderation, Minecraft integration, and a Model Context Protocol server."
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/MrMcEpic/discord-bot-rs"
+homepage = "https://mrmcepic.github.io/discord-bot-rs"
+documentation = "https://mrmcepic.github.io/discord-bot-rs"
+readme = "README.md"
+keywords = ["discord", "bot", "serenity", "poise", "songbird"]
+categories = ["network-programming", "api-bindings"]
+authors = ["MrMcEpic"]
 
 [dependencies]
 serenity = { version = "0.12", default-features = false, features = [

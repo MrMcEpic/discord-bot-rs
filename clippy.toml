@@ -1,0 +1,10 @@
+# Clippy configuration.
+# Per-lint allows live in source files (not here).
+# This file is for project-level clippy settings.
+
+doc-valid-idents = [
+  "Discord", "DeepSeek", "Gemini", "DSML", "MCP", "PostgreSQL", "SQL",
+  "OGG", "Opus", "ffmpeg", "yt-dlp", "Songbird", "Serenity", "Poise",
+  "OAuth", "TOML", "YAML", "HTTP", "SSE", "JSON", "GitHub", "ghcr",
+  "Tebex", "Minecraft", "URL",
+]

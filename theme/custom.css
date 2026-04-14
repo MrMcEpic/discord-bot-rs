@@ -1,0 +1,54 @@
+/* discord-bot-rs custom theme overrides
+ *
+ * Kept minimal — just a few tweaks for readability and a touch of brand.
+ */
+
+:root {
+    --sidebar-width: 320px;
+    --page-padding: 20px;
+    --content-max-width: 820px;
+}
+
+.menu-title {
+    font-weight: 700;
+    font-size: 1.15rem;
+}
+
+.chapter li.chapter-item {
+    line-height: 1.5;
+}
+
+pre > code {
+    border-radius: 6px;
+}
+
+blockquote {
+    border-left-width: 3px;
+    border-left-color: var(--links);
+}
+
+table {
+    margin-top: 1rem;
+    margin-bottom: 1rem;
+}
+
+th {
+    font-weight: 600;
+}
+
+.content h1 {
+    margin-top: 1rem;
+}
+
+.content h2 {
+    margin-top: 2rem;
+    padding-bottom: 0.3rem;
+    border-bottom: 1px solid var(--table-border-color);
+}
+
+.content h1 code,
+.content h2 code,
+.content h3 code {
+    font-size: inherit;
+    padding: 0.1em 0.3em;
+}

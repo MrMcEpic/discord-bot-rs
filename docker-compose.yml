@@ -1,3 +1,18 @@
+# ============================================================================
+# discord-bot-rs — Docker Compose
+# ============================================================================
+#
+# Default configuration runs a single bot instance from ./instances/example
+# plus a bundled PostgreSQL and the MCP gateway.
+#
+# To use a different instance directory:
+#     INSTANCE_DIR=./instances/mybot docker compose up -d
+#
+# To run multiple bot instances, copy the `bot` service definition, rename it,
+# and point it at a different instance directory. See
+# docs/deployment/multi-instance-deployment.md for the full pattern.
+# ============================================================================
+
 services:
   postgres:
     image: postgres:17
@@ -14,37 +29,16 @@ services:
       timeout: 5s
       retries: 5
 
-  examplebot:
+  bot:
     build:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
-    env_file: instances/examplebot/.env
+    env_file: ${INSTANCE_DIR:-./instances/example}/.env
     environment:
       CONFIG_DIR: /config
     volumes:
-      - ./instances/examplebot:/config
-    tmpfs:
-      - /tmp:size=500M
-    depends_on:
-      postgres:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "curl -s -o /dev/null --connect-timeout 2 http://localhost:9090/mcp"]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-
-  secondbot:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    restart: unless-stopped
-    env_file: instances/secondbot/.env
-    environment:
-      CONFIG_DIR: /config
-    volumes:
-      - ./instances/secondbot:/config
+      - ${INSTANCE_DIR:-./instances/example}:/config
     tmpfs:
       - /tmp:size=500M
     depends_on:
@@ -65,13 +59,14 @@ services:
       - "127.0.0.1:9100:9100"
     environment:
       GATEWAY_PORT: "9100"
-      INSTANCES: "examplebot=http://examplebot:9090,secondbot=http://secondbot:9090"
+      # Comma-separated instance_name=url pairs. Defaults to routing to the
+      # single `bot` service. Override for multi-instance setups:
+      #     INSTANCES="bot1=http://bot1:9090,bot2=http://bot2:9090" docker compose up -d
+      INSTANCES: "${INSTANCES:-bot=http://bot:9090}"
       MCP_AUTH_TOKEN: "${MCP_GATEWAY_AUTH_TOKEN:-}"
       RUST_LOG: "info"
     depends_on:
-      examplebot:
-        condition: service_healthy
-      secondbot:
+      bot:
         condition: service_healthy
 
 volumes:

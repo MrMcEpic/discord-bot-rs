@@ -1,5 +1,26 @@
+# Rust
 /target
+**/*.rs.bk
+
+# Environment files (each instance has its own)
 .env
-cookies.txt
 instances/*/.env
-!instances/example/.env.example
+!instances/*/.env.example
+
+# YouTube cookies (per-instance, private)
+cookies.txt
+instances/*/cookies.txt
+
+# mdBook build output
+/book
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Docker
+docker-compose.override.yml
