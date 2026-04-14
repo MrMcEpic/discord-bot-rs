@@ -5,34 +5,34 @@ use sqlx::postgres::PgPoolOptions;
 use sqlx::{Connection, Executor, PgPool};
 
 pub async fn init_pool(database_url: &str, schema: &str) -> Result<PgPool, sqlx::Error> {
-    // Create schema on a one-off connection
-    let mut conn = sqlx::postgres::PgConnection::connect(database_url).await?;
-    conn.execute(format!("CREATE SCHEMA IF NOT EXISTS \"{}\"", schema).as_str()).await?;
-    drop(conn);
+	// Create schema on a one-off connection
+	let mut conn = sqlx::postgres::PgConnection::connect(database_url).await?;
+	conn.execute(format!("CREATE SCHEMA IF NOT EXISTS \"{}\"", schema).as_str())
+		.await?;
+	drop(conn);
 
-    // Build pool with after_connect that sets search_path on every new connection
-    let schema_owned = schema.to_string();
-    let pool = PgPoolOptions::new()
-        .after_connect(move |conn, _meta| {
-            let schema = schema_owned.clone();
-            Box::pin(async move {
-                conn.execute(
-                    format!("SET search_path TO \"{}\"", schema).as_str()
-                ).await?;
-                Ok(())
-            })
-        })
-        .connect(database_url)
-        .await?;
+	// Build pool with after_connect that sets search_path on every new connection
+	let schema_owned = schema.to_string();
+	let pool = PgPoolOptions::new()
+		.after_connect(move |conn, _meta| {
+			let schema = schema_owned.clone();
+			Box::pin(async move {
+				conn.execute(format!("SET search_path TO \"{}\"", schema).as_str())
+					.await?;
+				Ok(())
+			})
+		})
+		.connect(database_url)
+		.await?;
 
-    migrate(&pool).await?;
-    tracing::info!("Database initialized (schema: {}).", schema);
-    Ok(pool)
+	migrate(&pool).await?;
+	tracing::info!("Database initialized (schema: {}).", schema);
+	Ok(pool)
 }
 
 async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS tempbans (
+	sqlx::query(
+		"CREATE TABLE IF NOT EXISTS tempbans (
             id SERIAL PRIMARY KEY,
             guild_id TEXT NOT NULL,
             user_id TEXT NOT NULL,
@@ -42,42 +42,42 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
             expires_at TIMESTAMPTZ NOT NULL,
             unbanned BOOLEAN NOT NULL DEFAULT FALSE
         )",
-    )
-    .execute(pool)
-    .await?;
+	)
+	.execute(pool)
+	.await?;
 
-    sqlx::query(
+	sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_tempbans_active          ON tempbans (guild_id, expires_at) WHERE unbanned = FALSE",
     )
     .execute(pool)
     .await?;
 
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS guild_settings (
+	sqlx::query(
+		"CREATE TABLE IF NOT EXISTS guild_settings (
             guild_id TEXT PRIMARY KEY,
             audit_log_channel_id TEXT,
             dj_role_id TEXT,
             dj_mode_enabled BOOLEAN NOT NULL DEFAULT FALSE
         )",
-    )
-    .execute(pool)
-    .await?;
+	)
+	.execute(pool)
+	.await?;
 
-    // Stock trading tables
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS stock_portfolios (
+	// Stock trading tables
+	sqlx::query(
+		"CREATE TABLE IF NOT EXISTS stock_portfolios (
             guild_id TEXT NOT NULL,
             user_id TEXT NOT NULL,
             cash_balance DOUBLE PRECISION NOT NULL DEFAULT 1000.0,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             PRIMARY KEY (guild_id, user_id)
         )",
-    )
-    .execute(pool)
-    .await?;
+	)
+	.execute(pool)
+	.await?;
 
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS stock_holdings (
+	sqlx::query(
+		"CREATE TABLE IF NOT EXISTS stock_holdings (
             id SERIAL PRIMARY KEY,
             guild_id TEXT NOT NULL,
             user_id TEXT NOT NULL,
@@ -86,18 +86,18 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
             avg_cost DOUBLE PRECISION NOT NULL DEFAULT 0.0,
             UNIQUE (guild_id, user_id, symbol)
         )",
-    )
-    .execute(pool)
-    .await?;
+	)
+	.execute(pool)
+	.await?;
 
-    sqlx::query(
+	sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_stock_holdings_user          ON stock_holdings (guild_id, user_id)",
     )
     .execute(pool)
     .await?;
 
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS stock_transactions (
+	sqlx::query(
+		"CREATE TABLE IF NOT EXISTS stock_transactions (
             id SERIAL PRIMARY KEY,
             guild_id TEXT NOT NULL,
             user_id TEXT NOT NULL,
@@ -108,30 +108,30 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
             total_amount DOUBLE PRECISION NOT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )",
-    )
-    .execute(pool)
-    .await?;
+	)
+	.execute(pool)
+	.await?;
 
-    sqlx::query(
+	sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_stock_transactions_user          ON stock_transactions (guild_id, user_id, created_at DESC)",
     )
     .execute(pool)
     .await?;
 
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS stock_price_cache (
+	sqlx::query(
+		"CREATE TABLE IF NOT EXISTS stock_price_cache (
             symbol TEXT PRIMARY KEY,
             price DOUBLE PRECISION NOT NULL,
             prev_close DOUBLE PRECISION NOT NULL,
             change_pct DOUBLE PRECISION NOT NULL,
             fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )",
-    )
-    .execute(pool)
-    .await?;
+	)
+	.execute(pool)
+	.await?;
 
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS member_activity (
+	sqlx::query(
+		"CREATE TABLE IF NOT EXISTS member_activity (
             guild_id TEXT NOT NULL,
             user_id TEXT NOT NULL,
             message_count INTEGER NOT NULL DEFAULT 0,
@@ -139,9 +139,9 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
             promoted BOOLEAN NOT NULL DEFAULT FALSE,
             PRIMARY KEY (guild_id, user_id)
         )",
-    )
-    .execute(pool)
-    .await?;
+	)
+	.execute(pool)
+	.await?;
 
-    Ok(())
+	Ok(())
 }
