@@ -1,0 +1,37 @@
+[book]
+title = "discord-bot-rs"
+description = "Multi-instance Discord bot framework written in Rust."
+authors = ["MrMcEpic"]
+language = "en"
+src = "docs"
+
+[build]
+build-dir = "book"
+
+[output.html]
+git-repository-url = "https://github.com/MrMcEpic/discord-bot-rs"
+git-repository-icon = "fa-github"
+edit-url-template = "https://github.com/MrMcEpic/discord-bot-rs/edit/master/{path}"
+site-url = "/discord-bot-rs/"
+default-theme = "ayu"
+preferred-dark-theme = "ayu"
+additional-css = ["theme/custom.css"]
+copy-fonts = true
+
+[output.html.fold]
+enable = true
+level = 1
+
+[output.html.search]
+enable = true
+limit-results = 30
+use-boolean-and = true
+boost-title = 2
+boost-hierarchy = 1
+boost-paragraph = 1
+expand = true
+heading-split-level = 3
+
+[output.html.playground]
+editable = false
+runnable = false
