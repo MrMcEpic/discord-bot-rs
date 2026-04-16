@@ -1,6 +1,8 @@
 use rand::seq::SliceRandom;
 use serenity::all::GuildId;
 use std::collections::VecDeque;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use super::track::Track;
 
@@ -37,6 +39,16 @@ pub struct GuildPlayer {
 	pub current: Option<Track>,
 	pub loop_mode: LoopMode,
 	pub paused: bool,
+	/// Set to `true` immediately before we tell songbird to stop the currently
+	/// playing track so we can start a new one (e.g. on `!m skip`, button skip,
+	/// or AI tool-driven track change). The track-end event handler swaps it
+	/// back to `false` and returns early — otherwise it would advance the queue
+	/// a second time on top of the new track we just started.
+	///
+	/// `Arc<AtomicBool>` so the handler (which only holds a `PlaybackContext`)
+	/// can read it without re-locking the player mutex from inside its own
+	/// `act` body, and so cloning the player handle around is cheap.
+	pub skip_in_progress: Arc<AtomicBool>,
 }
 
 impl GuildPlayer {
@@ -47,6 +59,7 @@ impl GuildPlayer {
 			current: None,
 			loop_mode: LoopMode::Off,
 			paused: false,
+			skip_in_progress: Arc::new(AtomicBool::new(false)),
 		}
 	}
 

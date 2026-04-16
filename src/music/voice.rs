@@ -1,3 +1,4 @@
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -94,6 +95,25 @@ pub async fn play_track(
 	let call = manager.get(guild_id).ok_or("Not in a voice channel")?;
 
 	let source = make_ytdl_source(http_client, url);
+
+	// If there's already a track playing for this guild, songbird's stop() will
+	// fire `TrackEvent::End` for it. The end-handler attached to that track
+	// would then call `advance()` and start the *next-next* song, skipping
+	// over the song we're about to start. Songbird 0.6 has no API to detach
+	// an event listener from a TrackHandle, so we set a per-guild flag that
+	// the handler checks at the top of `act` and swaps back to false.
+	if let Some(pctx) = pctx {
+		if pctx.track_handles.contains_key(&pctx.guild_id) {
+			if let Some(player_entry) = pctx.guild_players.get(&pctx.guild_id) {
+				player_entry
+					.value()
+					.lock()
+					.await
+					.skip_in_progress
+					.store(true, Ordering::SeqCst);
+			}
+		}
+	}
 
 	let mut handler = call.lock().await;
 	handler.stop();
@@ -199,6 +219,21 @@ impl EventHandler for TrackEndHandler {
 				return None;
 			}
 		};
+
+		// If a skip is in progress, the new track has already been started by
+		// the caller of `play_track`. Our End event fired for the *old* track;
+		// advancing here would skip past the song that just started. Swap the
+		// flag back to false so the *next* natural End-of-track event proceeds
+		// normally, then bail out.
+		{
+			let p = player_arc.lock().await;
+			if p.skip_in_progress.swap(false, Ordering::SeqCst) {
+				tracing::debug!(
+					"TrackEndHandler: skip-in-progress flag was set for guild {guild_id}; suppressing duplicate advance"
+				);
+				return None;
+			}
+		}
 
 		let mut p = player_arc.lock().await;
 		let next_track = p.advance();
