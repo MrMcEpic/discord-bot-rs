@@ -44,6 +44,24 @@ pub async fn date(
 async fn start_game(ctx: Context<'_>, date: &str) -> Result<(), BotError> {
 	let channel_id = ctx.channel_id();
 
+	// Refuse if a non-expired game is already active in this channel
+	if let Some(existing) = ctx
+		.data()
+		.wordle_games
+		.get(&channel_id)
+		.map(|e| e.value().clone())
+	{
+		let game = existing.lock().await;
+		if !game.is_expired() {
+			drop(game);
+			ctx.say(
+				"A wordle game is already active in this channel. Finish or wait for it to expire.",
+			)
+			.await?;
+			return Ok(());
+		}
+	}
+
 	let puzzle = api::fetch_puzzle(&ctx.data().http_client, date)
 		.await
 		.map_err(BotError::Other)?;

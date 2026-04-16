@@ -1520,6 +1520,25 @@ async fn execute_connections_tool(
 	data: &Data,
 	args: &serde_json::Value,
 ) {
+	// Refuse if a non-expired game is already active in this channel
+	if let Some(existing) = data
+		.connections_games
+		.get(&message.channel_id)
+		.map(|e| e.value().clone())
+	{
+		let game = existing.lock().await;
+		if !game.is_expired() {
+			drop(game);
+			let _ = message
+				.reply(
+					&ctx.http,
+					"A connections game is already active in this channel. Finish or wait for it to expire.",
+				)
+				.await;
+			return;
+		}
+	}
+
 	let mode = args["mode"].as_str().unwrap_or("today");
 	let date = match mode {
 		"random" => conn_api::random_puzzle_date(),
@@ -1572,6 +1591,25 @@ async fn execute_wordle_tool(
 	data: &Data,
 	args: &serde_json::Value,
 ) {
+	// Refuse if a non-expired game is already active in this channel
+	if let Some(existing) = data
+		.wordle_games
+		.get(&message.channel_id)
+		.map(|e| e.value().clone())
+	{
+		let game = existing.lock().await;
+		if !game.is_expired() {
+			drop(game);
+			let _ = message
+				.reply(
+					&ctx.http,
+					"A wordle game is already active in this channel. Finish or wait for it to expire.",
+				)
+				.await;
+			return;
+		}
+	}
+
 	let mode = args["mode"].as_str().unwrap_or("today");
 	let date = match mode {
 		"random" => wordle_api::random_puzzle_date(),
