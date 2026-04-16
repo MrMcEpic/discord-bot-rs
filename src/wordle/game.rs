@@ -1,8 +1,8 @@
 use serenity::model::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
-static VALID_WORDS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+static VALID_WORDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
 	include_str!("words.txt")
 		.lines()
 		.filter(|l| !l.is_empty())
@@ -10,7 +10,7 @@ static VALID_WORDS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
 });
 
 pub fn is_valid_word(word: &str) -> bool {
-	VALID_WORDS.binary_search(&word).is_ok() || VALID_WORDS.contains(&word)
+	VALID_WORDS.contains(word)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
