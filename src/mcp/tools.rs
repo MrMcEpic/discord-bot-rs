@@ -59,10 +59,7 @@ fn default_text() -> String {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ChannelIdParam {
-	/// Guild/server ID (optional, defaults to configured guild).
-	/// Part of the public MCP tool schema; channel-scoped operations don't need
-	/// it at the API layer but callers may still pass it for clarity.
-	#[allow(dead_code)]
+	/// Guild/server ID (optional, defaults to configured guild)
 	pub guild_id: Option<String>,
 	pub channel_id: String,
 }
@@ -257,6 +254,30 @@ impl DiscordTools {
 			None => Ok(self.guild_id),
 		}
 	}
+
+	/// Verify that `channel_id` belongs to `guild_id`. Performs an HTTP fetch of the
+	/// channel and checks `guild_id`. Rejects DM/private channels and cross-guild
+	/// access. This is the authorization check that prevents a caller from passing
+	/// any channel ID and having the bot operate on it just because it shares a
+	/// gateway with that channel's guild.
+	async fn verify_channel_in_guild(
+		&self,
+		channel_id: ChannelId,
+		guild_id: GuildId,
+	) -> Result<(), McpError> {
+		let channel = discord_call!(self.http.get_channel(channel_id));
+		let actual_guild = match channel {
+			Channel::Guild(gc) => Some(gc.guild_id),
+			_ => None,
+		};
+		if actual_guild != Some(guild_id) {
+			return Err(McpError::invalid_params(
+				format!("Channel {channel_id} is not in guild {guild_id}"),
+				None,
+			));
+		}
+		Ok(())
+	}
 }
 
 impl ServerHandler for DiscordTools {
@@ -340,9 +361,9 @@ impl DiscordTools {
 		params: Parameters<SendMessageParams>,
 	) -> Result<CallToolResult, McpError> {
 		let p = params.0;
-		// _gid: validate guild id parameter shape; channel ops are scoped by channel_id.
-		let _gid = self.resolve_guild(p.guild_id.as_deref())?;
+		let gid = self.resolve_guild(p.guild_id.as_deref())?;
 		let channel_id = ChannelId::new(parse_id(&p.channel_id)?);
+		self.verify_channel_in_guild(channel_id, gid).await?;
 		let map = serde_json::json!({ "content": p.content });
 		let msg = discord_call!(self.http.send_message(channel_id, vec![], &map));
 		Ok(CallToolResult::success(vec![Content::text(format!(
@@ -357,9 +378,9 @@ impl DiscordTools {
 		params: Parameters<DeleteMessagesParams>,
 	) -> Result<CallToolResult, McpError> {
 		let p = params.0;
-		// _gid: validate guild id parameter shape; channel ops are scoped by channel_id.
-		let _gid = self.resolve_guild(p.guild_id.as_deref())?;
+		let gid = self.resolve_guild(p.guild_id.as_deref())?;
 		let channel_id = ChannelId::new(parse_id(&p.channel_id)?);
+		self.verify_channel_in_guild(channel_id, gid).await?;
 		let count = p.count.clamp(1, 100);
 		let messages =
 			discord_call!(channel_id.messages(&*self.http, GetMessages::new().limit(count)));
@@ -435,7 +456,9 @@ impl DiscordTools {
 		&self,
 		params: Parameters<ChannelIdParam>,
 	) -> Result<CallToolResult, McpError> {
+		let gid = self.resolve_guild(params.0.guild_id.as_deref())?;
 		let channel_id = ChannelId::new(parse_id(&params.0.channel_id)?);
+		self.verify_channel_in_guild(channel_id, gid).await?;
 		discord_call!(self.http.delete_channel(channel_id, None));
 		Ok(CallToolResult::success(vec![Content::text(
 			"Channel deleted",
@@ -448,9 +471,9 @@ impl DiscordTools {
 		params: Parameters<EditChannelParams>,
 	) -> Result<CallToolResult, McpError> {
 		let p = params.0;
-		// _gid: validate guild id parameter shape; channel ops are scoped by channel_id.
-		let _gid = self.resolve_guild(p.guild_id.as_deref())?;
+		let gid = self.resolve_guild(p.guild_id.as_deref())?;
 		let channel_id = ChannelId::new(parse_id(&p.channel_id)?);
+		self.verify_channel_in_guild(channel_id, gid).await?;
 		let mut map = serde_json::Map::new();
 		if let Some(name) = p.name {
 			map.insert("name".into(), serde_json::json!(name));
@@ -502,9 +525,9 @@ impl DiscordTools {
 		params: Parameters<SetChannelPermsParams>,
 	) -> Result<CallToolResult, McpError> {
 		let p = params.0;
-		// _gid: validate guild id parameter shape; channel ops are scoped by channel_id.
-		let _gid = self.resolve_guild(p.guild_id.as_deref())?;
+		let gid = self.resolve_guild(p.guild_id.as_deref())?;
 		let channel_id = ChannelId::new(parse_id(&p.channel_id)?);
+		self.verify_channel_in_guild(channel_id, gid).await?;
 		let target_id = parse_id(&p.target_id)?;
 		let allow = p
 			.allow
