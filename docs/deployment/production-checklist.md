@@ -40,10 +40,15 @@ operations.
       a token will fail to start.
       → [MCP Exposure](mcp-exposure.md)
 
-- [ ] **`MCP_GATEWAY_AUTH_TOKEN` is set on the gateway service.**
-      The gateway refuses to start at all without it — there is
-      no loopback escape hatch. Generate with `openssl rand -hex
-      32`.
+- [ ] **`MCP_GATEWAY_AUTH_TOKEN` is set on the gateway service
+      and matches every bot's `MCP_AUTH_TOKEN`.** The gateway
+      refuses to start at all without it — there is no loopback
+      escape hatch. The same value is used twice: it gates
+      inbound requests from MCP clients *and* is forwarded as
+      the bearer on outbound requests to each backend bot, so a
+      mismatch with the bot's `MCP_AUTH_TOKEN` surfaces as a
+      `401` from the backend at startup. Generate one value with
+      `openssl rand -hex 32` and use it in both places.
       → [MCP Exposure](mcp-exposure.md)
 
 - [ ] **The Postgres password is not the default `discord_bot_pass`

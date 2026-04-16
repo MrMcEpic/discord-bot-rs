@@ -213,7 +213,13 @@ set a token or bind to loopback; there is no third option.
 
 The mcp-gateway applies the same rule even more strictly: because it
 always listens on `0.0.0.0`, it refuses to start without
-`MCP_AUTH_TOKEN` set, no loopback escape hatch available.
+`MCP_AUTH_TOKEN` set, no loopback escape hatch available. The
+gateway also forwards that same token on every outgoing request to
+its backends — one shared secret covers both the inbound check and
+the outbound forward — so operators configure a single value and
+the bundled docker-compose deploy (where backends bind `0.0.0.0:9090`
+and therefore require a token themselves) works without extra
+plumbing.
 
 ### Request size limit
 

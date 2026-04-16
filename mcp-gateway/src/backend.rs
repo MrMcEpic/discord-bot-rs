@@ -10,6 +10,16 @@ pub struct BackendClient {
 	pub base_url: String,
 	http: Client,
 	session_id: Option<String>,
+	/// Bearer token forwarded on outgoing requests to the backend.
+	///
+	/// The gateway uses a single shared-secret model: the same
+	/// `MCP_AUTH_TOKEN` value that `auth_middleware` verifies on
+	/// *incoming* requests is forwarded on *outgoing* requests to each
+	/// backend. Backends bind `0.0.0.0:9090` on the Docker network so
+	/// the gateway sidecar can reach them, which means the bot-side
+	/// Tier 1.1 guard forces them to require a token; without this
+	/// field the gateway would always get 401.
+	pub auth_token: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -72,7 +82,16 @@ impl BackendClient {
 			base_url,
 			http,
 			session_id: None,
+			auth_token: None,
 		}
+	}
+
+	/// Attach a bearer token that will be forwarded on every outgoing
+	/// request to the backend. See the field doc on `auth_token` for
+	/// why the gateway forwards its own inbound token.
+	pub fn with_auth_token(mut self, auth_token: Option<String>) -> Self {
+		self.auth_token = auth_token;
+		self
 	}
 
 	/// Initialize MCP session and keep SSE stream alive for receiving responses
@@ -92,12 +111,16 @@ impl BackendClient {
 			})),
 		};
 
-		let resp = self
+		let mut init_req = self
 			.http
 			.post(format!("{}/mcp", self.base_url))
 			.header("Content-Type", "application/json")
 			.header("Accept", "application/json, text/event-stream")
-			.json(&req)
+			.json(&req);
+		if let Some(ref token) = self.auth_token {
+			init_req = init_req.header("Authorization", format!("Bearer {}", token));
+		}
+		let resp = init_req
 			.send()
 			.await
 			.map_err(|e| format!("Failed to connect to {}: {}", self.name, e))?;
@@ -158,7 +181,7 @@ impl BackendClient {
 		tracing::info!("{}: initialized, session={}", self.name, session_id);
 
 		// Send initialized notification (fire and forget)
-		let _ = self
+		let mut notify_req = self
 			.http
 			.post(format!("{}/mcp", self.base_url))
 			.header("Content-Type", "application/json")
@@ -169,9 +192,11 @@ impl BackendClient {
 				id: None,
 				method: "notifications/initialized".to_string(),
 				params: None,
-			})
-			.send()
-			.await;
+			});
+		if let Some(ref token) = self.auth_token {
+			notify_req = notify_req.header("Authorization", format!("Bearer {}", token));
+		}
+		let _ = notify_req.send().await;
 
 		Ok(())
 	}
@@ -192,13 +217,17 @@ impl BackendClient {
 			.ok_or_else(|| format!("{}: not initialized", self.name))?;
 
 		// Send POST request
-		let resp = self
+		let mut call_req = self
 			.http
 			.post(format!("{}/mcp", self.base_url))
 			.header("Content-Type", "application/json")
 			.header("Accept", "application/json, text/event-stream")
 			.header("Mcp-Session-Id", session_id)
-			.json(&req)
+			.json(&req);
+		if let Some(ref token) = self.auth_token {
+			call_req = call_req.header("Authorization", format!("Bearer {}", token));
+		}
+		let resp = call_req
 			.send()
 			.await
 			.map_err(|e| format!("Request to {} failed: {}", self.name, e))?;
@@ -313,5 +342,28 @@ mod tests {
 		let result = try_parse_sse_json(buffer);
 		assert!(result.is_some());
 		assert_eq!(result.unwrap().error.unwrap().message, "fail");
+	}
+
+	#[test]
+	fn new_client_has_no_auth_token() {
+		let client = BackendClient::new("bot1".to_string(), "http://bot1:9090".to_string());
+		assert_eq!(client.name, "bot1");
+		assert_eq!(client.base_url, "http://bot1:9090");
+		assert!(client.auth_token.is_none());
+	}
+
+	#[test]
+	fn with_auth_token_sets_field() {
+		let client = BackendClient::new("bot1".to_string(), "http://bot1:9090".to_string())
+			.with_auth_token(Some("s3cret".to_string()));
+		assert_eq!(client.auth_token.as_deref(), Some("s3cret"));
+	}
+
+	#[test]
+	fn with_auth_token_accepts_none() {
+		let client = BackendClient::new("bot1".to_string(), "http://bot1:9090".to_string())
+			.with_auth_token(Some("s3cret".to_string()))
+			.with_auth_token(None);
+		assert!(client.auth_token.is_none());
 	}
 }

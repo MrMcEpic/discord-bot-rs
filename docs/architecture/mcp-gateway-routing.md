@@ -203,12 +203,17 @@ startup if `MCP_AUTH_TOKEN` is missing or empty
 Local development inside the same compose network still works — the
 operator just has to set a token, even if it's a throwaway one.
 
-The gateway talks to each backend over plain HTTP on the internal
-Docker network with no auth, because the backends bind to `127.0.0.1`
-and aren't reachable from outside the compose network. The bot's own
-`MCP_AUTH_TOKEN` is still useful when the backend is bound to a host
-port; see [MCP Exposure](../deployment/mcp-exposure.md) for the
-trade-offs.
+The gateway uses a **single shared-secret model**: the same
+`MCP_AUTH_TOKEN` the middleware verifies on incoming requests is
+forwarded as `Authorization: Bearer <token>` on every outgoing
+request to a backend (`BackendClient::auth_token`, set from
+`GatewayState::new`). Backends in the bundled docker-compose deploy
+bind `0.0.0.0:9090` so the gateway sidecar can reach them over
+Docker DNS, and the bot-side strict guard therefore forces them to
+require a token of their own. One secret both sides share — the
+gateway verifies it inbound and forwards it outbound — keeps the
+configuration to one value and matches what the backend's
+constant-time comparison expects.
 
 Claude Code's current MCP client prefers OAuth 2.1 over bearer tokens
 for remote servers, so running the gateway as a Claude Code

@@ -136,6 +136,8 @@ This variable is read by the separate `mcp-gateway` service in `docker-compose.y
 
 **The gateway always binds non-loopback and treats this token as mandatory.** If `MCP_GATEWAY_AUTH_TOKEN` is empty the gateway refuses to start at all — there is no loopback escape hatch like the bot has, because the gateway's whole job is to be reachable from outside its container.
 
+**The same value must be set as each bot's `MCP_AUTH_TOKEN`.** The gateway uses `MCP_GATEWAY_AUTH_TOKEN` for *both* inbound auth (checking client bearers) and outbound auth (as the `Authorization: Bearer` header it forwards to every backend bot). A bot with a different `MCP_AUTH_TOKEN` will 401 the gateway at startup. Generate one secret with `openssl rand -hex 32` and use it in both the gateway environment and every bot's `.env`.
+
 ## A note on placeholder detection
 
 `Config::load()` rejects any required variable whose value still starts with the literal string `your-` — for example, `DISCORD_TOKEN=your-discord-bot-token`. This catches the easy mistake of copying `.env.example` to `.env` and forgetting to actually fill it in. If you see `<KEY> has placeholder value — set it in .env` at startup, that's the check firing.

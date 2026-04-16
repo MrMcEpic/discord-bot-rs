@@ -191,11 +191,21 @@ tools that need to specify which bot to act on. See
 [Multi-Instance Deployment](multi-instance-deployment.md) for the
 end-to-end pattern.
 
-**`MCP_GATEWAY_AUTH_TOKEN` controls auth on the gateway port.** When
-empty (the default), the gateway accepts unauthenticated requests —
-fine because it is bound to localhost. When set, every request must
-carry `Authorization: Bearer <token>`. Set it whenever you are
-exposing the gateway off-host, even through a tunnel.
+**`MCP_GATEWAY_AUTH_TOKEN` is the shared secret for the whole MCP
+fabric.** The gateway refuses to start if it is empty — there is no
+loopback escape hatch, because the gateway's whole job is to be
+reachable from outside its own container. The same value is:
+
+- checked against the `Authorization: Bearer <token>` header on
+  every inbound request from an MCP client, and
+- forwarded as `Authorization: Bearer <token>` on every outbound
+  request from the gateway to a backend bot.
+
+For that to work, each bot's `MCP_AUTH_TOKEN` must be set to the
+same value as `MCP_GATEWAY_AUTH_TOKEN`. A mismatch shows up as the
+gateway logging `401 Unauthorized` from the backend at startup.
+Generate one secret with `openssl rand -hex 32` and use it in both
+places.
 
 **It depends on the bot's health check.** `depends_on: condition:
 service_healthy` ensures the gateway never starts before there is at

@@ -23,7 +23,13 @@ impl GatewayState {
 	pub fn new(instances: HashMap<String, String>, auth_token: Option<String>) -> Self {
 		let mut backends = HashMap::new();
 		for (name, url) in &instances {
-			backends.insert(name.clone(), BackendClient::new(name.clone(), url.clone()));
+			// Shared-secret model: the same `MCP_AUTH_TOKEN` the gateway
+			// verifies on incoming requests is forwarded to backends on
+			// outgoing requests. Backends on the Docker network bind
+			// 0.0.0.0:9090 and so (per Tier 1.1) require a token.
+			let client =
+				BackendClient::new(name.clone(), url.clone()).with_auth_token(auth_token.clone());
+			backends.insert(name.clone(), client);
 		}
 
 		Self {

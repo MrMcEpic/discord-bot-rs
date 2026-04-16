@@ -282,10 +282,17 @@ In a Compose deployment the bot's MCP server binds `0.0.0.0`
 inside its container so the gateway sidecar can reach it over the
 Docker bridge network. That is a non-loopback bind, so the bot's
 own startup check requires `MCP_AUTH_TOKEN` to be set on every
-bot. The gateway forwards the operator-supplied bearer to each
-bot when proxying, so a single rotation of `MCP_AUTH_TOKEN` on
-the bot pair (plus the matching update wherever the gateway
-learns about the per-instance token) is the rotation step.
+bot.
+
+The model is a **single shared secret** across the whole MCP
+fabric: the gateway's `MCP_GATEWAY_AUTH_TOKEN` and every bot's
+`MCP_AUTH_TOKEN` must hold the same value. The gateway uses it
+for two things at once — it is the bearer it *requires* on
+inbound requests from clients, and it is the bearer it *sends*
+on outbound requests to each backend bot. Without that match the
+backend's Tier-1 auth check rejects the gateway with `401
+Unauthorized` and no client can ever reach it. Generate one
+value with `openssl rand -hex 32` and paste it everywhere.
 
 If you ever bind a bot's MCP server to a host port directly
 (rare, and usually wrong — use the gateway), the same rule
@@ -295,17 +302,25 @@ bot will refuse to start without one.
 ## Token rotation
 
 Generate a fresh token with `openssl rand -hex 32` (or any
-equivalently random source). Update `MCP_GATEWAY_AUTH_TOKEN` in
-the host shell or in the Compose file, then restart the gateway:
+equivalently random source). Because the gateway and every bot
+share the same secret, rotation is a flag-day update in three
+places:
 
-```bash
-docker compose up -d mcp-gateway
-```
+1. Update `MCP_GATEWAY_AUTH_TOKEN` in the host shell (or in the
+   Compose file).
+2. Update `MCP_AUTH_TOKEN` in every bot's `.env` to the same
+   value.
+3. Restart the full stack so the new value takes on both ends:
 
-Update every client with the new token. There is no built-in
-multi-token mechanism — rotation is a flag day. Keep the value out
-of shell history (`export MCP_GATEWAY_AUTH_TOKEN=$(...)` rather
-than typing it inline), out of git, and out of logs.
+   ```bash
+   docker compose up -d
+   ```
+
+Update every MCP client with the new token as well. There is no
+built-in multi-token mechanism — rotation is atomic per stack.
+Keep the value out of shell history (`export
+MCP_GATEWAY_AUTH_TOKEN=$(...)` rather than typing it inline), out
+of git, and out of logs.
 
 If you suspect a token leak, rotate immediately, then audit the
 bot's recent Discord activity for unexpected actions.
