@@ -6,6 +6,10 @@ use rmcp::transport::streamable_http_server::{
 use serenity::all::*;
 use std::sync::Arc;
 
+fn is_loopback_addr(addr: &str) -> bool {
+	matches!(addr, "127.0.0.1" | "::1" | "localhost")
+}
+
 pub async fn start(
 	http: Arc<Http>,
 	guild_id: GuildId,
@@ -14,6 +18,25 @@ pub async fn start(
 	auth_token: String,
 	webhook_router: Option<axum::Router>,
 ) {
+	// Security gate: refuse to start when auth is disabled on a non-loopback bind.
+	// Without this, a default `MCP_BIND_ADDR=0.0.0.0` plus an unset `MCP_AUTH_TOKEN`
+	// would expose every Discord MCP tool (ban, delete-channel, send-message, ...)
+	// to the entire network with zero credentials.
+	if auth_token.is_empty() {
+		if !is_loopback_addr(&bind_addr) {
+			panic!(
+				"Refusing to start MCP server: MCP_AUTH_TOKEN is empty but MCP_BIND_ADDR={bind_addr} is not loopback. \
+				 This would expose destructive Discord tools (ban, delete-channel, send-message, ...) to the network with no auth. \
+				 Either set MCP_AUTH_TOKEN to a strong secret, or set MCP_BIND_ADDR=127.0.0.1 (loopback only)."
+			);
+		}
+		tracing::warn!(
+			"MCP server starting without authentication (loopback-only bind {}). \
+			 Set MCP_AUTH_TOKEN to require Bearer auth.",
+			bind_addr
+		);
+	}
+
 	let session_manager = Arc::new(LocalSessionManager::default());
 	let config = StreamableHttpServerConfig::default();
 
