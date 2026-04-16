@@ -62,14 +62,17 @@ pub async fn event_handler(
 				};
 
 				tokio::spawn(async move {
-					crate::mcp::start(
-						http,
-						guild_id,
-						mcp_port,
-						mcp_bind_addr,
-						mcp_auth_token,
-						webhook_router,
-					)
+					crate::run_supervised("mcp_server", || async {
+						crate::mcp::start(
+							http,
+							guild_id,
+							mcp_port,
+							mcp_bind_addr,
+							mcp_auth_token,
+							webhook_router,
+						)
+						.await;
+					})
 					.await;
 				});
 			}
@@ -112,12 +115,15 @@ async fn handle_message(ctx: &Context, message: &Message, data: &Data) {
 				let config = ar_config.clone();
 				let author_id = message.author.id;
 				tokio::spawn(async move {
-					if let Err(e) =
-						crate::autorole::try_promote(&http, &pool, guild_id, author_id, &config)
-							.await
-					{
-						tracing::warn!("Auto-role promotion failed for {}: {}", author_id, e);
-					}
+					crate::run_supervised("auto_role_message_promote", || async {
+						if let Err(e) =
+							crate::autorole::try_promote(&http, &pool, guild_id, author_id, &config)
+								.await
+						{
+							tracing::warn!("Auto-role promotion failed for {}: {}", author_id, e);
+						}
+					})
+					.await;
 				});
 			}
 		}

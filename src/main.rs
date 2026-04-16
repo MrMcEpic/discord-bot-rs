@@ -16,15 +16,42 @@ mod wordle;
 
 use connections::game::ConnectionsGame;
 use dashmap::DashMap;
+use futures::future::FutureExt;
 use music::player::GuildPlayer;
 use music::voice::PlaybackContext;
 use serenity::all::*;
 use songbird::tracks::TrackHandle;
 use songbird::SerenityInit;
+use std::panic::AssertUnwindSafe;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tokio::task::JoinSet;
 use wordle::game::WordleGame;
+
+/// Run a single iteration body with panic recovery. Logs and swallows any
+/// panic so a transient crash inside a long-running loop doesn't kill the
+/// whole task. Use this around the *body* of every background loop iteration.
+pub async fn run_supervised<F, Fut>(task_name: &'static str, body: F)
+where
+	F: FnOnce() -> Fut,
+	Fut: std::future::Future<Output = ()>,
+{
+	if let Err(panic) = AssertUnwindSafe(body()).catch_unwind().await {
+		let msg = if let Some(s) = panic.downcast_ref::<&'static str>() {
+			(*s).to_string()
+		} else if let Some(s) = panic.downcast_ref::<String>() {
+			s.clone()
+		} else {
+			"<non-string panic payload>".to_string()
+		};
+		tracing::error!(
+			task = task_name,
+			panic = %msg,
+			"Background task iteration panicked; loop will continue with next iteration"
+		);
+	}
+}
 
 use config::Config;
 use error::BotError;
@@ -311,35 +338,44 @@ async fn main() {
 		.await
 		.expect("Failed to create client");
 
-	// Spawn background tasks
+	// Spawn background tasks. We track them in a JoinSet so shutdown can
+	// observe (and a future Tier 2.3 rate-limiter task can join here too).
+	// Each loop body is wrapped in `run_supervised` so a panic in one
+	// iteration is logged but doesn't kill the loop.
+	let mut background_tasks: JoinSet<()> = JoinSet::new();
+
 	let http = client.http.clone();
 	let db_for_unban = db_clone.clone();
-	tokio::spawn(async move {
+	background_tasks.spawn(async move {
 		// Wait for bot to be ready
 		tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 		tracing::info!("Tempban unban checker started (30s interval).");
 		loop {
-			if let Ok(expired) = db::queries::get_expired_bans(&db_for_unban).await {
-				for ban in expired {
-					if let Ok(guild_id) = ban.guild_id.parse::<u64>() {
-						if let Ok(user_id) = ban.user_id.parse::<u64>() {
-							let _ = http
-								.remove_ban(
-									GuildId::new(guild_id),
-									UserId::new(user_id),
-									Some("Tempban expired"),
-								)
-								.await;
-							let _ = db::queries::mark_unbanned_by_id(&db_for_unban, ban.id).await;
-							tracing::info!(
-								"Auto-unbanned {} from guild {}",
-								ban.user_id,
-								ban.guild_id
-							);
+			run_supervised("tempban_unban", || async {
+				if let Ok(expired) = db::queries::get_expired_bans(&db_for_unban).await {
+					for ban in expired {
+						if let Ok(guild_id) = ban.guild_id.parse::<u64>() {
+							if let Ok(user_id) = ban.user_id.parse::<u64>() {
+								let _ = http
+									.remove_ban(
+										GuildId::new(guild_id),
+										UserId::new(user_id),
+										Some("Tempban expired"),
+									)
+									.await;
+								let _ =
+									db::queries::mark_unbanned_by_id(&db_for_unban, ban.id).await;
+								tracing::info!(
+									"Auto-unbanned {} from guild {}",
+									ban.user_id,
+									ban.guild_id
+								);
+							}
 						}
 					}
 				}
-			}
+			})
+			.await;
 			tokio::time::sleep(std::time::Duration::from_secs(30)).await;
 		}
 	});
@@ -351,37 +387,40 @@ async fn main() {
 			let db_ar = db_clone.clone();
 			let ar_config = ar_config.clone();
 			let guild_id_str = guild_id_for_tasks.clone();
-			tokio::spawn(async move {
+			background_tasks.spawn(async move {
 				tokio::time::sleep(std::time::Duration::from_secs(10)).await;
 				tracing::info!("Auto-role time checker started (60s interval).");
 				loop {
-					if let Ok(members) =
-						db::queries::get_unpromoted_members(&db_ar, &guild_id_str).await
-					{
-						for activity in members {
-							if autorole::meets_criteria(&activity, &ar_config) {
-								if let Ok(uid) = activity.user_id.parse::<u64>() {
-									if let Ok(gid) = activity.guild_id.parse::<u64>() {
-										if let Err(e) = autorole::try_promote(
-											&http_ar,
-											&db_ar,
-											GuildId::new(gid),
-											UserId::new(uid),
-											&ar_config,
-										)
-										.await
-										{
-											tracing::warn!(
-												"Auto-role time promotion failed for {}: {}",
-												uid,
-												e
-											);
+					run_supervised("auto_role_time_check", || async {
+						if let Ok(members) =
+							db::queries::get_unpromoted_members(&db_ar, &guild_id_str).await
+						{
+							for activity in members {
+								if autorole::meets_criteria(&activity, &ar_config) {
+									if let Ok(uid) = activity.user_id.parse::<u64>() {
+										if let Ok(gid) = activity.guild_id.parse::<u64>() {
+											if let Err(e) = autorole::try_promote(
+												&http_ar,
+												&db_ar,
+												GuildId::new(gid),
+												UserId::new(uid),
+												&ar_config,
+											)
+											.await
+											{
+												tracing::warn!(
+													"Auto-role time promotion failed for {}: {}",
+													uid,
+													e
+												);
+											}
 										}
 									}
 								}
 							}
 						}
-					}
+					})
+					.await;
 					tokio::time::sleep(std::time::Duration::from_secs(60)).await;
 				}
 			});
@@ -408,39 +447,44 @@ async fn main() {
 					let verify_url = verify_url.clone();
 					let verify_secret = verify_secret.clone();
 					let guild_id_ds = guild_id_for_tasks.clone();
-					tokio::spawn(async move {
+					background_tasks.spawn(async move {
 						tokio::time::sleep(std::time::Duration::from_secs(15)).await;
 						tracing::info!(
 							"Donator sync checker started ({}s interval).",
 							ds_config.check_interval
 						);
 						loop {
-							match minecraft::donator_sync::fetch_donators(
-								&http_client_ds,
-								&verify_url,
-								&verify_secret,
-							)
-							.await
-							{
-								Ok(donators) => {
-									if let Ok(gid) = guild_id_ds.parse::<u64>() {
-										if let Err(e) = minecraft::donator_sync::sync_roles(
-											&http_ds,
-											GuildId::new(gid),
-											&donators,
-											&ds_config,
-											restricted_role,
-										)
-										.await
-										{
-											tracing::warn!("Donator sync error: {e}");
+							run_supervised("donator_sync", || async {
+								match minecraft::donator_sync::fetch_donators(
+									&http_client_ds,
+									&verify_url,
+									&verify_secret,
+								)
+								.await
+								{
+									Ok(donators) => {
+										if let Ok(gid) = guild_id_ds.parse::<u64>() {
+											if let Err(e) = minecraft::donator_sync::sync_roles(
+												&http_ds,
+												GuildId::new(gid),
+												&donators,
+												&ds_config,
+												restricted_role,
+											)
+											.await
+											{
+												tracing::warn!("Donator sync error: {e}");
+											}
 										}
 									}
+									Err(e) => {
+										tracing::warn!(
+											"Donator sync: failed to fetch donators: {e}"
+										);
+									}
 								}
-								Err(e) => {
-									tracing::warn!("Donator sync: failed to fetch donators: {e}");
-								}
-							}
+							})
+							.await;
 							tokio::time::sleep(std::time::Duration::from_secs(
 								ds_config.check_interval,
 							))
@@ -456,8 +500,67 @@ async fn main() {
 		}
 	}
 
+	// Detect dead background tasks. JoinSet::join_next yields each task as it
+	// finishes; with panic-recovery wrappers in place the loops should never
+	// exit on their own, so any completion here is noteworthy.
+	tokio::spawn(async move {
+		while let Some(res) = background_tasks.join_next().await {
+			match res {
+				Ok(()) => tracing::error!("A background task exited unexpectedly (loop returned)"),
+				Err(e) if e.is_panic() => {
+					tracing::error!("A background task panicked outside its supervised body: {e}")
+				}
+				Err(e) => tracing::error!("Background task join error: {e}"),
+			}
+		}
+	});
+
 	tracing::info!("Starting bot...");
-	if let Err(e) = client.start().await {
-		tracing::error!("Client error: {e}");
+	let shard_manager = client.shard_manager.clone();
+	tokio::select! {
+		res = client.start() => {
+			if let Err(e) = res {
+				tracing::error!("Client error: {e}");
+			}
+		}
+		_ = shutdown_signal() => {
+			tracing::info!("Shutdown signal received, stopping bot...");
+			shard_manager.shutdown_all().await;
+		}
+	}
+}
+
+/// Future that resolves on Ctrl-C or (unix) SIGTERM. Used to race against
+/// `client.start()` so we can drive a clean shutdown of the shard manager
+/// (which in turn cleans up songbird voice connections).
+async fn shutdown_signal() {
+	let ctrl_c = async {
+		if let Err(e) = tokio::signal::ctrl_c().await {
+			tracing::error!("Failed to install Ctrl-C handler: {e}");
+			// If we can't install the handler, never resolve — let the other
+			// branch of the select! drive shutdown.
+			std::future::pending::<()>().await;
+		}
+	};
+
+	#[cfg(unix)]
+	let terminate = async {
+		match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+			Ok(mut sig) => {
+				sig.recv().await;
+			}
+			Err(e) => {
+				tracing::error!("Failed to install SIGTERM handler: {e}");
+				std::future::pending::<()>().await;
+			}
+		}
+	};
+
+	#[cfg(not(unix))]
+	let terminate = std::future::pending::<()>();
+
+	tokio::select! {
+		_ = ctrl_c => {},
+		_ = terminate => {},
 	}
 }
