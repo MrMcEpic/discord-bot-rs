@@ -46,12 +46,16 @@ struct ApiEndpoint {
 const FETCH_LIMIT: u8 = 100;
 const MAX_RELEVANT: usize = 10;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Maximum search-tool rounds per request. Must match the value
+/// quoted in the system prompt below.
+const MAX_SEARCH_ROUNDS: u8 = 3;
 
 fn get_system_prompt(personality: &str) -> String {
 	let now = chrono::Utc::now();
 	let date_str = now.format("%A, %B %e, %Y").to_string();
 
 	let version = VERSION;
+	let max_search_rounds = MAX_SEARCH_ROUNDS;
 
 	format!(
 		r#"{personality}
@@ -80,7 +84,7 @@ You have a web_search tool. Use it when:
 - The question requires up-to-date information you might not have
 - Someone asks "what is X" and you're not confident in your answer
 
-You can search up to 3 times per request. Use this to refine your searches — e.g. if the first search is too broad, narrow it down. Each round you'll see the results before deciding whether to search again or answer.
+You can search up to {max_search_rounds} times per request. Use this to refine your searches — e.g. if the first search is too broad, narrow it down. Each round you'll see the results before deciding whether to search again or answer.
 
 Don't search for things you already know well. You're smart — use search as a supplement, not a crutch.
 
@@ -1913,7 +1917,7 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
 		let mut pf_history = history.clone();
 		let mut all_search_context = Vec::new();
 
-		for round in 0..5 {
+		for round in 0..MAX_SEARCH_ROUNDS {
 			let pf_response = match call_api(
 				&data.http_client,
 				&deepseek_endpoint,
@@ -2042,8 +2046,8 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
 		}
 	};
 
-	// Handle search calls — allow up to 5 rounds of searching
-	for round in 0..5 {
+	// Handle search calls — allow up to MAX_SEARCH_ROUNDS rounds of searching
+	for round in 0..MAX_SEARCH_ROUNDS {
 		let has_search = response.tool_calls.iter().any(|t| is_search_tool(&t.name));
 		if !has_search {
 			break;
@@ -2070,7 +2074,7 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
 			Err(_) => break,
 		}
 	}
-	// If still requesting search after 3 rounds, force a final answer
+	// If still requesting search after MAX_SEARCH_ROUNDS rounds, force a final answer
 	if response.tool_calls.iter().any(|t| is_search_tool(&t.name)) {
 		if let Ok(final_resp) =
 			call_api(&data.http_client, &active_endpoint, &history, false, 32768).await
