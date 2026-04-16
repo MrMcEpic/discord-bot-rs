@@ -56,6 +56,7 @@ pub async fn start(
 	};
 	use http::StatusCode;
 	use subtle::ConstantTimeEq;
+	use tower_http::limit::RequestBodyLimitLayer;
 
 	let token = auth_token.clone();
 	let auth_middleware = middleware::from_fn(move |req: Request, next: Next| {
@@ -83,8 +84,12 @@ pub async fn start(
 		}
 	});
 
+	// 64 KiB cap on request bodies. JSON-RPC envelopes are tiny; this is generous
+	// while preventing authenticated callers from DoS'ing the shared backend
+	// state (tokio Mutex/RwLock<HashMap>) with multi-MiB bodies in tight loops.
 	let app = Router::new()
 		.nest_service("/mcp", mcp_service)
+		.layer(RequestBodyLimitLayer::new(64 * 1024))
 		.layer(auth_middleware);
 
 	let app = if let Some(webhook) = webhook_router {

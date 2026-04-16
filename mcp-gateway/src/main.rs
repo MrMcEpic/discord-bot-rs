@@ -5,6 +5,7 @@ mod server;
 
 use axum::{middleware, Router};
 use std::time::Duration;
+use tower_http::limit::RequestBodyLimitLayer;
 
 #[tokio::main]
 async fn main() {
@@ -36,6 +37,10 @@ async fn main() {
 	let app = Router::new()
 		.route("/mcp", axum::routing::post(server::mcp_handler))
 		.route("/mcp", axum::routing::get(|| async { "MCP Gateway OK" }))
+		// 64 KiB cap on request bodies. JSON-RPC envelopes are tiny; this prevents
+		// authenticated callers from saturating the gateway with multi-MiB bodies
+		// in tight loops (backend state lives behind tokio Mutex/RwLock).
+		.layer(RequestBodyLimitLayer::new(64 * 1024))
 		.layer(middleware::from_fn_with_state(
 			state.clone(),
 			server::auth_middleware,

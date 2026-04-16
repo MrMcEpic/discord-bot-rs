@@ -5,7 +5,6 @@ use axum::{
 	extract::State,
 	http::{header, HeaderMap, StatusCode},
 	response::{IntoResponse, Response},
-	Json,
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -180,10 +179,23 @@ pub async fn auth_middleware(
 }
 
 /// MCP HTTP handler -- handles POST /mcp
-pub async fn mcp_handler(
-	State(state): State<GatewayState>,
-	Json(body): Json<Value>,
-) -> impl IntoResponse {
+pub async fn mcp_handler(State(state): State<GatewayState>, body: String) -> Response {
+	// Parse JSON manually so malformed input returns a spec-compliant
+	// JSON-RPC 2.0 parse error instead of axum's opaque 422 from the
+	// `Json` extractor. id is null because we couldn't parse it.
+	let body: Value = match serde_json::from_str(&body) {
+		Ok(v) => v,
+		Err(_) => {
+			return sse_response(
+				json!({
+					"jsonrpc": "2.0",
+					"id": null,
+					"error": { "code": -32700, "message": "Parse error" }
+				}),
+				"gateway-session",
+			);
+		}
+	};
 	let method = body.get("method").and_then(|m| m.as_str()).unwrap_or("");
 	let id = body.get("id").cloned();
 	let params = body.get("params").cloned();
@@ -241,8 +253,7 @@ pub async fn mcp_handler(
 					"error": { "code": -32601, "message": format!("Unknown method: {}", method) }
 				}),
 				session_id,
-			)
-			.into_response();
+			);
 		}
 	};
 
@@ -254,7 +265,6 @@ pub async fn mcp_handler(
 		}),
 		session_id,
 	)
-	.into_response()
 }
 
 async fn handle_tool_call(
