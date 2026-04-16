@@ -263,7 +263,7 @@ async fn main() {
 					match error {
 						poise::FrameworkError::Command { error, ctx, .. } => {
 							tracing::error!("Command error: {error}");
-							let _ = ctx.say(format!("Error: {error}")).await;
+							let _ = ctx.say(format!("Error: {}", error.user_message())).await;
 						}
 						other => {
 							tracing::error!("Framework error: {other}");
