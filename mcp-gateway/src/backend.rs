@@ -2,10 +2,7 @@ use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use tokio::sync::{oneshot, Mutex};
 
 #[derive(Clone)]
 pub struct BackendClient {
@@ -13,8 +10,6 @@ pub struct BackendClient {
 	pub base_url: String,
 	http: Client,
 	session_id: Option<String>,
-	/// Pending response waiters: request_id -> oneshot sender
-	pending: Arc<Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -30,6 +25,7 @@ struct JsonRpcRequest {
 pub struct JsonRpcResponse {
 	#[allow(dead_code)]
 	pub jsonrpc: Option<String>,
+	#[allow(dead_code)]
 	pub id: Option<u64>,
 	pub result: Option<Value>,
 	pub error: Option<JsonRpcError>,
@@ -76,7 +72,6 @@ impl BackendClient {
 			base_url,
 			http,
 			session_id: None,
-			pending: Arc::new(Mutex::new(HashMap::new())),
 		}
 	}
 
@@ -128,17 +123,15 @@ impl BackendClient {
 			.clone()
 			.ok_or_else(|| format!("{}: no session ID received", self.name))?;
 
-		// Read SSE stream: first find the initialize result, then keep reading for future responses
+		// Read SSE stream to find the initialize response
 		let mut stream = resp.bytes_stream();
 		let mut buffer = String::new();
 
-		// Phase 1: Read until we find the initialize response
 		let init_result: JsonRpcResponse = loop {
 			match tokio::time::timeout(std::time::Duration::from_secs(10), stream.next()).await {
 				Ok(Some(Ok(chunk))) => {
 					buffer.push_str(&String::from_utf8_lossy(&chunk));
 					if let Some(resp) = try_parse_sse_json(&buffer) {
-						buffer.clear();
 						break resp;
 					}
 				}
@@ -180,57 +173,7 @@ impl BackendClient {
 			.send()
 			.await;
 
-		// Phase 2: Keep the SSE stream alive in background, dispatching responses to pending waiters
-		let pending = self.pending.clone();
-		let name = self.name.clone();
-		tokio::spawn(async move {
-			// Process any leftover data in buffer
-			Self::dispatch_responses(&buffer, &pending).await;
-			let mut buffer = String::new();
-
-			while let Some(chunk) = stream.next().await {
-				match chunk {
-					Ok(bytes) => {
-						buffer.push_str(&String::from_utf8_lossy(&bytes));
-						Self::dispatch_responses(&buffer, &pending).await;
-						// Clear processed events (everything before the last incomplete event)
-						if let Some(pos) = buffer.rfind("\n\n") {
-							buffer = buffer[pos + 2..].to_string();
-						}
-					}
-					Err(e) => {
-						tracing::warn!("{}: SSE stream error: {}", name, e);
-						break;
-					}
-				}
-			}
-			tracing::warn!("{}: SSE stream ended", name);
-		});
-
 		Ok(())
-	}
-
-	/// Parse SSE buffer for JSON-RPC responses and dispatch to pending waiters
-	async fn dispatch_responses(
-		buffer: &str,
-		pending: &Arc<Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>>,
-	) {
-		for line in buffer.lines() {
-			let line = line.trim();
-			if let Some(data) = line.strip_prefix("data:") {
-				let data = data.trim();
-				if data.starts_with('{') {
-					if let Ok(resp) = serde_json::from_str::<JsonRpcResponse>(data) {
-						if let Some(id) = resp.id {
-							let mut pending = pending.lock().await;
-							if let Some(tx) = pending.remove(&id) {
-								let _ = tx.send(resp);
-							}
-						}
-					}
-				}
-			}
-		}
 	}
 
 	/// Send a JSON-RPC request. Response comes on the POST's own SSE stream.
