@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use serde::Deserialize;
 use tokio::process::Command;
 
@@ -131,13 +133,17 @@ fn parse_tracks(stdout: &str, requested_by: &str) -> Vec<Track> {
 }
 
 async fn run_ytdlp(args: &[String]) -> Result<std::process::Output, String> {
-	Command::new("yt-dlp")
+	let fut = Command::new("yt-dlp")
 		.args(args)
 		.env_remove("NODE_CHANNEL_FD")
 		.env_remove("NODE_CHANNEL_SERIALIZATION_MODE")
-		.output()
-		.await
-		.map_err(|e| format!("Failed to spawn yt-dlp: {e}"))
+		.kill_on_drop(true)
+		.output();
+
+	match tokio::time::timeout(Duration::from_secs(30), fut).await {
+		Ok(res) => res.map_err(|e| format!("Failed to spawn yt-dlp: {e}")),
+		Err(_) => Err("yt-dlp timed out after 30s".to_string()),
+	}
 }
 
 /// Resolves tracks from a query or URL.
