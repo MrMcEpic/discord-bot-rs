@@ -43,6 +43,8 @@ pub struct MinecraftConfig {
 pub struct ChargebackConfig {
 	pub staff_channel: String,
 	pub restricted_role: String,
+	#[serde(default)]
+	pub staff_roles: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

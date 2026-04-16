@@ -106,3 +106,4 @@ welcome = false       # AI-generated welcome message on join
 # [minecraft.chargeback_config]
 # staff_channel = "CHANNEL_ID"
 # restricted_role = "ROLE_ID"
+# staff_roles = ["MOD_ROLE_ID", "ADMIN_ROLE_ID", "OWNER_ROLE_ID"]   # Snowflakes allowed to press Ban/Dismiss; empty = no one

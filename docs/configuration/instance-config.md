@@ -120,10 +120,11 @@ The default 300-second interval is conservative enough to avoid spamming the MC 
 
 Required when `minecraft.chargeback = true`. The bot exposes an HTTP endpoint that receives chargeback notifications from the MC store; on receipt it strips the user's roles, applies a restricted role, and posts an interactive alert to a staff channel with Ban and Dismiss buttons.
 
-| Field              | Type   | Required | Default | Description                                  |
-|--------------------|--------|----------|---------|----------------------------------------------|
-| `staff_channel`    | string | yes      | —       | Snowflake of the channel to post alerts in   |
-| `restricted_role`  | string | yes      | —       | Snowflake of the role to apply to offenders  |
+| Field              | Type           | Required | Default | Description                                  |
+|--------------------|----------------|----------|---------|----------------------------------------------|
+| `staff_channel`    | string         | yes      | —       | Snowflake of the channel to post alerts in   |
+| `restricted_role`  | string         | yes      | —       | Snowflake of the role to apply to offenders  |
+| `staff_roles`      | list of string | no       | `[]`    | Snowflakes allowed to press Ban/Dismiss buttons. Empty list means no role can act on alerts (the buttons reply "You don't have permission to do this." for everyone), so configure this if you want staff to be able to confirm or dismiss chargebacks. |
 
 See [Minecraft Chargeback](../features/minecraft-chargeback.md).
 
@@ -247,6 +248,7 @@ welcome = false       # AI-generated welcome message on join
 # [minecraft.chargeback_config]
 # staff_channel = "CHANNEL_ID"
 # restricted_role = "ROLE_ID"
+# staff_roles = ["MOD_ROLE_ID", "ADMIN_ROLE_ID", "OWNER_ROLE_ID"]   # Snowflakes allowed to press Ban/Dismiss; empty = no one
 ```
 
 To turn any feature on, flip its flag in `[features]` and uncomment the matching sub-section, replacing `ROLE_ID` and `CHANNEL_ID` placeholders with real Discord snowflakes (right-click → *Copy ID* with Developer Mode enabled).

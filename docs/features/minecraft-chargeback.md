@@ -54,6 +54,7 @@ chargeback = true
 [minecraft.chargeback_config]
 staff_channel   = "123456789012345678"
 restricted_role = "234567890123456789"
+staff_roles     = ["345678901234567890", "456789012345678901", "567890123456789012"]
 ```
 
 Plus the standard MC env vars in `.env`:
@@ -81,11 +82,16 @@ starts cleanly, but no chargeback alerts will ever fire.
 |---|---|---|---|
 | `staff_channel` | string (snowflake) | yes | Channel ID where alerts are posted. |
 | `restricted_role` | string (snowflake) | yes | Role ID applied to the offender (and used as the only remaining role on their account after roles are stripped). |
+| `staff_roles` | list of string (snowflakes) | no | Roles allowed to press the Ban/Dismiss buttons on a chargeback alert. Defaults to an empty list, meaning no one is allowed (the buttons will deny every interaction with `You don't have permission to do this.`), so configure this if you want staff to be able to confirm or dismiss chargebacks. |
 
-Both must be valid snowflakes. Invalid values cause the webhook
-to return `500 Internal Server Error` and log the bad config; the
-underlying chargeback isn't lost on the MC side, but no alert
-gets posted on the Discord side until you fix the config.
+`staff_channel` and `restricted_role` must be valid snowflakes.
+Invalid values cause the webhook to return `500 Internal Server
+Error` and log the bad config; the underlying chargeback isn't
+lost on the MC side, but no alert gets posted on the Discord side
+until you fix the config. Entries in `staff_roles` that don't
+parse as integers are silently skipped, so a typo will quietly
+remove that role from the allowlist — double-check the IDs if
+buttons aren't working for staff who you expect to have access.
 
 The restricted role's purpose is twofold:
 
@@ -130,8 +136,8 @@ stripped. User restricted.` (linked) or `No Discord account
 linked. MC-side actions only.` (unlinked).
 
 Two buttons sit beneath: 🔨 **Ban** (or **Ban MC** if unlinked)
-and ❌ **Dismiss**. Only members with one of three hard-coded
-staff roles (see *Staff role gating* below) can press either —
+and ❌ **Dismiss**. Only members with one of the roles listed in
+`staff_roles` (see *Staff role gating* below) can press either —
 anyone else gets `You don't have permission to do this.`
 
 After a button is pressed the embed is rebuilt with a neutral
@@ -163,18 +169,30 @@ whatever roles they had before; stripped roles aren't preserved.
 
 ## Staff role gating
 
-Button permission checks reference a hard-coded list of staff
-role IDs in `src/minecraft/chargeback.rs::handle_button` —
-Moderator, Admin, and Owner snowflakes baked into the source.
-These IDs are **specific to the original deployment**; on your
-own instance, edit them to match your staff roles and rebuild.
-A future revision will likely move them into
-`[minecraft.chargeback_config]`.
+Button permission checks read the `staff_roles` list from
+`[minecraft.chargeback_config]`. A member must hold at least one
+of the listed roles to press either Ban or Dismiss; everyone
+else gets `You don't have permission to do this.` as an ephemeral
+reply.
 
-Until you update them, the Ban/Dismiss buttons are unusable —
-the alerts still post and the auto-strip still happens, but
-nobody can confirm via button. As a workaround, use `!m ban`
-and let MC handle its own side.
+The list is `#[serde(default)]`, so omitting `staff_roles`
+entirely (or leaving it as `[]`) means **no one** can use the
+buttons — the alert still posts and the auto-strip still
+happens, but the alert can't be confirmed or dismissed from
+Discord. This is the safe default for a feature that's opt-in
+per instance: you must explicitly grant button access.
+
+Add as many or as few roles as you want — typically Moderator,
+Admin, and Owner, but anything you wire up works:
+
+```toml
+staff_roles = ["111111111111111111", "222222222222222222", "333333333333333333"]
+```
+
+Entries that don't parse as `u64` are silently dropped at
+button-handler time, so a malformed snowflake will quietly
+remove that role from the allowlist without preventing the
+others from working.
 
 ## Permissions
 
@@ -203,8 +221,10 @@ button will fail; the alert will still post and dismiss.
   the payload includes a linked `discord_id`. Unverified users
   get no Discord-side action; the alert footer says so.
 - **Ban button does nothing for non-staff** — staff role gate.
-  Update the hard-coded role IDs in `src/minecraft/chargeback.rs`
-  and rebuild.
+  Add the staff member's role to `staff_roles` in
+  `[minecraft.chargeback_config]` and restart the bot. If
+  `staff_roles` is empty (the default), no one can press the
+  buttons.
 - **MC ban failed** — the `/api/ban` endpoint returned an error.
   The bot reposts the failure into the staff channel; check the
   response body.

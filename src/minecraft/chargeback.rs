@@ -200,12 +200,20 @@ pub async fn handle_button(ctx: &Context, interaction: &ComponentInteraction, da
 		_ => return,
 	};
 
-	// Permission check: require Moderator, Admin, or Owner
-	let staff_roles: Vec<RoleId> = vec![
-		RoleId::new(123456789012345678), // Moderator
-		RoleId::new(123456789012345678), // Admin
-		RoleId::new(123456789012345678), // Owner
-	];
+	// Permission check: require one of the configured staff roles.
+	// Falls back to an empty list (i.e. no one is staff) if the config is missing,
+	// which keeps the feature safe-by-default for instances that haven't opted in.
+	let staff_roles: Vec<RoleId> = data
+		.minecraft_config
+		.as_ref()
+		.and_then(|mc| mc.chargeback_config.as_ref())
+		.map(|cb| {
+			cb.staff_roles
+				.iter()
+				.filter_map(|s| s.parse::<u64>().ok().map(RoleId::new))
+				.collect()
+		})
+		.unwrap_or_default();
 
 	let member = match &interaction.member {
 		Some(m) => m,
