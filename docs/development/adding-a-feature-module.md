@@ -485,7 +485,7 @@ In Discord:
   fire a minute later.
 - `!m remind banana hello` should respond with `Invalid duration.`
 - `!m remind 1y hello` should respond with `Invalid duration.` (the
-  parser caps at 365 days).
+  unit must be one of `s`, `m`, `h`, `d`, `w` — `y` isn't supported).
 
 Add automated coverage where it's cheap. `parse_duration` is already
 unit-tested; if your feature has pure logic — a scheduler that picks

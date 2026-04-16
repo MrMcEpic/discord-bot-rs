@@ -70,12 +70,13 @@ OAuth invite URL.
 
 1. In the left sidebar, click **Installation** (newer portals) or
    **OAuth2 → URL Generator** (older portals).
-2. Under **Scopes**, check both `bot` and `applications.commands`.
+2. Under **Scopes**, check `bot` only. (The bot has no slash commands, so
+   `applications.commands` isn't required — checking it is harmless.)
 3. Under **Bot Permissions**, check the permissions the features you plan to
    use require:
    - **View Channels**, **Send Messages**, **Embed Links**, **Attach Files**,
-     **Read Message History**, **Use Slash Commands** are needed for almost
-     everything. Always include these.
+     **Read Message History** are needed for almost everything. Always include
+     these.
    - **Connect** and **Speak** are needed for music.
    - **Manage Roles** is needed for auto-role, join role, donator sync, and
      chargeback alerts. The bot's own role must also be ranked above any role

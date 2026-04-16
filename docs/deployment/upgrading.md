@@ -96,7 +96,9 @@ Things you want to see:
   parses cleanly (a syntax change in `config.toml` between
   versions would surface here).
 - `<botname> is connected!` — Discord connection is up.
-- `Initialized backend <name>` per bot in the gateway logs.
+- `<name> serves N guild(s)` per bot in the gateway logs (after
+  `MCP Gateway starting with N instances` and the `<name> -> <url>`
+  registration lines).
 - Any health check transitioning to `healthy` in
   `docker compose ps`.
 

@@ -285,9 +285,10 @@ docker compose logs -f
 You should see both `bot1` and `bot2` reach the
 `Database initialized (schema: bot1)` and
 `Database initialized (schema: bot2)` log lines, then connect to
-Discord. The gateway should log something like
-`Initialized backend bot1` and `Initialized backend bot2`, then
-`Refreshed guild map`.
+Discord. The gateway logs `MCP Gateway starting with N instances`
+followed by one `<name> -> <url>` line per instance, then a
+`<name> serves N guild(s)` line per backend after it polls each
+bot's `list_guilds`.
 
 In Discord, both bots should appear as separate users with
 separate green dots, in whichever guilds their tokens permit.

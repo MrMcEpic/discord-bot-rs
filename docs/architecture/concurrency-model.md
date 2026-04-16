@@ -171,9 +171,10 @@ different shards and don't block each other.
   pipeline.
 - **`music`** — 15 requests per 30 seconds. Defined but not currently
   enforced.
-- **`moderation`** — 5 requests per 60 seconds. Enforced by the AI
-  pipeline's moderation tool execution and by prefix moderation
-  commands.
+- **`moderation`** — 5 requests per 60 seconds. Enforced only by the
+  AI pipeline's moderation tool execution path. The prefix
+  `!m ban` / `!m unban` / `!m nuke` commands do not currently consult
+  this limiter (Discord-side permission checks are the only gate).
 - **`stocks`** — 10 requests per 30 seconds. Defined but not currently
   enforced.
 

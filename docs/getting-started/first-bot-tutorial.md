@@ -80,12 +80,13 @@ The application exists, but it is not in any server yet.
 
 1. Click **Installation** in the sidebar (or **OAuth2 → URL Generator** on
    older portals).
-2. Under **Scopes**, check both `bot` and `applications.commands`.
+2. Under **Scopes**, check `bot`. (`applications.commands` isn't needed —
+   the bot has no slash commands — but checking it is harmless if your
+   workflow already includes it.)
 3. Under **Bot Permissions**, check at minimum: View Channels, Send
-   Messages, Embed Links, Attach Files, Read Message History, Use Slash
-   Commands, Connect, Speak, Manage Roles, Kick Members, Ban Members,
-   Moderate Members. You can drop any of these later if you do not use the
-   matching feature.
+   Messages, Embed Links, Attach Files, Read Message History, Connect,
+   Speak, Manage Roles, Kick Members, Ban Members, Moderate Members. You
+   can drop any of these later if you do not use the matching feature.
 4. Copy the URL at the bottom, paste it into a new tab, choose your server
    (you must have **Manage Server** there), and click **Authorize**.
 

@@ -110,10 +110,12 @@ and restore it without affecting the others. Two instances cannot
 read or write each other's data even by accident — the connections
 literally cannot see the other schema's tables.
 
-The default `DB_SCHEMA` is `public`, but **for any real deployment
-you should set this to a unique value per instance** — typically
-matching your instance directory name. `mybot1` and `mybot2`,
-not `public` and `public`.
+If `DB_SCHEMA` is unset, the bot falls back to `public` — but the
+shipped `instances/example/.env.example` already sets it to `example`,
+so a fresh quickstart user gets a properly-isolated `example` schema
+out of the box. **For any real deployment you should set this to a
+unique value per instance**, typically matching your instance directory
+name. `mybot1` and `mybot2`, not `public` and `public`.
 
 ## Backups
 

@@ -66,8 +66,11 @@ defined at the top of `src/main.rs`. It holds:
   disabled features simply hold `None`.
 - **Per-guild state maps**: `guild_players`, `track_handles`,
   `now_playing_msgs`, `idle_timers`, `connections_games`, `wordle_games`.
-  All are `Arc<DashMap<..., Arc<Mutex<T>>>>`, giving lock-free guild lookup
-  with serialised access inside one guild.
+  All are `Arc<DashMap<key, value>>`, giving lock-free guild lookup. Most
+  values are wrapped in `Arc<Mutex<T>>` for serialised access inside one
+  guild; `track_handles` is the exception — it stores `TrackHandle`
+  directly because songbird's handle is already cheap to clone and
+  internally synchronised.
 - **`rate_limiters: RateLimiters`** — sliding-window limiters for AI, music,
   moderation, and stock tools, keyed by user ID.
 - **`mcp_started: AtomicBool`** and **`started_at: DateTime<Utc>`** — one-shot

@@ -156,7 +156,7 @@ an `instance` property:
 ```json
 "instance": {
     "type": "string",
-    "description": "Bot instance name to route to (e.g., 'bot1', 'bot2'). If omitted, routes by guild_id."
+    "description": "Bot instance name to route to, matching a key in the INSTANCES env var (e.g., 'bot_a', 'bot_b'). If omitted, routes by guild_id."
 }
 ```
 

@@ -72,12 +72,14 @@ reference through into the module that needs it.
 [`src/config.rs`](https://github.com/MrMcEpic/discord-bot-rs/blob/master/src/config.rs)
 is a single `Config` struct and a `Config::load()` function. It reads
 `.env` via `dotenvy`, panics fast on missing required vars
-(`DISCORD_TOKEN`, `CLIENT_ID`, `GUILD_ID`), and exposes optional ones
-(`DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `FINNHUB_API_KEY`,
-`MC_VERIFY_URL`, `MC_VERIFY_SECRET`, MCP settings, `DB_SCHEMA`,
-`DATABASE_URL`) as `Option<String>`. The `get_env_or_throw` helper
-also panics on `your-...` placeholder values, so the bot refuses to
-boot with an unedited `.env.example`.
+(`DISCORD_TOKEN`, `CLIENT_ID`, `GUILD_ID`), and exposes the optional
+API keys (`DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `FINNHUB_API_KEY`,
+`MC_VERIFY_URL`, `MC_VERIFY_SECRET`) as `Option<String>`. The MCP
+settings (`MCP_PORT`, `MCP_BIND_ADDR`, `MCP_AUTH_TOKEN`) and the
+database settings (`DB_SCHEMA`, `DATABASE_URL`) are plain `String`
+fields with non-`None` defaults. The `get_env_or_throw` helper also
+panics on `your-...` placeholder values, so the bot refuses to boot
+with an unedited `.env.example`.
 
 ### `instance_config.rs` — parsing `config.toml`
 
@@ -192,11 +194,13 @@ than the files.
   bot exposes to the LLM. If a tool call resolves to playing music,
   creating a tempban, or starting a game, the dispatch lives here.
 - **`tools.rs`** — JSON schema definitions for the tool set the bot
-  advertises to DeepSeek/Gemini: `web_search`, `play_song`,
-  `skip_song`, `create_tempban`, `nuke_messages`, `start_wordle`,
-  `start_connections`, and so on. Predicate helpers (`is_search_tool`,
-  `is_moderation_tool`, ...) are used by `deepseek.rs` to route each
-  tool call.
+  advertises to DeepSeek/Gemini: `web_search`, `play_song`, `skip`,
+  `stop`, `pause`, `resume`, `show_queue`, `now_playing`, `shuffle`,
+  `set_loop`, `remove_from_queue`, `tempban`, `unban`, `nuke`,
+  `stock_buy`, `stock_sell`, `stock_price`, `stock_portfolio`,
+  `stock_leaderboard`, `connections_start`, `wordle_start`, and a few
+  others. Predicate helpers (`is_search_tool`, `is_moderation_tool`,
+  ...) are used by `deepseek.rs` to route each tool call.
 - **`dsml.rs`** — parses "DSML" (DeepSeek Markup Language) tool-call
   blocks embedded in model output, for models that emit structured
   tool calls in prose rather than in the OpenAI-style `tool_calls`
@@ -353,14 +357,16 @@ Five files:
 
 - **`main.rs`** — builds `GatewayConfig`, constructs one
   `BackendClient` per configured instance, wires them into a
-  `GatewayState`, mounts the axum router, and binds.
-- **`config.rs`** — reads `GATEWAY_PORT`, `GATEWAY_AUTH_TOKEN`, and a
-  `BACKENDS` env var of the form `name1=url1,name2=url2` into a list
+  `GatewayState`, mounts the axum router, binds, and spawns a 5-minute
+  background task that refreshes the guild map.
+- **`config.rs`** — reads `GATEWAY_PORT` (default `9100`), the
+  optional `MCP_AUTH_TOKEN` bearer secret, and the required
+  `INSTANCES` env var of the form `name1=url1,name2=url2` into a list
   of `Instance { name, url }`.
-- **`backend.rs`** — the per-instance JSON-RPC client. Opens a
-  streamable HTTP session to a bot's MCP endpoint, maintains a
-  `pending: HashMap<u64, oneshot::Sender<JsonRpcResponse>>` for
-  response routing, and exposes `send_request` / `forward_call`.
+- **`backend.rs`** — the per-instance MCP client. Opens a Streamable
+  HTTP SSE session to a bot's MCP endpoint and exposes `initialize`,
+  `list_tools`, `call_tool`, `list_guilds`, and `health_check` for the
+  gateway server to call.
 - **`routing.rs`** — the guild-to-instance router. Keeps a
   `HashMap<guild_id, instance_name>` so that the gateway can look at a
   tool call's `guild_id` and forward it to the right backend.
@@ -368,7 +374,8 @@ Five files:
   envelope, authenticates with the optional bearer token, resolves the
   target backend via the router, forwards the call, and streams the
   response back. There's also a cached `tools/list` aggregation so
-  the client sees the union of every backend's tools.
+  the client sees the union of every backend's tools, plus a
+  gateway-only `list_instances` tool.
 
 [MCP Gateway Routing](../architecture/mcp-gateway-routing.md) has the
 sequence diagram.
