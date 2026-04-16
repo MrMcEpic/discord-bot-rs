@@ -597,15 +597,16 @@ async fn execute_music_tool(
 			if let Some(settings) = get_guild_settings(&data.db, &guild_id.to_string()).await {
 				if settings.dj_mode_enabled {
 					if let Some(ref dj_role_id) = settings.dj_role_id {
-						let has_role = member.roles.iter().any(|r| r.to_string() == *dj_role_id);
-						if !has_role {
-							let _ = message
-                                .reply(
-                                    &ctx.http,
-                                    "DJ mode is enabled. You need the DJ role to use music commands.",
-                                )
-                                .await;
-							return;
+						if let Ok(role_id) = dj_role_id.parse::<u64>() {
+							if !member.roles.contains(&RoleId::new(role_id)) {
+								let _ = message
+                                    .reply(
+                                        &ctx.http,
+                                        "DJ mode is enabled. You need the DJ role to use music commands.",
+                                    )
+                                    .await;
+								return;
+							}
 						}
 					}
 				}
@@ -658,8 +659,9 @@ async fn execute_music_tool(
 					}
 					// Join voice
 					if let Err(e) = voice::join_channel(ctx, guild_id, channel_id).await {
+						tracing::error!("Failed to join voice in play tool: {e}");
 						let _ = message
-							.reply(&ctx.http, format!("Failed to join voice: {e}"))
+							.reply(&ctx.http, "Failed to join voice channel. Please try again.")
 							.await;
 						return;
 					}
@@ -726,8 +728,9 @@ async fn execute_music_tool(
 								}
 							}
 							Err(e) => {
+								tracing::error!("Playback error in play tool: {e}");
 								let _ = message
-									.reply(&ctx.http, format!("Playback error: {e}"))
+									.reply(&ctx.http, "Playback error. Please try again.")
 									.await;
 							}
 						}
@@ -998,8 +1001,9 @@ async fn execute_moderation_tool(
 						.ban_with_reason(&ctx.http, user_id, 0, &ban_reason)
 						.await
 					{
+						tracing::error!("Failed to ban in tempban tool: {e}");
 						let _ = message
-							.reply(&ctx.http, format!("Failed to ban: {e}"))
+							.reply(&ctx.http, "Discord API hiccup. Please try again.")
 							.await;
 						return;
 					}
@@ -1038,8 +1042,12 @@ async fn execute_moderation_tool(
 					.await;
 				}
 				Err(e) => {
+					tracing::error!("DB error in tempban (create_tempban): {e}");
 					let _ = message
-						.reply(&ctx.http, format!("Database error: {e}"))
+						.reply(
+							&ctx.http,
+							"Something went wrong talking to the database. Please try again later.",
+						)
 						.await;
 				}
 			}
@@ -1097,8 +1105,9 @@ async fn execute_moderation_tool(
 					.await;
 				}
 				Err(e) => {
+					tracing::error!("Failed to unban in unban tool: {e}");
 					let _ = message
-						.reply(&ctx.http, format!("Failed to unban: {e}"))
+						.reply(&ctx.http, "Discord API hiccup. Please try again.")
 						.await;
 				}
 			}
@@ -1196,8 +1205,12 @@ async fn execute_stock_tool(
 				match queries::get_or_create_portfolio(&data.db, &guild_id_str, &user_id).await {
 					Ok(p) => p,
 					Err(e) => {
+						tracing::error!("DB error in stock_buy (get_or_create_portfolio): {e}");
 						let _ = message
-							.reply(&ctx.http, format!("Database error: {e}"))
+							.reply(
+								&ctx.http,
+								"Something went wrong talking to the database. Please try again later.",
+							)
 							.await;
 						return;
 					}
@@ -1270,7 +1283,13 @@ async fn execute_stock_tool(
 						.await;
 				}
 				Err(e) => {
-					let _ = message.reply(&ctx.http, format!("Trade failed: {e}")).await;
+					tracing::error!("DB error in stock_buy (buy_stock): {e}");
+					let _ = message
+						.reply(
+							&ctx.http,
+							"Something went wrong talking to the database. Please try again later.",
+						)
+						.await;
 				}
 			}
 		}
@@ -1286,8 +1305,12 @@ async fn execute_stock_tool(
 				match queries::get_or_create_portfolio(&data.db, &guild_id_str, &user_id).await {
 					Ok(p) => p,
 					Err(e) => {
+						tracing::error!("DB error in stock_sell (get_or_create_portfolio): {e}");
 						let _ = message
-							.reply(&ctx.http, format!("Database error: {e}"))
+							.reply(
+								&ctx.http,
+								"Something went wrong talking to the database. Please try again later.",
+							)
 							.await;
 						return;
 					}
@@ -1303,8 +1326,12 @@ async fn execute_stock_tool(
 						return;
 					}
 					Err(e) => {
+						tracing::error!("DB error in stock_sell (get_holding): {e}");
 						let _ = message
-							.reply(&ctx.http, format!("Database error: {e}"))
+							.reply(
+								&ctx.http,
+								"Something went wrong talking to the database. Please try again later.",
+							)
 							.await;
 						return;
 					}
@@ -1370,7 +1397,13 @@ async fn execute_stock_tool(
 						.await;
 				}
 				Err(e) => {
-					let _ = message.reply(&ctx.http, format!("Trade failed: {e}")).await;
+					tracing::error!("DB error in stock_sell (sell_stock): {e}");
+					let _ = message
+						.reply(
+							&ctx.http,
+							"Something went wrong talking to the database. Please try again later.",
+						)
+						.await;
 				}
 			}
 		}
@@ -1402,8 +1435,14 @@ async fn execute_stock_tool(
 				match queries::get_or_create_portfolio(&data.db, &guild_id_str, &user_id).await {
 					Ok(p) => p,
 					Err(e) => {
+						tracing::error!(
+							"DB error in stock_portfolio (get_or_create_portfolio): {e}"
+						);
 						let _ = message
-							.reply(&ctx.http, format!("Database error: {e}"))
+							.reply(
+								&ctx.http,
+								"Something went wrong talking to the database. Please try again later.",
+							)
 							.await;
 						return;
 					}
@@ -1412,8 +1451,12 @@ async fn execute_stock_tool(
 			let holdings = match queries::get_holdings(&data.db, &guild_id_str, &user_id).await {
 				Ok(h) => h,
 				Err(e) => {
+					tracing::error!("DB error in stock_portfolio (get_holdings): {e}");
 					let _ = message
-						.reply(&ctx.http, format!("Database error: {e}"))
+						.reply(
+							&ctx.http,
+							"Something went wrong talking to the database. Please try again later.",
+						)
 						.await;
 					return;
 				}
@@ -1455,8 +1498,12 @@ async fn execute_stock_tool(
 			let portfolios = match queries::get_all_portfolios(&data.db, &guild_id_str).await {
 				Ok(p) => p,
 				Err(e) => {
+					tracing::error!("DB error in stock_leaderboard (get_all_portfolios): {e}");
 					let _ = message
-						.reply(&ctx.http, format!("Database error: {e}"))
+						.reply(
+							&ctx.http,
+							"Something went wrong talking to the database. Please try again later.",
+						)
 						.await;
 					return;
 				}
@@ -1571,8 +1618,9 @@ async fn execute_connections_tool(
 	{
 		Ok(m) => m,
 		Err(e) => {
+			tracing::error!("Failed to start connections game: {e}");
 			let _ = message
-				.reply(&ctx.http, format!("Failed to start game: {e}"))
+				.reply(&ctx.http, "Failed to start the game. Please try again.")
 				.await;
 			return;
 		}
@@ -1643,8 +1691,9 @@ async fn execute_wordle_tool(
 	{
 		Ok(m) => m,
 		Err(e) => {
+			tracing::error!("Failed to start Wordle game: {e}");
 			let _ = message
-				.reply(&ctx.http, format!("Failed to start Wordle: {e}"))
+				.reply(&ctx.http, "Failed to start Wordle. Please try again.")
 				.await;
 			return;
 		}
