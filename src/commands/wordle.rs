@@ -33,7 +33,12 @@ pub async fn date(
 	#[rest]
 	date_str: String,
 ) -> Result<(), BotError> {
-	start_game(ctx, date_str.trim()).await
+	let trimmed = date_str.trim();
+	if chrono::NaiveDate::parse_from_str(trimmed, "%Y-%m-%d").is_err() {
+		ctx.say("Use YYYY-MM-DD format (e.g. 2024-03-15).").await?;
+		return Ok(());
+	}
+	start_game(ctx, trimmed).await
 }
 
 async fn start_game(ctx: Context<'_>, date: &str) -> Result<(), BotError> {
@@ -42,6 +47,14 @@ async fn start_game(ctx: Context<'_>, date: &str) -> Result<(), BotError> {
 	let puzzle = api::fetch_puzzle(&ctx.data().http_client, date)
 		.await
 		.map_err(BotError::Other)?;
+
+	if puzzle.date != date {
+		ctx.say(format!(
+			"NYT didn't have a puzzle for **{date}**; showing **{}** instead.",
+			puzzle.date
+		))
+		.await?;
+	}
 
 	let mut game = WordleGame::new(puzzle.solution, puzzle.date, MessageId::new(1), channel_id);
 
