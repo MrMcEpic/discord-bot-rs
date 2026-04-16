@@ -18,6 +18,26 @@ jobs:
   check-main:
     name: Check main crate
     runs-on: ubuntu-latest
+    # Postgres service for the integration tests under `tests/`. Each test
+    # uses `#[sqlx::test]`, which clones a fresh per-test database from the
+    # `DATABASE_URL` target and applies the migrations under `./migrations`.
+    # The credentials and DB name here are arbitrary CI-only values.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: discord_bot
+          POSTGRES_PASSWORD: discord_bot_pass
+          POSTGRES_DB: discord_bot
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U discord_bot"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://discord_bot:discord_bot_pass@localhost:5432/discord_bot
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
