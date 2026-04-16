@@ -24,8 +24,7 @@ pub async fn setlog(
 		"audit_log_channel_id",
 		&channel.id().to_string(),
 	)
-	.await
-	.map_err(|e| BotError::Other(format!("Database error: {e}")))?;
+	.await?;
 
 	ctx.say(format!("Audit log channel set to <#{}>.", channel.id()))
 		.await?;
@@ -52,8 +51,7 @@ pub async fn djrole(
 		"dj_role_id",
 		&role.id.to_string(),
 	)
-	.await
-	.map_err(|e| BotError::Other(format!("Database error: {e}")))?;
+	.await?;
 
 	ctx.say(format!("DJ role set to **{}**.", role.name))
 		.await?;
@@ -92,8 +90,7 @@ pub async fn djmode(ctx: Context<'_>) -> Result<(), BotError> {
 		"dj_mode_enabled",
 		new_value,
 	)
-	.await
-	.map_err(|e| BotError::Other(format!("Database error: {e}")))?;
+	.await?;
 
 	ctx.say(if new_value {
 		"DJ mode **enabled**. Only users with the DJ role (or admins) can use music commands."

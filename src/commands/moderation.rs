@@ -59,8 +59,7 @@ pub async fn ban(
 		duration_ms,
 		reason_ref,
 	)
-	.await
-	.map_err(|e| BotError::Other(format!("Database error: {e}")))?;
+	.await?;
 
 	let ban_reason = format!(
 		"Tempban by {} ({}){}",
@@ -155,9 +154,7 @@ pub async fn banlist(ctx: Context<'_>) -> Result<(), BotError> {
 		.guild_id()
 		.ok_or(BotError::Other("Not in a guild".into()))?;
 
-	let bans = get_active_bans(&ctx.data().db, &guild_id.to_string())
-		.await
-		.map_err(|e| BotError::Other(format!("Database error: {e}")))?;
+	let bans = get_active_bans(&ctx.data().db, &guild_id.to_string()).await?;
 
 	if bans.is_empty() {
 		ctx.say("No active tempbans.").await?;
