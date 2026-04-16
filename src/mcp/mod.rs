@@ -55,6 +55,7 @@ pub async fn start(
 		Router,
 	};
 	use http::StatusCode;
+	use subtle::ConstantTimeEq;
 
 	let token = auth_token.clone();
 	let auth_middleware = middleware::from_fn(move |req: Request, next: Next| {
@@ -68,7 +69,13 @@ pub async fn start(
 				.get("authorization")
 				.and_then(|v| v.to_str().ok())
 				.unwrap_or("");
-			if auth == format!("Bearer {}", expected) {
+			let expected_header = format!("Bearer {}", expected);
+			let provided_bytes = auth.as_bytes();
+			let expected_bytes = expected_header.as_bytes();
+			let lengths_match = provided_bytes.len() == expected_bytes.len();
+			let bytes_match: bool =
+				lengths_match && bool::from(provided_bytes.ct_eq(expected_bytes));
+			if bytes_match {
 				next.run(req).await
 			} else {
 				(StatusCode::UNAUTHORIZED, "Unauthorized").into_response()

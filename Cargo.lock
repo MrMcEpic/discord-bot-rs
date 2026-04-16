@@ -843,6 +843,7 @@ dependencies = [
  "serenity",
  "songbird",
  "sqlx",
+ "subtle",
  "symphonia",
  "tokio",
  "toml",

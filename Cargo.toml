@@ -42,4 +42,5 @@ rmcp = { version = "1", features = ["server", "transport-streamable-http-server"
 schemars = "1"
 tower = { version = "0.5", features = ["limit"] }
 tower-http = { version = "0.6", features = ["cors"] }
+subtle = "2"
 

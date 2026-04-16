@@ -159,15 +159,21 @@ pub async fn auth_middleware(
 	request: axum::extract::Request,
 	next: axum::middleware::Next,
 ) -> impl IntoResponse {
+	use subtle::ConstantTimeEq;
+
 	if let Some(ref expected) = state.auth_token {
 		let provided = headers
 			.get("authorization")
 			.and_then(|v| v.to_str().ok())
-			.and_then(|v| v.strip_prefix("Bearer "));
+			.and_then(|v| v.strip_prefix("Bearer "))
+			.unwrap_or("");
 
-		match provided {
-			Some(token) if token == expected => {}
-			_ => return StatusCode::UNAUTHORIZED.into_response(),
+		let provided_bytes = provided.as_bytes();
+		let expected_bytes = expected.as_bytes();
+		let lengths_match = provided_bytes.len() == expected_bytes.len();
+		let bytes_match: bool = lengths_match && bool::from(provided_bytes.ct_eq(expected_bytes));
+		if !bytes_match {
+			return StatusCode::UNAUTHORIZED.into_response();
 		}
 	}
 	next.run(request).await.into_response()
