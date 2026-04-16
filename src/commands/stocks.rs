@@ -17,6 +17,24 @@ const RESET_CONFIRM_TIMEOUT: Duration = Duration::from_secs(30);
 // `result_large_err` lint here even though every command in the codebase returns
 // the same type. Boxing the enum would be a cross-cutting refactor with no
 // runtime benefit for a small helper; allow locally instead.
+/// Per-user rate limit for stock commands. Returns `Ok(true)` if the user
+/// was rate-limited (and we already replied), so the caller should bail out.
+/// Wraps the shared `stocks` limiter (10 req / 30s) so portfolio /
+/// quote-fetching network calls aren't easily spammed.
+async fn stocks_rate_limit_or_reply(ctx: Context<'_>) -> Result<bool, BotError> {
+	let cooldown = ctx
+		.data()
+		.rate_limiters
+		.stocks
+		.check(&ctx.author().id.to_string());
+	if cooldown > 0 {
+		ctx.say(format!("Slow down — try again in {cooldown}s."))
+			.await?;
+		return Ok(true);
+	}
+	Ok(false)
+}
+
 #[allow(clippy::result_large_err)]
 fn require_finnhub_key(ctx: Context<'_>) -> Result<String, BotError> {
 	ctx.data().config.finnhub_api_key.clone().ok_or_else(|| {
@@ -47,6 +65,9 @@ pub async fn buy(
 	#[rest]
 	amount_str: String,
 ) -> Result<(), BotError> {
+	if stocks_rate_limit_or_reply(ctx).await? {
+		return Ok(());
+	}
 	let api_key = require_finnhub_key(ctx)?;
 	let guild_id = ctx
 		.guild_id()
@@ -130,6 +151,9 @@ pub async fn sell(
 	#[rest]
 	amount_str: String,
 ) -> Result<(), BotError> {
+	if stocks_rate_limit_or_reply(ctx).await? {
+		return Ok(());
+	}
 	let api_key = require_finnhub_key(ctx)?;
 	let guild_id = ctx
 		.guild_id()
@@ -228,6 +252,9 @@ async fn portfolio_inner(
 	ctx: Context<'_>,
 	user: Option<serenity::all::User>,
 ) -> Result<(), BotError> {
+	if stocks_rate_limit_or_reply(ctx).await? {
+		return Ok(());
+	}
 	let api_key = require_finnhub_key(ctx)?;
 	let guild_id = ctx
 		.guild_id()
@@ -274,6 +301,9 @@ pub async fn price(
 	#[rest]
 	symbol: String,
 ) -> Result<(), BotError> {
+	if stocks_rate_limit_or_reply(ctx).await? {
+		return Ok(());
+	}
 	let api_key = require_finnhub_key(ctx)?;
 
 	let quote = api::get_quote(
@@ -293,6 +323,9 @@ pub async fn price(
 /// Top portfolios in the server
 #[poise::command(prefix_command, rename = "leaderboard", aliases("lb", "top"))]
 pub async fn leaderboard(ctx: Context<'_>) -> Result<(), BotError> {
+	if stocks_rate_limit_or_reply(ctx).await? {
+		return Ok(());
+	}
 	let api_key = require_finnhub_key(ctx)?;
 	let guild_id = ctx
 		.guild_id()
@@ -341,6 +374,9 @@ pub async fn leaderboard(ctx: Context<'_>) -> Result<(), BotError> {
 /// Recent trade history
 #[poise::command(prefix_command, rename = "history", aliases("hist", "h"))]
 pub async fn history(ctx: Context<'_>) -> Result<(), BotError> {
+	if stocks_rate_limit_or_reply(ctx).await? {
+		return Ok(());
+	}
 	let _ = require_finnhub_key(ctx)?;
 	let guild_id = ctx
 		.guild_id()
@@ -362,6 +398,9 @@ pub async fn history(ctx: Context<'_>) -> Result<(), BotError> {
 /// can't nuke a portfolio.
 #[poise::command(prefix_command, rename = "reset")]
 pub async fn reset(ctx: Context<'_>) -> Result<(), BotError> {
+	if stocks_rate_limit_or_reply(ctx).await? {
+		return Ok(());
+	}
 	let _ = require_finnhub_key(ctx)?;
 	let guild_id = ctx
 		.guild_id()

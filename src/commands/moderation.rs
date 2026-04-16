@@ -5,6 +5,24 @@ use crate::error::BotError;
 use crate::util::duration::{format_duration_ms, parse_duration};
 use crate::Context;
 
+/// Per-user rate limit for moderation commands. Returns `Ok(true)` if the
+/// user was rate-limited (and we already replied), so the caller should bail
+/// out. The AI tool path already enforces this same limiter; the prefix
+/// commands have permission gates but we still cap absurd spam.
+async fn moderation_rate_limit_or_reply(ctx: Context<'_>) -> Result<bool, BotError> {
+	let cooldown = ctx
+		.data()
+		.rate_limiters
+		.moderation
+		.check(&ctx.author().id.to_string());
+	if cooldown > 0 {
+		ctx.say(format!("Slow down — try again in {cooldown}s."))
+			.await?;
+		return Ok(true);
+	}
+	Ok(false)
+}
+
 /// Temporarily ban a user
 #[poise::command(prefix_command, rename = "ban", required_permissions = "BAN_MEMBERS")]
 pub async fn ban(
@@ -15,6 +33,9 @@ pub async fn ban(
 	#[rest]
 	reason: Option<String>,
 ) -> Result<(), BotError> {
+	if moderation_rate_limit_or_reply(ctx).await? {
+		return Ok(());
+	}
 	let guild_id = ctx
 		.guild_id()
 		.ok_or(BotError::Other("Not in a guild".into()))?;
@@ -85,6 +106,9 @@ pub async fn unban(
 	ctx: Context<'_>,
 	#[description = "User to unban"] user: serenity::all::User,
 ) -> Result<(), BotError> {
+	if moderation_rate_limit_or_reply(ctx).await? {
+		return Ok(());
+	}
 	let guild_id = ctx
 		.guild_id()
 		.ok_or(BotError::Other("Not in a guild".into()))?;
@@ -174,6 +198,9 @@ pub async fn nuke(
 	ctx: Context<'_>,
 	#[description = "Number of messages (1-100)"] count: u8,
 ) -> Result<(), BotError> {
+	if moderation_rate_limit_or_reply(ctx).await? {
+		return Ok(());
+	}
 	if !(1..=100).contains(&count) {
 		ctx.say("Usage: `!m nuke <1-100>`").await?;
 		return Ok(());

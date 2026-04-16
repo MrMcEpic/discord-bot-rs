@@ -239,6 +239,26 @@ async fn handle_component_interaction(
 		None => return,
 	};
 
+	// Per-user rate limit. Buttons share the same `music` limiter as prefix
+	// commands so a user spamming the UI counts against the same budget.
+	let cooldown = data
+		.rate_limiters
+		.music
+		.check(&interaction.user.id.to_string());
+	if cooldown > 0 {
+		let _ = interaction
+			.create_response(
+				&ctx.http,
+				CreateInteractionResponse::Message(
+					CreateInteractionResponseMessage::new()
+						.content(format!("Slow down — try again in {cooldown}s."))
+						.ephemeral(true),
+				),
+			)
+			.await;
+		return;
+	}
+
 	// Voice presence + DJ mode check (skip for read-only "music_queue")
 	if custom_id != "music_queue" {
 		// Check if user is in the same voice channel as the bot

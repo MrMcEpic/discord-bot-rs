@@ -10,6 +10,24 @@ use crate::music::track::{resolve_track, resolve_tracks};
 use crate::music::voice;
 use crate::Context;
 
+/// Per-user rate limit for music commands. Returns `Ok(true)` if the user
+/// was rate-limited (and we already replied), so the caller should bail out.
+/// Keep this above the per-command logic so it runs before any DB / network
+/// work that could be triggered by spamming.
+async fn music_rate_limit_or_reply(ctx: Context<'_>) -> Result<bool, BotError> {
+	let cooldown = ctx
+		.data()
+		.rate_limiters
+		.music
+		.check(&ctx.author().id.to_string());
+	if cooldown > 0 {
+		ctx.say(format!("Slow down — try again in {cooldown}s."))
+			.await?;
+		return Ok(true);
+	}
+	Ok(false)
+}
+
 async fn check_dj_mode(ctx: Context<'_>) -> Result<bool, BotError> {
 	let guild_id = match ctx.guild_id() {
 		Some(id) => id,
@@ -81,6 +99,9 @@ pub async fn play(
 	#[rest]
 	query: String,
 ) -> Result<(), BotError> {
+	if music_rate_limit_or_reply(ctx).await? {
+		return Ok(());
+	}
 	if check_dj_mode(ctx).await? {
 		return Ok(());
 	}
@@ -187,6 +208,9 @@ pub async fn playlist(
 	#[rest]
 	query: String,
 ) -> Result<(), BotError> {
+	if music_rate_limit_or_reply(ctx).await? {
+		return Ok(());
+	}
 	if check_dj_mode(ctx).await? {
 		return Ok(());
 	}
@@ -296,6 +320,9 @@ pub async fn playlist(
 /// Skip the current track
 #[poise::command(prefix_command, rename = "skip", aliases("s"))]
 pub async fn skip(ctx: Context<'_>) -> Result<(), BotError> {
+	if music_rate_limit_or_reply(ctx).await? {
+		return Ok(());
+	}
 	if check_dj_mode(ctx).await? {
 		return Ok(());
 	}
@@ -361,6 +388,9 @@ pub async fn skip(ctx: Context<'_>) -> Result<(), BotError> {
 /// Stop playback and leave voice
 #[poise::command(prefix_command, rename = "stop")]
 pub async fn stop(ctx: Context<'_>) -> Result<(), BotError> {
+	if music_rate_limit_or_reply(ctx).await? {
+		return Ok(());
+	}
 	if check_dj_mode(ctx).await? {
 		return Ok(());
 	}
@@ -394,6 +424,9 @@ pub async fn stop(ctx: Context<'_>) -> Result<(), BotError> {
 /// Pause playback
 #[poise::command(prefix_command, rename = "pause")]
 pub async fn pause(ctx: Context<'_>) -> Result<(), BotError> {
+	if music_rate_limit_or_reply(ctx).await? {
+		return Ok(());
+	}
 	if check_dj_mode(ctx).await? {
 		return Ok(());
 	}
@@ -420,6 +453,9 @@ pub async fn pause(ctx: Context<'_>) -> Result<(), BotError> {
 /// Resume playback
 #[poise::command(prefix_command, rename = "resume", aliases("r"))]
 pub async fn resume(ctx: Context<'_>) -> Result<(), BotError> {
+	if music_rate_limit_or_reply(ctx).await? {
+		return Ok(());
+	}
 	if check_dj_mode(ctx).await? {
 		return Ok(());
 	}
@@ -446,6 +482,9 @@ pub async fn resume(ctx: Context<'_>) -> Result<(), BotError> {
 /// Show the current queue
 #[poise::command(prefix_command, rename = "queue", aliases("q"))]
 pub async fn queue(ctx: Context<'_>) -> Result<(), BotError> {
+	if music_rate_limit_or_reply(ctx).await? {
+		return Ok(());
+	}
 	let guild_id = ctx
 		.guild_id()
 		.ok_or(BotError::Other("Not in a guild".into()))?;
@@ -460,6 +499,9 @@ pub async fn queue(ctx: Context<'_>) -> Result<(), BotError> {
 /// Show what's currently playing
 #[poise::command(prefix_command, rename = "nowplaying", aliases("np"))]
 pub async fn nowplaying(ctx: Context<'_>) -> Result<(), BotError> {
+	if music_rate_limit_or_reply(ctx).await? {
+		return Ok(());
+	}
 	let guild_id = ctx
 		.guild_id()
 		.ok_or(BotError::Other("Not in a guild".into()))?;
@@ -491,6 +533,9 @@ pub async fn remove(
 	ctx: Context<'_>,
 	#[description = "Queue position (1-based)"] position: usize,
 ) -> Result<(), BotError> {
+	if music_rate_limit_or_reply(ctx).await? {
+		return Ok(());
+	}
 	if check_dj_mode(ctx).await? {
 		return Ok(());
 	}
@@ -522,6 +567,9 @@ pub async fn loop_cmd(
 	ctx: Context<'_>,
 	#[description = "Mode: off, track, queue"] mode: Option<String>,
 ) -> Result<(), BotError> {
+	if music_rate_limit_or_reply(ctx).await? {
+		return Ok(());
+	}
 	if check_dj_mode(ctx).await? {
 		return Ok(());
 	}
@@ -547,6 +595,9 @@ pub async fn loop_cmd(
 /// Shuffle the queue
 #[poise::command(prefix_command, rename = "shuffle")]
 pub async fn shuffle(ctx: Context<'_>) -> Result<(), BotError> {
+	if music_rate_limit_or_reply(ctx).await? {
+		return Ok(());
+	}
 	if check_dj_mode(ctx).await? {
 		return Ok(());
 	}

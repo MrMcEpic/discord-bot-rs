@@ -68,7 +68,7 @@ pub struct Data {
 	pub now_playing_msgs: Arc<DashMap<GuildId, Arc<Mutex<Option<serenity::all::MessageId>>>>>,
 	/// Per-guild idle timer handles, used to cancel idle-leave when a new track starts.
 	pub idle_timers: IdleTimerMap,
-	pub rate_limiters: RateLimiters,
+	pub rate_limiters: Arc<RateLimiters>,
 	pub connections_games: Arc<DashMap<ChannelId, Arc<Mutex<ConnectionsGame>>>>,
 	pub wordle_games: Arc<DashMap<ChannelId, Arc<Mutex<WordleGame>>>>,
 	pub config: Config,
@@ -145,7 +145,8 @@ async fn main() {
 		.timeout(std::time::Duration::from_secs(30))
 		.build()
 		.expect("HTTP client");
-	let rate_limiters = RateLimiters::new();
+	let rate_limiters = Arc::new(RateLimiters::new());
+	let rate_limiters_for_cleanup = rate_limiters.clone();
 
 	let intents = GatewayIntents::GUILDS
 		| GatewayIntents::GUILD_MESSAGES
@@ -343,6 +344,22 @@ async fn main() {
 	// Each loop body is wrapped in `run_supervised` so a panic in one
 	// iteration is logged but doesn't kill the loop.
 	let mut background_tasks: JoinSet<()> = JoinSet::new();
+
+	// Rate limiter cleanup: prune empty/expired buckets every 5 minutes.
+	// Each `check()` inserts into a per-user DashMap entry that's never
+	// removed on its own; without this, memory grows with unique-user count.
+	background_tasks.spawn(async move {
+		// Stagger initial wait so this doesn't fight startup work.
+		tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+		tracing::info!("Rate limiter cleanup task started (300s interval).");
+		loop {
+			run_supervised("rate_limiter_cleanup", || async {
+				rate_limiters_for_cleanup.cleanup_all();
+			})
+			.await;
+			tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+		}
+	});
 
 	let http = client.http.clone();
 	let db_for_unban = db_clone.clone();
