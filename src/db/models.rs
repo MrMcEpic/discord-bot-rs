@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use rust_decimal::Decimal;
 use sqlx::FromRow;
 
 #[derive(Debug, FromRow)]
@@ -28,7 +29,7 @@ pub struct GuildSettings {
 pub struct StockPortfolio {
 	pub guild_id: String,
 	pub user_id: String,
-	pub cash_balance: f64,
+	pub cash_balance: Decimal,
 	pub created_at: DateTime<Utc>,
 }
 
@@ -39,8 +40,8 @@ pub struct StockHolding {
 	pub guild_id: String,
 	pub user_id: String,
 	pub symbol: String,
-	pub quantity: f64,
-	pub avg_cost: f64,
+	pub quantity: Decimal,
+	pub avg_cost: Decimal,
 }
 
 #[derive(Debug, FromRow)]
@@ -51,9 +52,9 @@ pub struct StockTransaction {
 	pub user_id: String,
 	pub symbol: String,
 	pub action: String,
-	pub quantity: f64,
-	pub price_per_share: f64,
-	pub total_amount: f64,
+	pub quantity: Decimal,
+	pub price_per_share: Decimal,
+	pub total_amount: Decimal,
 	pub created_at: DateTime<Utc>,
 }
 

@@ -1,6 +1,8 @@
 use base64::Engine;
 use image::ImageReader;
 use regex::Regex;
+use rust_decimal::prelude::FromPrimitive;
+use rust_decimal::Decimal;
 use serenity::all::*;
 use std::io::Cursor;
 use std::sync::LazyLock;
@@ -1226,19 +1228,30 @@ async fn execute_stock_tool(
 					}
 				};
 
-			// Determine quantity
+			// Determine quantity. The DeepSeek tool schema is f64 (JSON Number);
+			// we convert to Decimal at the boundary so all downstream math is
+			// exact. `Decimal::from_f64` returns None for NaN/Inf — treat the
+			// same as a missing arg.
 			let quantity = if let Some(dollars) = args["dollar_amount"].as_f64() {
 				if dollars <= 0.0 {
 					let _ = message.reply(&ctx.http, "Amount must be positive.").await;
 					return;
 				}
-				dollars / quote.price
+				let Some(dollars_dec) = Decimal::from_f64(dollars) else {
+					let _ = message.reply(&ctx.http, "Invalid dollar amount.").await;
+					return;
+				};
+				(dollars_dec / quote.price).round_dp(4)
 			} else if let Some(qty) = args["quantity"].as_f64() {
 				if qty <= 0.0 {
 					let _ = message.reply(&ctx.http, "Quantity must be positive.").await;
 					return;
 				}
-				qty
+				let Some(qty_dec) = Decimal::from_f64(qty) else {
+					let _ = message.reply(&ctx.http, "Invalid quantity.").await;
+					return;
+				};
+				qty_dec.round_dp(4)
 			} else {
 				let _ = message
 					.reply(&ctx.http, "Please specify a quantity or dollar amount.")
@@ -1252,8 +1265,9 @@ async fn execute_stock_tool(
 					.reply(
 						&ctx.http,
 						format!(
-							"Insufficient funds. This costs **${:.2}** but you have **${:.2}**.",
-							total, portfolio.cash_balance
+							"Insufficient funds. This costs **${}** but you have **${}**.",
+							total.round_dp(2),
+							portfolio.cash_balance.round_dp(2)
 						),
 					)
 					.await;
@@ -1342,19 +1356,23 @@ async fn execute_stock_tool(
 					let _ = message.reply(&ctx.http, "Quantity must be positive.").await;
 					return;
 				}
-				if qty > holding.quantity {
+				let Some(qty_dec) = Decimal::from_f64(qty).map(|d| d.round_dp(4)) else {
+					let _ = message.reply(&ctx.http, "Invalid quantity.").await;
+					return;
+				};
+				if qty_dec > holding.quantity {
 					let _ = message
 						.reply(
 							&ctx.http,
 							format!(
-								"You only have **{:.4}** shares of **{symbol}**.",
-								holding.quantity
+								"You only have **{}** shares of **{symbol}**.",
+								holding.quantity.round_dp(4)
 							),
 						)
 						.await;
 					return;
 				}
-				qty
+				qty_dec
 			} else {
 				holding.quantity // default: sell all
 			};
@@ -1509,7 +1527,7 @@ async fn execute_stock_tool(
 				}
 			};
 
-			let mut entries: Vec<(String, f64)> = Vec::new();
+			let mut entries: Vec<(String, Decimal)> = Vec::new();
 			for p in &portfolios {
 				let holdings =
 					match queries::get_holdings(&data.db, &guild_id_str, &p.user_id).await {
@@ -1534,7 +1552,7 @@ async fn execute_stock_tool(
 				entries.push((p.user_id.clone(), total_value));
 			}
 
-			entries.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+			entries.sort_by(|a, b| b.1.cmp(&a.1));
 
 			let leaderboard_entries: Vec<stock_embeds::LeaderboardEntry> = entries
 				.iter()

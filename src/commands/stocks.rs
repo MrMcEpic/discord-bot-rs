@@ -1,3 +1,4 @@
+use rust_decimal::Decimal;
 use serenity::all::*;
 use std::time::Duration;
 
@@ -84,24 +85,27 @@ pub async fn buy(
 		.await
 		.map_err(BotError::Other)?;
 
-	// Parse amount: "$500" for dollar amount, or plain number for share count
+	// Parse amount: "$500" for dollar amount, or plain number for share count.
+	// Decimal has `FromStr`, so user input goes straight into exact math.
 	let amount_str = amount_str.trim();
 	let quantity = if let Some(dollars) = amount_str.strip_prefix('$') {
-		let dollar_amount: f64 = dollars
+		let dollar_amount: Decimal = dollars
 			.parse()
 			.map_err(|_| BotError::Other("Invalid dollar amount.".into()))?;
-		if dollar_amount <= 0.0 {
+		if dollar_amount <= Decimal::ZERO {
 			return Err(BotError::Other("Amount must be positive.".into()));
 		}
-		dollar_amount / quote.price
+		// Share-count math: round to 4dp so we never try to bind a NUMERIC
+		// value with more scale than the column allows.
+		(dollar_amount / quote.price).round_dp(4)
 	} else {
-		let qty: f64 = amount_str
+		let qty: Decimal = amount_str
 			.parse()
 			.map_err(|_| BotError::Other("Invalid quantity. Use a number or `$amount`.".into()))?;
-		if qty <= 0.0 {
+		if qty <= Decimal::ZERO {
 			return Err(BotError::Other("Quantity must be positive.".into()));
 		}
-		qty
+		qty.round_dp(4)
 	};
 
 	let total = quantity * quote.price;
@@ -118,8 +122,8 @@ pub async fn buy(
 	{
 		Err(sqlx::Error::Protocol(msg)) if msg.contains("Insufficient funds") => {
 			ctx.say(format!(
-				"Insufficient funds. This trade costs **${:.2}** but you don't have enough cash.",
-				total
+				"Insufficient funds. This trade costs **${}** but you don't have enough cash.",
+				total.round_dp(2)
 			))
 			.await?;
 			return Ok(());
@@ -181,16 +185,17 @@ pub async fn sell(
 	let quantity = if amount_str == "all" {
 		holding.quantity
 	} else {
-		let qty: f64 = amount_str
+		let qty: Decimal = amount_str
 			.parse()
 			.map_err(|_| BotError::Other("Invalid quantity. Use a number or `all`.".into()))?;
-		if qty <= 0.0 {
+		if qty <= Decimal::ZERO {
 			return Err(BotError::Other("Quantity must be positive.".into()));
 		}
+		let qty = qty.round_dp(4);
 		if qty > holding.quantity {
 			ctx.say(format!(
-				"You only have **{:.4}** shares of **{symbol}**.",
-				holding.quantity
+				"You only have **{}** shares of **{symbol}**.",
+				holding.quantity.round_dp(4)
 			))
 			.await?;
 			return Ok(());
@@ -334,7 +339,7 @@ pub async fn leaderboard(ctx: Context<'_>) -> Result<(), BotError> {
 
 	let portfolios = queries::get_all_portfolios(&ctx.data().db, &guild_id_str).await?;
 
-	let mut entries: Vec<(String, f64)> = Vec::new();
+	let mut entries: Vec<(String, Decimal)> = Vec::new();
 	for p in &portfolios {
 		let holdings = queries::get_holdings(&ctx.data().db, &guild_id_str, &p.user_id).await?;
 		let mut total_value = p.cash_balance;
@@ -351,8 +356,9 @@ pub async fn leaderboard(ctx: Context<'_>) -> Result<(), BotError> {
 		entries.push((p.user_id.clone(), total_value));
 	}
 
-	// Sort by total value descending
-	entries.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+	// Sort by total value descending. Decimal implements `Ord`, so no
+	// `partial_cmp` NaN-dance like the old f64 version needed.
+	entries.sort_by(|a, b| b.1.cmp(&a.1));
 
 	let leaderboard_entries: Vec<LeaderboardEntry> = entries
 		.iter()
@@ -432,12 +438,12 @@ pub async fn reset(ctx: Context<'_>) -> Result<(), BotError> {
 		"This will permanently:\n\
          • Delete **{holdings_count}** holding{h_plural}\n\
          • Delete **{transactions_count}** trade{t_plural} of history\n\
-         • Reset your cash to **${starting:.2}** (currently ${current:.2})\n\n\
+         • Reset your cash to **${starting}** (currently ${current})\n\n\
          This cannot be undone.",
 		h_plural = if holdings_count == 1 { "" } else { "s" },
 		t_plural = if transactions_count == 1 { "" } else { "s" },
-		starting = STARTING_CASH,
-		current = portfolio.cash_balance,
+		starting = STARTING_CASH.round_dp(2),
+		current = portfolio.cash_balance.round_dp(2),
 	);
 
 	let embed = CreateEmbed::new()
@@ -506,9 +512,9 @@ pub async fn reset(ctx: Context<'_>) -> Result<(), BotError> {
 			.color(0x57f287)
 			.title("Portfolio reset")
 			.description(format!(
-				"Your portfolio has been reset to **${:.2}**. \
+				"Your portfolio has been reset to **${}**. \
                  All holdings and trade history were cleared.",
-				STARTING_CASH
+				STARTING_CASH.round_dp(2)
 			))
 			.footer(CreateEmbedFooter::new(format!(
 				"Reset by {}",

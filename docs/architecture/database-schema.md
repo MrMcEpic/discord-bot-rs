@@ -1,10 +1,13 @@
 # Database Schema
 
 The bot's persistent state is small and simple. Every table is created
-at startup by
-[`src/db/mod.rs`](https://github.com/MrMcEpic/discord-bot-rs/blob/master/src/db/mod.rs),
-lives inside one Postgres schema picked by the `DB_SCHEMA` environment
-variable, and is read or written through helper functions in
+at startup by running `sqlx::migrate!` against versioned SQL files in
+[`migrations/`](https://github.com/MrMcEpic/discord-bot-rs/tree/master/migrations),
+driven from
+[`src/db/mod.rs`](https://github.com/MrMcEpic/discord-bot-rs/blob/master/src/db/mod.rs).
+All tables live inside one Postgres schema picked by the `DB_SCHEMA`
+environment variable and are read or written through helper functions
+in
 [`src/db/queries.rs`](https://github.com/MrMcEpic/discord-bot-rs/blob/master/src/db/queries.rs).
 This page enumerates every table, its columns, who writes to it, and
 how the schema is bootstrapped.
@@ -149,7 +152,7 @@ Virtual cash balance for the stock-trading game. One row per
 |---|---|---|
 | `guild_id` | `TEXT NOT NULL` | Part of composite PK |
 | `user_id` | `TEXT NOT NULL` | Part of composite PK |
-| `cash_balance` | `DOUBLE PRECISION NOT NULL DEFAULT 1000.0` | Everyone starts with $1000 virtual |
+| `cash_balance` | `NUMERIC(18, 4) NOT NULL DEFAULT 1000.0000` | Everyone starts with $1000 virtual. Migrated from `DOUBLE PRECISION` in `20260414000001_stocks_decimal.sql` so cents don't drift over fractional-share trades |
 | `created_at` | `TIMESTAMPTZ NOT NULL DEFAULT NOW()` | When the portfolio was created |
 
 Primary key is `(guild_id, user_id)`. The portfolio row is created on
@@ -167,8 +170,8 @@ cost. Feature: stocks.
 | `guild_id` | `TEXT NOT NULL` | |
 | `user_id` | `TEXT NOT NULL` | |
 | `symbol` | `TEXT NOT NULL` | Ticker symbol, e.g. `AAPL` |
-| `quantity` | `DOUBLE PRECISION NOT NULL DEFAULT 0.0` | Shares held (fractional allowed) |
-| `avg_cost` | `DOUBLE PRECISION NOT NULL DEFAULT 0.0` | Weighted average price paid |
+| `quantity` | `NUMERIC(18, 4) NOT NULL DEFAULT 0.0000` | Shares held (fractional allowed). NUMERIC for exact arithmetic — see migration `20260414000001_stocks_decimal.sql` |
+| `avg_cost` | `NUMERIC(18, 4) NOT NULL DEFAULT 0.0000` | Weighted average price paid. NUMERIC so the weighted-average upsert stays exact across many trades |
 
 **Unique constraint:** `UNIQUE (guild_id, user_id, symbol)` — one row
 per symbol per user per guild.
@@ -183,10 +186,11 @@ portfolio lookups.
 avg_cost = (old_avg * old_qty + new_price * new_qty) / (old_qty + new_qty)
 ```
 
-`sell_stock` either reduces the quantity or deletes the row if the
-remaining amount is less than `0.0001` shares. Both run inside a sqlx
-transaction so the cash update, holdings update, and transaction-log
-insert commit atomically.
+`sell_stock` either reduces the quantity or deletes the row when the
+remaining amount is exactly zero (`Decimal::is_zero()` — replaces the
+old float-epsilon `< 0.0001` guard now that arithmetic is exact). Both
+run inside a sqlx transaction so the cash update, holdings update, and
+transaction-log insert commit atomically.
 
 ### `stock_transactions`
 
@@ -199,9 +203,9 @@ Immutable audit log of every buy/sell. Feature: stocks.
 | `user_id` | `TEXT NOT NULL` | |
 | `symbol` | `TEXT NOT NULL` | |
 | `action` | `TEXT NOT NULL` | `'BUY'` or `'SELL'` |
-| `quantity` | `DOUBLE PRECISION NOT NULL` | |
-| `price_per_share` | `DOUBLE PRECISION NOT NULL` | |
-| `total_amount` | `DOUBLE PRECISION NOT NULL` | `quantity * price_per_share` |
+| `quantity` | `NUMERIC(18, 4) NOT NULL` | NUMERIC since `20260414000001_stocks_decimal.sql` |
+| `price_per_share` | `NUMERIC(18, 4) NOT NULL` | NUMERIC since `20260414000001_stocks_decimal.sql` |
+| `total_amount` | `NUMERIC(18, 4) NOT NULL` | `quantity * price_per_share`, computed in Rust with `rust_decimal::Decimal` so the audit log matches the books exactly |
 | `created_at` | `TIMESTAMPTZ NOT NULL DEFAULT NOW()` | |
 
 **Index:** `idx_stock_transactions_user` on
@@ -225,6 +229,11 @@ stocks.
 `WHERE fetched_at > NOW() - INTERVAL '60 seconds'`, so anything older
 than 60 seconds is ignored and a fresh quote is fetched from the
 upstream API. There's no separate eviction job.
+
+This table intentionally stays `DOUBLE PRECISION` even after the
+`stock_*` Decimal migration — it's a short-lived display cache, never
+fed into portfolio arithmetic without first being converted to
+`Decimal` at the API boundary in `stocks::api::get_quote`.
 
 ### `member_activity`
 
@@ -265,19 +274,43 @@ operators don't have to reconfigure after every deploy).
 
 ## Migrations
 
-There is no external migration tool today. The
-[`migrate`](https://github.com/MrMcEpic/discord-bot-rs/blob/master/src/db/mod.rs)
-function in `src/db/mod.rs` runs a flat list of
-`CREATE TABLE IF NOT EXISTS` and `CREATE INDEX IF NOT EXISTS`
-statements against the current pool. It's idempotent, runs on every
-startup, and is sufficient for bootstrapping a fresh schema or
-verifying that an existing one has every expected table.
+Migrations live in the top-level
+[`migrations/`](https://github.com/MrMcEpic/discord-bot-rs/tree/master/migrations)
+directory and are applied with the compile-time
+[`sqlx::migrate!`](https://docs.rs/sqlx/latest/sqlx/macro.migrate.html)
+macro. `init_pool` in `src/db/mod.rs` sets `search_path` on every
+connection and then calls `sqlx::migrate!("./migrations").run(&pool)`,
+so each instance tracks its own migration history in a
+`_sqlx_migrations` table inside its own schema. Migrations are
+embedded in the binary at build time — no `DATABASE_URL` is needed at
+build time, and there's no `sqlx-data.json` to regenerate.
 
-What it doesn't handle is schema evolution: renaming a column, adding a
-`NOT NULL` default, dropping a table. Those operations today require
-a manual `psql` session, then updating the bootstrap SQL so new
-instances come up with the new shape. Switching to `sqlx::migrate!` or
-a standalone tool like `sqlx-cli` is tracked as future work.
+**File naming.** Each file is `<timestamp>_<description>.sql`. Use a
+sortable UTC timestamp (`YYYYMMDDHHMMSS`) so sqlx applies them in the
+right order. The bootstrap migration is
+[`20260414000000_init.sql`](https://github.com/MrMcEpic/discord-bot-rs/blob/master/migrations/20260414000000_init.sql).
+
+**Adding a new migration.** Drop a new file into `migrations/` with a
+later timestamp — for example,
+`20260501120000_add_user_timezone.sql` — and include whatever DDL the
+change needs (`ALTER TABLE`, `CREATE TABLE`, backfill `UPDATE`s, etc).
+On the next startup, sqlx runs any unapplied migrations in order and
+records each one in `_sqlx_migrations`. Do not edit an existing
+migration file after it has been deployed — sqlx checksums the file
+contents and a mismatch aborts startup.
+
+**Existing-database compatibility.** The init migration keeps
+`IF NOT EXISTS` on every `CREATE` so it is idempotent against the
+pre-migration databases that already have all the tables (production
+examplebot and secondbot). On those databases the init migration is a no-op
+at the SQL level; sqlx still writes the `_sqlx_migrations` row
+afterwards, so later migrations see a normal history.
+
+**Schema evolution** (renaming a column, adding a `NOT NULL` default,
+dropping a table) is now a new migration file rather than a manual
+`psql` session. Destructive changes still deserve a release note in
+[CHANGELOG](https://github.com/MrMcEpic/discord-bot-rs/blob/master/CHANGELOG.md)
+and the [Upgrading](../deployment/upgrading.md) page.
 
 ## Connection pool
 

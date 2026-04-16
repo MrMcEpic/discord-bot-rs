@@ -19,7 +19,7 @@ serenity = { version = "0.12", default-features = false, features = [
 ] }
 poise = "0.6"
 songbird = { version = "0.6", features = ["driver", "gateway", "serenity", "rustls"] }
-sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono", "migrate", "rust_decimal"] }
 reqwest = { version = "0.12", features = ["json"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
@@ -44,4 +44,5 @@ tower = { version = "0.5", features = ["limit"] }
 tower-http = { version = "0.6", features = ["cors", "limit"] }
 subtle = "2"
 futures = "0.3"
+rust_decimal = { version = "1", features = ["db-postgres", "macros"] }
 

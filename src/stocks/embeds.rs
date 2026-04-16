@@ -1,3 +1,4 @@
+use rust_decimal::Decimal;
 use serenity::builder::CreateEmbed;
 
 use crate::db::models::{StockHolding, StockTransaction};
@@ -5,24 +6,29 @@ use crate::db::models::{StockHolding, StockTransaction};
 use super::api::StockQuote;
 use super::STARTING_CASH;
 
-fn format_money(amount: f64) -> String {
-	if amount >= 0.0 {
-		format!("${:.2}", amount)
+/// Format a `Decimal` as a signed dollar string at 2dp, with the sign on the
+/// `$` side (e.g. `-$1.23`). Mirrors the float version's behaviour verbatim.
+fn format_money(amount: Decimal) -> String {
+	let rounded = amount.round_dp(2);
+	if rounded >= Decimal::ZERO {
+		format!("${}", rounded)
 	} else {
-		format!("-${:.2}", amount.abs())
+		format!("-${}", rounded.abs())
 	}
 }
 
-fn format_pnl(amount: f64) -> String {
-	if amount >= 0.0 {
-		format!("+${:.2}", amount)
+/// Format a `Decimal` as a signed P/L string at 2dp (`+$1.23` / `-$0.50`).
+fn format_pnl(amount: Decimal) -> String {
+	let rounded = amount.round_dp(2);
+	if rounded >= Decimal::ZERO {
+		format!("+${}", rounded)
 	} else {
-		format!("-${:.2}", amount.abs())
+		format!("-${}", rounded.abs())
 	}
 }
 
-fn pnl_color(pnl: f64) -> u32 {
-	if pnl >= 0.0 {
+fn pnl_color(pnl: Decimal) -> u32 {
+	if pnl >= Decimal::ZERO {
 		0x57f287 // green
 	} else {
 		0xed4245 // red
@@ -31,38 +37,47 @@ fn pnl_color(pnl: f64) -> u32 {
 
 pub fn price_embed(quote: &StockQuote) -> CreateEmbed {
 	let change_dollar = quote.price - quote.prev_close;
-	let arrow = if change_dollar >= 0.0 { "▲" } else { "▼" };
+	let arrow = if change_dollar >= Decimal::ZERO {
+		"▲"
+	} else {
+		"▼"
+	};
 	let color = pnl_color(change_dollar);
 
 	CreateEmbed::new()
 		.color(color)
 		.title(format!("{} Stock Price", quote.symbol))
-		.description(format!("**${:.2}**", quote.price))
+		.description(format!("**${}**", quote.price.round_dp(2)))
 		.field(
 			"Daily Change",
 			format!(
-				"{arrow} {:.2} ({:+.2}%)",
-				change_dollar.abs(),
-				quote.change_pct
+				"{arrow} {} ({:+}%)",
+				change_dollar.abs().round_dp(2),
+				quote.change_pct.round_dp(2)
 			),
 			true,
 		)
-		.field("Previous Close", format!("${:.2}", quote.prev_close), true)
+		.field(
+			"Previous Close",
+			format!("${}", quote.prev_close.round_dp(2)),
+			true,
+		)
 }
 
 pub fn buy_embed(
 	symbol: &str,
-	quantity: f64,
-	price: f64,
-	total: f64,
-	new_cash: f64,
+	quantity: Decimal,
+	price: Decimal,
+	total: Decimal,
+	new_cash: Decimal,
 ) -> CreateEmbed {
 	CreateEmbed::new()
 		.color(0x57f287)
 		.title("Stock Purchased")
 		.description(format!(
-			"Bought **{:.4}** shares of **{symbol}** at ${price:.2}",
-			quantity
+			"Bought **{}** shares of **{symbol}** at ${}",
+			quantity.round_dp(4),
+			price.round_dp(2),
 		))
 		.field("Total Cost", format_money(total), true)
 		.field("Cash Remaining", format_money(new_cash), true)
@@ -70,18 +85,19 @@ pub fn buy_embed(
 
 pub fn sell_embed(
 	symbol: &str,
-	quantity: f64,
-	price: f64,
-	total: f64,
-	realized_pnl: f64,
-	new_cash: f64,
+	quantity: Decimal,
+	price: Decimal,
+	total: Decimal,
+	realized_pnl: Decimal,
+	new_cash: Decimal,
 ) -> CreateEmbed {
 	CreateEmbed::new()
 		.color(pnl_color(realized_pnl))
 		.title("Stock Sold")
 		.description(format!(
-			"Sold **{:.4}** shares of **{symbol}** at ${price:.2}",
-			quantity
+			"Sold **{}** shares of **{symbol}** at ${}",
+			quantity.round_dp(4),
+			price.round_dp(2),
 		))
 		.field("Total Sale", format_money(total), true)
 		.field("Realized P/L", format_pnl(realized_pnl), true)
@@ -90,38 +106,39 @@ pub fn sell_embed(
 
 pub struct HoldingWithQuote<'a> {
 	pub holding: &'a StockHolding,
-	pub current_price: f64,
+	pub current_price: Decimal,
 }
 
 pub fn portfolio_embed(
 	user_name: &str,
-	cash: f64,
+	cash: Decimal,
 	holdings: &[HoldingWithQuote<'_>],
 ) -> CreateEmbed {
 	let mut total_value = cash;
-	let mut total_cost = 0.0;
+	let mut total_cost = Decimal::ZERO;
 	let mut lines = Vec::new();
 
 	for h in holdings {
 		let market_value = h.holding.quantity * h.current_price;
 		let cost_basis = h.holding.quantity * h.holding.avg_cost;
 		let pnl = market_value - cost_basis;
-		let pnl_pct = if cost_basis > 0.0 {
-			(pnl / cost_basis) * 100.0
+		let pnl_pct = if cost_basis > Decimal::ZERO {
+			(pnl / cost_basis) * Decimal::ONE_HUNDRED
 		} else {
-			0.0
+			Decimal::ZERO
 		};
 
 		total_value += market_value;
 		total_cost += cost_basis;
 
-		let arrow = if pnl >= 0.0 { "📈" } else { "📉" };
+		let arrow = if pnl >= Decimal::ZERO { "📈" } else { "📉" };
 		lines.push(format!(
-			"{arrow} **{sym}**: {qty:.4} shares @ ${price:.2} = ${val:.2} ({pnl_pct:+.2}%)",
+			"{arrow} **{sym}**: {qty} shares @ ${price} = ${val} ({pnl_pct:+}%)",
 			sym = h.holding.symbol,
-			qty = h.holding.quantity,
-			price = h.current_price,
-			val = market_value,
+			qty = h.holding.quantity.round_dp(4),
+			price = h.current_price.round_dp(2),
+			val = market_value.round_dp(2),
+			pnl_pct = pnl_pct.round_dp(2),
 		));
 	}
 
@@ -138,6 +155,12 @@ pub fn portfolio_embed(
 		embed = embed.field("Holdings", "No stocks held.", false);
 	}
 
+	let total_pct = if total_cost + cash > Decimal::ZERO {
+		((total_pnl / STARTING_CASH) * Decimal::ONE_HUNDRED).round_dp(2)
+	} else {
+		Decimal::ZERO
+	};
+
 	embed = embed
 		.field(
 			"Total Value",
@@ -146,15 +169,7 @@ pub fn portfolio_embed(
 		)
 		.field(
 			"Total P/L",
-			format!(
-				"**{}** ({:+.2}%)",
-				format_pnl(total_pnl),
-				if total_cost + cash > 0.0 {
-					(total_pnl / STARTING_CASH) * 100.0
-				} else {
-					0.0
-				}
-			),
+			format!("**{}** ({:+}%)", format_pnl(total_pnl), total_pct),
 			true,
 		);
 
@@ -164,8 +179,8 @@ pub fn portfolio_embed(
 pub struct LeaderboardEntry {
 	pub rank: usize,
 	pub user_id: String,
-	pub total_value: f64,
-	pub pnl: f64,
+	pub total_value: Decimal,
+	pub pnl: Decimal,
 }
 
 pub fn leaderboard_embed(entries: &[LeaderboardEntry]) -> CreateEmbed {
@@ -204,12 +219,12 @@ pub fn history_embed(transactions: &[StockTransaction], user_name: &str) -> Crea
 		let emoji = if t.action == "BUY" { "🟢" } else { "🔴" };
 		let ts = t.created_at.timestamp();
 		lines.push(format!(
-			"{emoji} **{action}** {qty:.4} {sym} @ ${price:.2} (${total:.2}) — <t:{ts}:R>",
+			"{emoji} **{action}** {qty} {sym} @ ${price} (${total}) — <t:{ts}:R>",
 			action = t.action,
-			qty = t.quantity,
+			qty = t.quantity.round_dp(4),
 			sym = t.symbol,
-			price = t.price_per_share,
-			total = t.total_amount,
+			price = t.price_per_share.round_dp(2),
+			total = t.total_amount.round_dp(2),
 		));
 	}
 

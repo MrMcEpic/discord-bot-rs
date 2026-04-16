@@ -9,7 +9,7 @@ how to back the database up, and how migrations work.
 
 The architectural side of the schema model lives in
 [Multi-Instance Model](../architecture/multi-instance-model.md) and
-the table reference lives in
+the table reference (plus the migration system) lives in
 [Database Schema](../architecture/database-schema.md). This page is
 about the operations.
 
@@ -73,11 +73,13 @@ To point the bot at an existing Postgres instead of the bundled one:
 6. `docker compose up -d`.
 
 The first time the bot connects, it runs `CREATE SCHEMA IF NOT
-EXISTS "<DB_SCHEMA>"` and the table-creation statements inside
-that schema. After that, every connection in the pool is
-configured with `SET search_path TO "<DB_SCHEMA>"` so all queries
-land there. There is no extra setup step required on the external
-server beyond creating the database and granting the user.
+EXISTS "<DB_SCHEMA>"` and then applies every migration in
+`migrations/` inside that schema via `sqlx::migrate!`. After that,
+every connection in the pool is configured with `SET search_path TO
+"<DB_SCHEMA>"` so all queries — and the migration runner's own
+`_sqlx_migrations` tracking table — land there. There is no extra
+setup step required on the external server beyond creating the
+database and granting the user.
 
 If you are adding a second instance later, give it its own
 `DB_SCHEMA` and the bot will create a new schema in the same
@@ -94,7 +96,10 @@ does three things in order:
    EXISTS "<schema>"`.
 2. Builds a connection pool with an `after_connect` hook that runs
    `SET search_path TO "<schema>"` on every new connection.
-3. Runs the table-creation SQL against the now-configured pool.
+3. Calls `sqlx::migrate!("./migrations").run(&pool)` to apply every
+   migration that hasn't been applied yet. Migration history is
+   tracked per-instance in a `_sqlx_migrations` table inside the
+   schema.
 
 The `search_path` hook is the magic. Postgres resolves unqualified
 table names by walking `search_path` in order, so once it is
@@ -193,29 +198,45 @@ obvious answer.
 
 ## Migrations
 
-There is no external migration tool today. The
-[`migrate`](https://github.com/MrMcEpic/discord-bot-rs/blob/master/src/db/mod.rs)
-function runs a flat list of `CREATE TABLE IF NOT EXISTS` and
-`CREATE INDEX IF NOT EXISTS` statements every time the bot starts.
-This is idempotent — it bootstraps a fresh schema and is a no-op
-against an existing one — but it does not handle schema evolution.
+The bot uses `sqlx::migrate!` against a top-level `migrations/`
+directory. Every migration file is `<UTC-timestamp>_<description>.sql`,
+sqlx applies them in timestamp order on every startup, and each
+applied migration is recorded in a `_sqlx_migrations` table inside the
+instance's schema. The migrations themselves are embedded in the
+binary at build time, so no `DATABASE_URL` is required to compile.
 
 What this means in practice:
 
 - **Adding a new table or index** in a new bot release is
-  transparent. The next startup creates it, no manual intervention.
+  transparent. The release ships a new migration file, the next
+  startup applies it, no manual intervention.
 - **Renaming or dropping a column, changing a type, adding a NOT
-  NULL constraint** requires a manual `psql` session against your
-  database before you upgrade the bot. The release notes for any
-  version that needs this will say so.
-- **Restoring a backup from an older version** is generally safe,
-  because the migration step on the next boot will add any tables
-  the older dump was missing.
+  NULL constraint** is also transparent — it just goes in a new
+  migration file with the appropriate `ALTER TABLE` (and any backfill
+  `UPDATE` it needs). Only changes that require manual coordination
+  with running instances (e.g. multi-step zero-downtime migrations)
+  will be flagged in release notes.
+- **Restoring a backup from an older version** is safe: the
+  migration step on the next boot replays any migrations the older
+  dump was missing, in order. Because the init migration uses
+  `IF NOT EXISTS`, it also tolerates restores from snapshots that
+  predate the migration system.
+- **Pre-migration databases** (anything that ran the bot before this
+  system was introduced) are handled by the init migration's
+  `IF NOT EXISTS` guards: it is a no-op against a database that
+  already has the bootstrapped tables, and sqlx writes the
+  `_sqlx_migrations` row afterwards so future migrations have a
+  clean history.
 
-When a release does require a manual migration, it will be flagged
-in [Upgrading](upgrading.md) and the [CHANGELOG](https://github.com/MrMcEpic/discord-bot-rs/blob/master/CHANGELOG.md).
-The maintainer's policy is to avoid breaking schema changes within
-a major version, but the project is young — read the release notes
+Do not edit a migration file once it has shipped — sqlx checksums
+the file contents and a mismatch on the next startup is a hard
+failure. Land schema fixes in a new file with a later timestamp.
+
+When a release does require operator action beyond "restart the
+bot" (rare), it will be flagged in [Upgrading](upgrading.md) and the
+[CHANGELOG](https://github.com/MrMcEpic/discord-bot-rs/blob/master/CHANGELOG.md).
+The maintainer's policy is to avoid breaking schema changes within a
+major version, but the project is young — read the release notes
 before upgrading any version where the minor or major number
 changed.
 

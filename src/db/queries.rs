@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use rust_decimal::Decimal;
 use sqlx::PgPool;
 
 use super::models::{
@@ -219,9 +220,9 @@ pub async fn buy_stock(
 	guild_id: &str,
 	user_id: &str,
 	symbol: &str,
-	quantity: f64,
-	price_per_share: f64,
-) -> Result<f64, sqlx::Error> {
+	quantity: Decimal,
+	price_per_share: Decimal,
+) -> Result<Decimal, sqlx::Error> {
 	let total = quantity * price_per_share;
 	let mut tx = pool.begin().await?;
 
@@ -284,9 +285,9 @@ pub async fn sell_stock(
 	guild_id: &str,
 	user_id: &str,
 	symbol: &str,
-	quantity: f64,
-	price_per_share: f64,
-) -> Result<(f64, f64), sqlx::Error> {
+	quantity: Decimal,
+	price_per_share: Decimal,
+) -> Result<(Decimal, Decimal), sqlx::Error> {
 	// Returns (total_sale_amount, realized_pnl)
 	let mut tx = pool.begin().await?;
 
@@ -328,9 +329,11 @@ pub async fn sell_stock(
 	.execute(&mut *tx)
 	.await?;
 
-	// Reduce or remove holding
+	// Reduce or remove holding. With Decimal the exact `is_zero()` check
+	// replaces the old float-epsilon `remaining < 0.0001` guard — there is no
+	// accumulated rounding error to mask.
 	let remaining = holding.quantity - quantity;
-	if remaining < 0.0001 {
+	if remaining.is_zero() {
 		sqlx::query(
 			"DELETE FROM stock_holdings WHERE guild_id = $1 AND user_id = $2 AND symbol = $3",
 		)
