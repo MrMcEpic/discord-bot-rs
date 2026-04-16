@@ -12,6 +12,20 @@ async fn main() {
 	tracing_subscriber::fmt::init();
 	let config = config::GatewayConfig::from_env();
 
+	// Security gate: the gateway always binds 0.0.0.0:GATEWAY_PORT so sibling
+	// containers can reach it, so there's no loopback escape hatch like the
+	// bot-side MCP server has. Refuse to start without a token -- otherwise
+	// every backend's destructive Discord tools would be reachable across the
+	// Docker network with zero credentials.
+	if config.auth_token.is_none() {
+		panic!(
+			"Refusing to start gateway: MCP_AUTH_TOKEN is empty/unset. The gateway \
+			 is reachable across the Docker network and will expose every backend's \
+			 22 destructive Discord tools (ban, delete-channel, send-message, ...) \
+			 to anyone with network reach. Set MCP_AUTH_TOKEN to a strong secret."
+		);
+	}
+
 	tracing::info!(
 		"MCP Gateway starting with {} instances",
 		config.instances.len()
