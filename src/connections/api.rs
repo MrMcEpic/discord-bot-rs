@@ -78,14 +78,14 @@ pub async fn fetch_puzzle(
 
 /// Returns a random date between 2023-06-12 and today.
 pub fn random_puzzle_date() -> String {
-	use rand::Rng;
+	use rand::RngExt;
 	let start = chrono::NaiveDate::from_ymd_opt(2023, 6, 12).unwrap();
 	let today = chrono::Utc::now().date_naive();
 	let days_range = (today - start).num_days();
 	if days_range <= 0 {
 		return today.format("%Y-%m-%d").to_string();
 	}
-	let random_offset = rand::thread_rng().gen_range(0..=days_range);
+	let random_offset = rand::rng().random_range(0..=days_range);
 	let date = start + chrono::Duration::days(random_offset);
 	date.format("%Y-%m-%d").to_string()
 }

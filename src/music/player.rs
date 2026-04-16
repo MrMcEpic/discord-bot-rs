@@ -134,7 +134,7 @@ impl GuildPlayer {
 			return len;
 		}
 		let mut vec: Vec<Track> = self.queue.drain(..).collect();
-		vec.shuffle(&mut rand::thread_rng());
+		vec.shuffle(&mut rand::rng());
 		self.queue = VecDeque::from(vec);
 		len
 	}

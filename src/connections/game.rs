@@ -31,7 +31,7 @@ impl ConnectionsGame {
 			.iter()
 			.flat_map(|cat| cat.words.iter().cloned())
 			.collect();
-		board.shuffle(&mut rand::thread_rng());
+		board.shuffle(&mut rand::rng());
 
 		Self {
 			puzzle_date: puzzle.date,
@@ -65,7 +65,7 @@ impl ConnectionsGame {
 
 	pub fn shuffle_board(&mut self) {
 		self.last_action = std::time::Instant::now();
-		self.board.shuffle(&mut rand::thread_rng());
+		self.board.shuffle(&mut rand::rng());
 		self.selected.clear();
 		self.status_message = None;
 	}

@@ -10,6 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - (track new changes here until the next release)
 
+## [0.6.1] - 2026-04-16
+
+Dependency-update sweep — applies the upgrades Dependabot was suggesting on the closed PR queue. No functional changes.
+
+### Changed
+- `mcp-gateway`: `reqwest` 0.12 → 0.13 (main crate stays on 0.12 until songbird 0.6 rebases off it)
+- `toml` 0.8 → 1.1
+- `rand` 0.8 → 0.10 (call sites migrated to `rand::rng()` and `RngExt::random_range`)
+- All within-semver updates picked up by `cargo update` (notably `tokio` 1.50 → 1.52 in the gateway)
+- GitHub Actions: `docker/login-action` v3 → v4, `softprops/action-gh-release` v2 → v3, `actions/upload-pages-artifact` v3 → v5
+
 ## [0.6.0] - 2026-04-16
 
 First post-launch polish release. Focused on hardening, correctness fixes, and a real test suite. No breaking changes for existing deployments whose MCP server was already bound to `127.0.0.1` or already had `MCP_AUTH_TOKEN` set; see **Changed** for the bundled-Compose impact.
