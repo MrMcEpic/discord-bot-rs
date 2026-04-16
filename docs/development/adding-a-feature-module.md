@@ -208,30 +208,32 @@ pattern; reviewers will ask for it.
 
 If your feature persists anything, the table belongs in `src/db/`.
 
-In `src/db/mod.rs`, add a `CREATE TABLE IF NOT EXISTS` to `migrate`:
+Add a new migration file under `migrations/` with a
+`<timestamp>_<name>.sql` name (copy the format of the existing
+files — the timestamp ordering is load-bearing). `sqlx::migrate!`
+picks it up automatically at startup:
 
-```rust
-sqlx::query(
-    "CREATE TABLE IF NOT EXISTS reminders (
-        id SERIAL PRIMARY KEY,
-        guild_id TEXT NOT NULL,
-        user_id TEXT NOT NULL,
-        channel_id TEXT NOT NULL,
-        message TEXT NOT NULL,
-        fire_at TIMESTAMPTZ NOT NULL,
-        fired BOOLEAN NOT NULL DEFAULT FALSE,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )",
-)
-.execute(pool)
-.await?;
+```sql
+-- migrations/20260501000000_reminders.sql
+CREATE TABLE IF NOT EXISTS reminders (
+    id SERIAL PRIMARY KEY,
+    guild_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    message TEXT NOT NULL,
+    fire_at TIMESTAMPTZ NOT NULL,
+    fired BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 
-sqlx::query(
-    "CREATE INDEX IF NOT EXISTS idx_reminders_pending ON reminders (fire_at) WHERE fired = FALSE",
-)
-.execute(pool)
-.await?;
+CREATE INDEX IF NOT EXISTS idx_reminders_pending
+    ON reminders (fire_at) WHERE fired = FALSE;
 ```
+
+`IF NOT EXISTS` keeps the migration idempotent against pre-existing
+databases (production schemas that pre-date the sqlx migration
+system already contain the tables). Each instance's
+`_sqlx_migrations` table tracks which versions have run.
 
 In `src/db/models.rs`, add a `FromRow` struct:
 

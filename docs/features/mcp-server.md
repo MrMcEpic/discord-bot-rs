@@ -240,8 +240,11 @@ them.
 The repository ships a separate `mcp-gateway` service that solves
 this. It listens on a single port, multiplexes requests to whichever
 bot's MCP endpoint they belong to, and presents a unified tool list
-to clients (with each tool prefixed by the instance name from the
-`INSTANCES` env var, so `bot_a__list_channels` vs `bot_b__list_channels`).
+to clients. Each tool's schema gains an extra `instance` parameter
+(matching a key in the `INSTANCES` env var, e.g. `bot_a` or `bot_b`)
+which the gateway uses to pick the target bot. A synthetic
+`list_instances` tool is appended to the catalog so clients can
+discover the available instances and their guilds.
 
 The gateway is the recommended entry point in production — see
 [Architecture: MCP Gateway Routing](../architecture/mcp-gateway-routing.md)

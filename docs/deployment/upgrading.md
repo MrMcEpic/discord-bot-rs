@@ -76,9 +76,13 @@ This rebuilds the bot and gateway images locally, then recreates
 the containers.
 
 For either path, the bot's startup migration step
-([`migrate`](https://github.com/MrMcEpic/discord-bot-rs/blob/master/src/db/mod.rs))
-runs every boot. New tables and indexes from the upgrade get
-created automatically. Existing tables are untouched.
+([`sqlx::migrate!`](https://github.com/MrMcEpic/discord-bot-rs/blob/master/src/db/mod.rs))
+runs every boot against the files in
+[`migrations/`](https://github.com/MrMcEpic/discord-bot-rs/tree/master/migrations).
+Any migration whose version is newer than the `_sqlx_migrations`
+tracking row inside the instance's schema is applied; older ones
+are skipped. The initial migration is written with `CREATE TABLE IF
+NOT EXISTS` so it is idempotent against pre-existing databases.
 
 ## Watching for problems on the first boot after upgrade
 
@@ -123,21 +127,21 @@ For source builds, `git checkout` the previous tag and rebuild.
 
 ## Database migrations
 
-The migration story today is intentionally simple: the
-[`migrate`](https://github.com/MrMcEpic/discord-bot-rs/blob/master/src/db/mod.rs)
-function in `src/db/mod.rs` runs a flat list of `CREATE TABLE IF
-NOT EXISTS` and `CREATE INDEX IF NOT EXISTS` statements every time
-the bot starts. It is idempotent. There is no `alembic`-style
-migration directory and no version table.
+Migrations live in
+[`migrations/`](https://github.com/MrMcEpic/discord-bot-rs/tree/master/migrations)
+as timestamped `.sql` files. `sqlx::migrate!("./migrations")` runs
+them at startup against each instance's schema and records applied
+versions in a `_sqlx_migrations` table inside that schema. Each
+migration runs at most once per schema.
 
 What this means for upgrades:
 
 - **Adding a new table or index in a release is transparent.** The
-  next boot creates it.
+  migration ships with the release; the next boot runs it.
 - **Renaming or dropping a column, changing a type, adding a NOT
-  NULL constraint** requires a manual `psql` step before the
-  upgrade. Releases that need this will say "Migration required"
-  in the changelog and include the SQL.
+  NULL constraint** ships as a new migration file that the startup
+  runner applies in order. Destructive migrations are called out
+  in the release notes so you can schedule them against a backup.
 - **The bundled Postgres major version may change.** If a release
   bumps the `postgres:17` image to `postgres:18`, the `pgdata`
   volume needs to be migrated using `pg_upgrade` or by dumping

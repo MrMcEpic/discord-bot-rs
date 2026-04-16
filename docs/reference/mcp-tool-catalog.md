@@ -161,7 +161,7 @@ Permanently delete a channel.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `guild_id` | string | no | Accepted for symmetry; not used at the API layer. |
+| `guild_id` | string | no | Guild snowflake. Defaults to the instance's configured guild; used to verify the channel belongs to that guild before deletion. |
 | `channel_id` | string | yes | Channel snowflake. |
 
 **Example:**

@@ -187,6 +187,28 @@ If you want AI chat, also paste a `DEEPSEEK_API_KEY` or `GEMINI_API_KEY`
 into `.env`. Both are free to start with — see
 [Prerequisites](prerequisites.md) for signup links. You can add them later.
 
+One last required step: generate an MCP auth token. The bundled stack
+won't start without one, because the embedded MCP server and the
+`mcp-gateway` sidecar both refuse to run without a shared secret set.
+Generate one random value and install it in two places: `MCP_AUTH_TOKEN`
+in `instances/mybot/.env` (the bot reads it) and `MCP_GATEWAY_AUTH_TOKEN`
+in a new `.env` at the repo root (Docker Compose reads it and feeds it to
+the gateway). Both must hold **the same** value — the gateway uses it as
+the bearer when reaching the bot, so a mismatch locks the two out of each
+other:
+
+```bash
+TOKEN=$(openssl rand -hex 32) && \
+  sed -i.bak "s|^MCP_AUTH_TOKEN=.*|MCP_AUTH_TOKEN=$TOKEN|" instances/mybot/.env && \
+  rm instances/mybot/.env.bak && \
+  echo "MCP_GATEWAY_AUTH_TOKEN=$TOKEN" >> .env
+```
+
+If you prefer editing by hand, run `openssl rand -hex 32`, copy the
+output, paste it after `MCP_AUTH_TOKEN=` in `instances/mybot/.env`, and
+add a single line `MCP_GATEWAY_AUTH_TOKEN=<paste>` to a new file called
+`.env` at the repo root (next to `docker-compose.yml`).
+
 ## Section 5: First run
 
 Start the stack:

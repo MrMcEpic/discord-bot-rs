@@ -10,6 +10,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - (track new changes here until the next release)
 
+## [0.6.0] - 2026-04-16
+
+First post-launch polish release. Focused on hardening, correctness fixes, and a real test suite. No breaking changes for existing deployments whose MCP server was already bound to `127.0.0.1` or already had `MCP_AUTH_TOKEN` set; see **Changed** for the bundled-Compose impact.
+
+### Added
+- `sqlx::migrate!` against a `migrations/` directory replaces the in-code `CREATE TABLE` block; per-schema `_sqlx_migrations` table tracks applied versions
+- Panic recovery and graceful shutdown for supervised background tasks (`tokio::task::JoinSet` + `futures::FutureExt::catch_unwind`)
+- Per-user cleanup task for every rate-limiter bucket; music, stocks, and moderation limiters are now enforced (previously defined but unwired)
+- 92 unit tests (up from 37) and 18 Postgres-backed integration tests via `#[sqlx::test]`; CI runs both against a `postgres:17` service
+- mdBook Mermaid preprocessor; the seven architecture diagrams now render instead of appearing as code blocks
+- Remaining 25 documentation stub pages filled in (getting-started, configuration, features, architecture, deployment, development, reference)
+- Quickstart step for generating the MCP auth token — the bundled Compose stack now requires it to start (see Changed)
+
+### Changed
+- `mcp-gateway` forwards its `MCP_AUTH_TOKEN` to each backend as the `Authorization: Bearer` header. Combined with the bot-side startup guard, the bundled Compose deploy is now a shared-secret model: `MCP_AUTH_TOKEN` in the instance `.env` and `MCP_GATEWAY_AUTH_TOKEN` in a repo-root `.env` must hold the same value.
+- Bot refuses to start when `MCP_BIND_ADDR` is non-loopback *and* `MCP_AUTH_TOKEN` is empty; gateway refuses to start unconditionally without `MCP_AUTH_TOKEN`. Both comparisons are constant-time via the `subtle` crate.
+- Stock portfolio columns moved from `DOUBLE PRECISION` to `NUMERIC(18, 4)`; Rust side uses `rust_decimal::Decimal` end-to-end so cents no longer drift over many fractional-share trades (migration in `20260414000001_stocks_decimal.sql`)
+- Apache-style contributor grant replaces the prior inbound-license language in `CONTRIBUTING.md`
+- Contribution terms + recent-change reconciliation pass across the docs
+
+### Fixed
+- **MCP:** 64 KiB body cap (`RequestBodyLimitLayer`); spec-compliant JSON-RPC parse error response; channel-targeting tools verify the channel belongs to the resolved guild before acting
+- **Gateway:** dead pending-dispatcher code removed; startup panics instead of silently accepting empty auth
+- **Stocks:** reset/buy/sell race closed with row-level locking; text-based confirmations replaced with a button that expires after one click
+- **Autorole:** atomic-claim UPDATE prevents two concurrent event handlers from double-promoting the same member
+- **Music:** Now Playing embed lifecycle consolidated so orphans don't accumulate after skip or loop transitions; skip no longer races the natural `TrackEnd` to advance twice; yt-dlp invocations have both a timeout and `kill_on_drop`
+- **Welcome:** per-user rate limit replaces a global `Mutex` that serialised every join system-wide
+- **Games:** Wordle and Connections refuse to overwrite an in-progress game; dates are validated and cross-checked against NYT's `print_date`; Wordle dictionary is a `HashSet` (was a `binary_search` on an unsorted `Vec`)
+- **AI:** tool-search capped at three rounds (prompt said three, code allowed five); DSML closing tag accepts optional `/`; DSML strip scoped so prose isn't mangled; user-visible errors never leak raw upstream text
+- **Chargeback:** staff role IDs moved from a hardcoded list into `config.toml`
+- **Error surface:** `BotError` Display impls stop echoing internal error text; `format!("Database error: {e}")` wraps removed so sqlx's built-in context reaches logs
+- **Docker:** build context now copies `migrations/` so `sqlx::migrate!` can compile-embed them
+- **Polish:** `mistakes_dots` underflow guard; several places stop cloning an entire `Guild` to read one field
+
 ## [0.5.0] - 2026-04-14
 
 Public launch on GitHub. No functional changes from 0.4.6 beyond repo hygiene, documentation, release automation, and cleanup of maintainer-specific state.

@@ -137,7 +137,7 @@ When in doubt: reproduce with `RUST_LOG=discord_bot=debug,info`.
 ### "AI chat doesn't reply."
 
 Mention the bot, get nothing. The pipeline is in `src/ai/deepseek.rs`
-and `src/ai/handle_mention`; the code logs at `info` when a request
+(look for `handle_mention`); the code logs at `info` when a request
 comes in and at `error` when it fails. Possible causes:
 
 - **No API key.** `DEEPSEEK_API_KEY` and `GEMINI_API_KEY` are both

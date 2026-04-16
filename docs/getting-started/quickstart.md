@@ -62,6 +62,23 @@ If you want AI chat, paste in `DEEPSEEK_API_KEY` and/or `GEMINI_API_KEY`. If
 you want stock trading, paste in `FINNHUB_API_KEY`. Anything you leave blank
 just disables the corresponding feature.
 
+One pair of values is mandatory for the bundled stack: `MCP_AUTH_TOKEN`
+inside the instance `.env` (read by the bot container) and
+`MCP_GATEWAY_AUTH_TOKEN` inside a `.env` at the repo root (read by Docker
+Compose and forwarded to the `mcp-gateway` service). The bot and gateway
+both refuse to start with an empty token on a non-loopback bind, and the
+gateway uses its token as the bearer when reaching the bot, so the two
+values must be **identical**. Generate one and install it in both places:
+
+```bash
+TOKEN=$(openssl rand -hex 32) && \
+  sed -i.bak "s|^MCP_AUTH_TOKEN=.*|MCP_AUTH_TOKEN=$TOKEN|" instances/mybot/.env && \
+  rm instances/mybot/.env.bak && \
+  echo "MCP_GATEWAY_AUTH_TOKEN=$TOKEN" >> .env
+```
+
+See [MCP Exposure](../deployment/mcp-exposure.md) for the security model.
+
 Save the file. It is gitignored, so it will not end up in any commit you
 make.
 
