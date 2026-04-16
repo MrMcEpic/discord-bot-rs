@@ -22,32 +22,31 @@ pub async fn handle_voice_state_update(
 
 	let bot_id = ctx.cache.current_user().id;
 
-	// Check if bot is in this channel
-	let guild = match ctx.cache.guild(guild_id) {
-		Some(g) => g.clone(),
+	// Scope the cache read so the GuildRef guard drops before any await.
+	// Avoid cloning the whole Guild; only snapshot what's needed.
+	let (humans, guild_name) = match ctx.cache.guild(guild_id) {
+		Some(guild) => {
+			let bot_in_channel = guild.voice_states.get(&bot_id).and_then(|vs| vs.channel_id)
+				== Some(old_channel_id);
+			if !bot_in_channel {
+				return;
+			}
+			let humans = guild
+				.voice_states
+				.values()
+				.filter(|vs| {
+					vs.channel_id == Some(old_channel_id)
+						&& vs.user_id != bot_id
+						&& !guild.members.get(&vs.user_id).is_some_and(|m| m.user.bot)
+				})
+				.count();
+			(humans, guild.name.clone())
+		}
 		None => return,
 	};
 
-	let bot_in_channel =
-		guild.voice_states.get(&bot_id).and_then(|vs| vs.channel_id) == Some(old_channel_id);
-
-	if !bot_in_channel {
-		return;
-	}
-
-	// Count non-bot members in the channel
-	let humans = guild
-		.voice_states
-		.values()
-		.filter(|vs| {
-			vs.channel_id == Some(old_channel_id)
-				&& vs.user_id != bot_id
-				&& !guild.members.get(&vs.user_id).is_some_and(|m| m.user.bot)
-		})
-		.count();
-
 	if humans == 0 {
-		tracing::info!("Voice channel empty in {} — leaving", guild.name);
+		tracing::info!("Voice channel empty in {} — leaving", guild_name);
 
 		// Cancel any pending idle timer
 		if let Some(pctx) = data.playback_context(ctx, guild_id, old_channel_id).await {

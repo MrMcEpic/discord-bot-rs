@@ -22,7 +22,7 @@ pub fn game_embed(game: &ConnectionsGame) -> CreateEmbed {
 
 	// Mistakes indicator
 	let mistakes_dots = "⬛".repeat(game.mistakes_remaining as usize)
-		+ &"✖️".repeat(4 - game.mistakes_remaining as usize);
+		+ &"✖️".repeat(4u8.saturating_sub(game.mistakes_remaining) as usize);
 	description.push_str(&format!("Mistakes remaining: {mistakes_dots}"));
 
 	// Status message (correct/wrong feedback)
