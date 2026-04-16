@@ -13,13 +13,18 @@ Only the latest release is supported with security updates. If you're running an
 
 **Please do not open public issues for security vulnerabilities.**
 
-Use GitHub's private vulnerability reporting:
+The preferred channel is GitHub's private vulnerability reporting:
 
-1. Go to https://github.com/MrMcEpic/discord-bot-rs/security/advisories
-2. Click "Report a vulnerability"
-3. Fill out the form with as much detail as possible
+1. Go to https://github.com/MrMcEpic/discord-bot-rs/security/advisories/new
+2. Fill out the form with as much detail as possible
+3. Submit — only repository maintainers will see the report
 
-Alternatively, you can contact the maintainer directly through GitHub.
+If that page doesn't load (e.g. private vulnerability reporting hasn't been enabled yet), use either of these fallbacks instead:
+
+- **GitHub direct message** to the maintainer at https://github.com/MrMcEpic
+- **Open a draft PR** with the fix attached to a private fork, then mention the maintainer on it
+
+Public issues, public PRs, and public comments on this repo are **not** appropriate for unfixed vulnerabilities — please use one of the channels above.
 
 ## What to Include
 
