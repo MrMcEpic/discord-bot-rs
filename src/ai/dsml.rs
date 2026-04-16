@@ -10,11 +10,8 @@ static DSML_INVOKE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 static DSML_PARAM: LazyLock<Regex> = LazyLock::new(|| {
-	Regex::new(r#"<\x{ff5c}DSML\x{ff5c}parameter\s+name="([^"]+)"[^>]*>([\s\S]*?)<\x{ff5c}DSML\x{ff5c}parameter>"#).unwrap()
+	Regex::new(r#"<\x{ff5c}DSML\x{ff5c}parameter\s+name="([^"]+)"[^>]*>([\s\S]*?)<\x{ff5c}DSML\x{ff5c}/?parameter>"#).unwrap()
 });
-
-static DSML_STRIP: LazyLock<Regex> =
-	LazyLock::new(|| Regex::new(r"<\x{ff5c}DSML\x{ff5c}[\s\S]*$").unwrap());
 
 pub struct DsmlToolCall {
 	pub name: String,
@@ -40,7 +37,13 @@ pub fn parse_dsml(content: &str) -> (Vec<DsmlToolCall>, String) {
 		});
 	}
 
-	let cleaned = DSML_STRIP.replace(content, "").trim().to_string();
+	// Strip only the matched tool blocks, not from-here-to-EOF. Run the
+	// invoke pass first (it consumes nested parameter blocks), then a
+	// param pass to clean up any stray parameter blocks the model emitted
+	// outside an invoke.
+	let stripped = DSML_INVOKE.replace_all(content, "");
+	let stripped = DSML_PARAM.replace_all(&stripped, "");
+	let cleaned = stripped.trim().to_string();
 
 	(calls, cleaned)
 }
