@@ -5,6 +5,7 @@ use super::models::{
 	GuildSettings, MemberActivity, StockHolding, StockPortfolio, StockPriceCache, StockTransaction,
 	Tempban,
 };
+use crate::stocks::STARTING_CASH;
 
 pub async fn get_guild_settings(pool: &PgPool, guild_id: &str) -> Option<GuildSettings> {
 	sqlx::query_as::<_, GuildSettings>("SELECT * FROM guild_settings WHERE guild_id = $1")
@@ -150,6 +151,37 @@ pub async fn get_or_create_portfolio(
 	.await
 }
 
+/// Ensure a portfolio row exists, then take a `FOR UPDATE` lock on it inside the
+/// given transaction. All subsequent reads/writes to the user's stocks must go
+/// through this lock to prevent concurrent commands (buy/sell/reset) from racing.
+async fn lock_portfolio<'c>(
+	tx: &mut sqlx::Transaction<'c, sqlx::Postgres>,
+	guild_id: &str,
+	user_id: &str,
+) -> Result<StockPortfolio, sqlx::Error> {
+	// Create the row if it doesn't exist yet. Done outside the lock attempt
+	// because INSERT ... ON CONFLICT DO NOTHING will not return a row when the
+	// row already exists, and we still need a `FOR UPDATE` lock on it.
+	sqlx::query(
+		"INSERT INTO stock_portfolios (guild_id, user_id) VALUES ($1, $2) \
+         ON CONFLICT (guild_id, user_id) DO NOTHING",
+	)
+	.bind(guild_id)
+	.bind(user_id)
+	.execute(&mut **tx)
+	.await?;
+
+	sqlx::query_as::<_, StockPortfolio>(
+		"SELECT * FROM stock_portfolios \
+         WHERE guild_id = $1 AND user_id = $2 \
+         FOR UPDATE",
+	)
+	.bind(guild_id)
+	.bind(user_id)
+	.fetch_one(&mut **tx)
+	.await
+}
+
 pub async fn get_holdings(
 	pool: &PgPool,
 	guild_id: &str,
@@ -193,20 +225,23 @@ pub async fn buy_stock(
 	let total = quantity * price_per_share;
 	let mut tx = pool.begin().await?;
 
-	// Deduct cash (fails if insufficient)
-	let result = sqlx::query(
+	// Take the row lock first so a concurrent reset/sell can't race with us.
+	let portfolio = lock_portfolio(&mut tx, guild_id, user_id).await?;
+
+	if portfolio.cash_balance < total {
+		return Err(sqlx::Error::Protocol("Insufficient funds".into()));
+	}
+
+	// Deduct cash. The row is already locked, so this UPDATE is race-free.
+	sqlx::query(
 		"UPDATE stock_portfolios SET cash_balance = cash_balance - $1 \
-         WHERE guild_id = $2 AND user_id = $3 AND cash_balance >= $1",
+         WHERE guild_id = $2 AND user_id = $3",
 	)
 	.bind(total)
 	.bind(guild_id)
 	.bind(user_id)
 	.execute(&mut *tx)
 	.await?;
-
-	if result.rows_affected() == 0 {
-		return Err(sqlx::Error::Protocol("Insufficient funds".into()));
-	}
 
 	// Upsert holding with weighted average cost
 	sqlx::query(
@@ -255,7 +290,13 @@ pub async fn sell_stock(
 	// Returns (total_sale_amount, realized_pnl)
 	let mut tx = pool.begin().await?;
 
-	// Get current holding (locked for update to prevent concurrent sells)
+	// Lock the portfolio row first. This serialises against buy/reset so a
+	// concurrent reset can't observe a fresh $1000 balance and then have the
+	// sell proceeds added on top.
+	let _portfolio = lock_portfolio(&mut tx, guild_id, user_id).await?;
+
+	// Get current holding (also locked for update to prevent concurrent sells
+	// of the same position).
 	let holding = sqlx::query_as::<_, StockHolding>(
 		"SELECT * FROM stock_holdings \
          WHERE guild_id = $1 AND user_id = $2 AND symbol = $3 AND quantity >= $4 \
@@ -365,6 +406,11 @@ pub async fn reset_portfolio(
 ) -> Result<(), sqlx::Error> {
 	let mut tx = pool.begin().await?;
 
+	// Take the portfolio row lock before touching anything. This blocks any
+	// concurrent buy/sell from running on top of a half-reset state and
+	// duplicating money.
+	let _portfolio = lock_portfolio(&mut tx, guild_id, user_id).await?;
+
 	sqlx::query("DELETE FROM stock_holdings WHERE guild_id = $1 AND user_id = $2")
 		.bind(guild_id)
 		.bind(user_id)
@@ -378,10 +424,9 @@ pub async fn reset_portfolio(
 		.await?;
 
 	sqlx::query(
-		"INSERT INTO stock_portfolios (guild_id, user_id, cash_balance) \
-         VALUES ($1, $2, 1000.0) \
-         ON CONFLICT (guild_id, user_id) DO UPDATE SET cash_balance = 1000.0",
+		"UPDATE stock_portfolios SET cash_balance = $1 WHERE guild_id = $2 AND user_id = $3",
 	)
+	.bind(STARTING_CASH)
 	.bind(guild_id)
 	.bind(user_id)
 	.execute(&mut *tx)

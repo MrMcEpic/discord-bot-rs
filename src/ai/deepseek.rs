@@ -24,6 +24,7 @@ use crate::music::track::resolve_track;
 use crate::music::voice;
 use crate::stocks::api as stock_api;
 use crate::stocks::embeds as stock_embeds;
+use crate::stocks::STARTING_CASH;
 use crate::util::duration::{format_duration_ms, parse_duration};
 use crate::wordle::api as wordle_api;
 use crate::wordle::embeds as wordle_embeds;
@@ -1492,7 +1493,7 @@ async fn execute_stock_tool(
 					rank: i + 1,
 					user_id: uid.clone(),
 					total_value: *total_value,
-					pnl: *total_value - 1000.0,
+					pnl: *total_value - STARTING_CASH,
 				})
 				.collect();
 

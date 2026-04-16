@@ -3,6 +3,7 @@ use serenity::builder::CreateEmbed;
 use crate::db::models::{StockHolding, StockTransaction};
 
 use super::api::StockQuote;
+use super::STARTING_CASH;
 
 fn format_money(amount: f64) -> String {
 	if amount >= 0.0 {
@@ -124,7 +125,7 @@ pub fn portfolio_embed(
 		));
 	}
 
-	let total_pnl = total_value - 1000.0;
+	let total_pnl = total_value - STARTING_CASH;
 
 	let mut embed = CreateEmbed::new()
 		.color(pnl_color(total_pnl))
@@ -149,7 +150,7 @@ pub fn portfolio_embed(
 				"**{}** ({:+.2}%)",
 				format_pnl(total_pnl),
 				if total_cost + cash > 0.0 {
-					(total_pnl / 1000.0) * 100.0
+					(total_pnl / STARTING_CASH) * 100.0
 				} else {
 					0.0
 				}

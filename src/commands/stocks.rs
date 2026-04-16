@@ -1,12 +1,16 @@
 use serenity::all::*;
+use std::time::Duration;
 
 use crate::db::queries;
 use crate::error::BotError;
 use crate::stocks::api;
 use crate::stocks::embeds::{self, HoldingWithQuote, LeaderboardEntry};
+use crate::stocks::STARTING_CASH;
 use crate::Context;
 #[allow(unused_imports)]
 use sqlx;
+
+const RESET_CONFIRM_TIMEOUT: Duration = Duration::from_secs(30);
 
 // `BotError` is the project-wide error type used by every poise command in this
 // crate; its largest variant (`Serenity(serenity::Error)`) trips the
@@ -325,7 +329,7 @@ pub async fn leaderboard(ctx: Context<'_>) -> Result<(), BotError> {
 			rank: i + 1,
 			user_id: user_id.clone(),
 			total_value: *total_value,
-			pnl: *total_value - 1000.0,
+			pnl: *total_value - STARTING_CASH,
 		})
 		.collect();
 
@@ -351,14 +355,13 @@ pub async fn history(ctx: Context<'_>) -> Result<(), BotError> {
 	Ok(())
 }
 
-/// Reset your portfolio to $1,000
+/// Reset your portfolio to the starting cash balance.
+///
+/// Wipes all holdings and trade history. The destructive action is gated behind
+/// a Discord button so a stray copy-paste of the previous "type 'confirm'" form
+/// can't nuke a portfolio.
 #[poise::command(prefix_command, rename = "reset")]
-pub async fn reset(
-	ctx: Context<'_>,
-	#[description = "Type 'confirm' to reset"]
-	#[rest]
-	confirmation: Option<String>,
-) -> Result<(), BotError> {
+pub async fn reset(ctx: Context<'_>) -> Result<(), BotError> {
 	let _ = require_finnhub_key(ctx)?;
 	let guild_id = ctx
 		.guild_id()
@@ -366,16 +369,144 @@ pub async fn reset(
 	let user_id = ctx.author().id.to_string();
 	let guild_id_str = guild_id.to_string();
 
-	match confirmation.as_deref().map(str::trim) {
-		Some("confirm") => {
-			queries::reset_portfolio(&ctx.data().db, &guild_id_str, &user_id).await?;
-			ctx.say("Portfolio reset to **$1,000.00**. All holdings and history cleared.")
-				.await?;
-		}
-		_ => {
-			ctx.say("This will **delete all your holdings and trade history** and reset your cash to $1,000.\n\nTo confirm, run: `!m stock reset confirm`")
-                .await?;
-		}
+	// Snapshot what's about to be deleted, so the embed can show the user
+	// exactly what they're agreeing to lose.
+	let portfolio =
+		queries::get_or_create_portfolio(&ctx.data().db, &guild_id_str, &user_id).await?;
+	let holdings = queries::get_holdings(&ctx.data().db, &guild_id_str, &user_id).await?;
+	let transactions =
+		queries::get_transactions(&ctx.data().db, &guild_id_str, &user_id, i64::MAX).await?;
+
+	let holdings_count = holdings.len();
+	let transactions_count = transactions.len();
+
+	let confirm_id = format!(
+		"stock_reset_confirm_{}",
+		chrono::Utc::now().timestamp_millis()
+	);
+	let cancel_id = format!(
+		"stock_reset_cancel_{}",
+		chrono::Utc::now().timestamp_millis()
+	);
+
+	let description = format!(
+		"This will permanently:\n\
+         • Delete **{holdings_count}** holding{h_plural}\n\
+         • Delete **{transactions_count}** trade{t_plural} of history\n\
+         • Reset your cash to **${starting:.2}** (currently ${current:.2})\n\n\
+         This cannot be undone.",
+		h_plural = if holdings_count == 1 { "" } else { "s" },
+		t_plural = if transactions_count == 1 { "" } else { "s" },
+		starting = STARTING_CASH,
+		current = portfolio.cash_balance,
+	);
+
+	let embed = CreateEmbed::new()
+		.color(0xfee75c)
+		.title("Reset Portfolio?")
+		.description(&description)
+		.footer(CreateEmbedFooter::new(format!(
+			"Requested by {} · Expires in {}s",
+			ctx.author().name,
+			RESET_CONFIRM_TIMEOUT.as_secs()
+		)));
+
+	let buttons = vec![CreateActionRow::Buttons(vec![
+		CreateButton::new(&confirm_id)
+			.label("Confirm Reset")
+			.style(ButtonStyle::Danger),
+		CreateButton::new(&cancel_id)
+			.label("Cancel")
+			.style(ButtonStyle::Secondary),
+	])];
+
+	let reply = ctx
+		.send(
+			poise::CreateReply::default()
+				.embed(embed)
+				.components(buttons),
+		)
+		.await?;
+	let mut confirm_msg = reply.into_message().await?;
+
+	// Hold the shard handle across awaits so we can keep collecting interactions.
+	let serenity_ctx = ctx.serenity_context();
+
+	let interaction = confirm_msg
+		.await_component_interaction(serenity_ctx.shard.clone())
+		.timeout(RESET_CONFIRM_TIMEOUT)
+		.author_id(ctx.author().id)
+		.custom_ids(vec![confirm_id.clone(), cancel_id.clone()])
+		.await;
+
+	let Some(interaction) = interaction else {
+		// Timed out — disable the buttons and tell the user.
+		let timeout_embed = CreateEmbed::new()
+			.color(0x95a5a6)
+			.title("Confirmation timed out")
+			.description(&description)
+			.footer(CreateEmbedFooter::new(
+				"No response — portfolio was not reset",
+			));
+
+		let _ = confirm_msg
+			.edit(
+				&serenity_ctx.http,
+				EditMessage::new().embed(timeout_embed).components(vec![]),
+			)
+			.await;
+		return Ok(());
+	};
+
+	let approved = interaction.data.custom_id == confirm_id;
+
+	if approved {
+		queries::reset_portfolio(&ctx.data().db, &guild_id_str, &user_id).await?;
+
+		let done_embed = CreateEmbed::new()
+			.color(0x57f287)
+			.title("Portfolio reset")
+			.description(format!(
+				"Your portfolio has been reset to **${:.2}**. \
+                 All holdings and trade history were cleared.",
+				STARTING_CASH
+			))
+			.footer(CreateEmbedFooter::new(format!(
+				"Reset by {}",
+				ctx.author().name
+			)));
+
+		interaction
+			.create_response(
+				&serenity_ctx.http,
+				CreateInteractionResponse::UpdateMessage(
+					CreateInteractionResponseMessage::new()
+						.embed(done_embed)
+						.components(vec![]),
+				),
+			)
+			.await?;
+	} else {
+		let cancel_embed = CreateEmbed::new()
+			.color(0xed4245)
+			.title("Cancelled")
+			.description("Your portfolio was not reset.")
+			.footer(CreateEmbedFooter::new(format!(
+				"Cancelled by {}",
+				ctx.author().name
+			)));
+
+		interaction
+			.create_response(
+				&serenity_ctx.http,
+				CreateInteractionResponse::UpdateMessage(
+					CreateInteractionResponseMessage::new()
+						.embed(cancel_embed)
+						.components(vec![]),
+				),
+			)
+			.await?;
 	}
+
 	Ok(())
 }
