@@ -50,6 +50,7 @@ pub struct RateLimiters {
 	pub music: SlidingWindowLimiter,
 	pub moderation: SlidingWindowLimiter,
 	pub stocks: SlidingWindowLimiter,
+	pub welcome: SlidingWindowLimiter,
 }
 
 impl RateLimiters {
@@ -59,6 +60,7 @@ impl RateLimiters {
 			music: SlidingWindowLimiter::new(15, std::time::Duration::from_secs(30)),
 			moderation: SlidingWindowLimiter::new(5, std::time::Duration::from_secs(60)),
 			stocks: SlidingWindowLimiter::new(10, std::time::Duration::from_secs(30)),
+			welcome: SlidingWindowLimiter::new(1, std::time::Duration::from_secs(5)),
 		}
 	}
 
@@ -67,5 +69,6 @@ impl RateLimiters {
 		self.music.cleanup();
 		self.moderation.cleanup();
 		self.stocks.cleanup();
+		self.welcome.cleanup();
 	}
 }

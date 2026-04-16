@@ -39,16 +39,15 @@ pub async fn handle_member_join(ctx: &Context, member: &Member, data: &Data) {
 	if let (Some(ref wc_config), Some(ref welcome_prompt)) =
 		(&data.welcome_config, &data.welcome_prompt)
 	{
-		// Rate limit: skip if < 5 seconds since last welcome
+		// Rate limit: per-user, 1 welcome / 5 seconds
+		if data
+			.rate_limiters
+			.welcome
+			.check(&member.user.id.to_string())
+			> 0
 		{
-			let mut last = data.last_welcome.lock().await;
-			if let Some(instant) = *last {
-				if instant.elapsed() < std::time::Duration::from_secs(5) {
-					tracing::debug!("Skipping welcome for {} (rate limited)", member.user.id);
-					return;
-				}
-			}
-			*last = Some(std::time::Instant::now());
+			tracing::debug!("Skipping welcome for {} (rate limited)", member.user.id);
+			return;
 		}
 
 		let channel_id = match wc_config.channel.parse::<u64>() {
