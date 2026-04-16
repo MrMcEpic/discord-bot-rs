@@ -6,7 +6,7 @@ This section is for people who want to read, extend, debug, or contribute to dis
 
 - **New to the codebase?** Start with the [Codebase Tour](codebase-tour.md). It walks every module in `src/` and explains responsibilities, key types, and entry points. ~3000 words; treat it as your map.
 - **Want to run the bot without Docker?** [Building Locally](building-locally.md) covers the cargo workflow, system dependencies, and how to point the binary at a local PostgreSQL.
-- **Want to write code?** [Contributing Workflow](contributing-workflow.md) covers fork-and-PR, the pre-PR checklist, what CI runs, and how reviews work. Pair it with the top-level [CONTRIBUTING.md](https://github.com/MrMcEpic/discord-bot-rs/blob/master/CONTRIBUTING.md), which has the inbound-license clause and dev-setup essentials.
+- **Want to write code?** [Contributing Workflow](contributing-workflow.md) covers fork-and-PR, the pre-PR checklist, what CI runs, and how reviews work. Pair it with the top-level [CONTRIBUTING.md](https://github.com/MrMcEpic/discord-bot-rs/blob/master/CONTRIBUTING.md) for dev setup and contribution terms.
 - **Stuck on a bug?** [Debugging](debugging.md) covers `RUST_LOG`, common failure modes, and where to look when the bot misbehaves.
 
 ## How-to guides

@@ -76,7 +76,10 @@ listening can peek at what's coming up.
 When a track ends and the next one starts automatically, the bot
 deletes the previous "Now Playing" message and posts a fresh one for
 the new track, so there's only ever one set of controls live in the
-channel.
+channel. The same cleanup runs when a track is skipped — both the
+**Skip** button and the `!m skip` text command delete the previous
+"Now Playing" message before posting the new one, so manual skips
+don't leave orphaned embeds behind.
 
 ## Supported sources
 
@@ -229,14 +232,23 @@ server's admins manage their own.
 
 ## Rate limiting
 
-There is no application-level rate limiting on music commands. The
-practical limits are:
+Every music prefix command and every `music_*` button interaction is
+throttled per user through the shared `RateLimiters` infrastructure
+at **15 requests / 30 seconds**. That covers all 11 prefix commands
+(`play`, `playlist`, `skip`, `stop`, `pause`, `resume`, `queue`,
+`nowplaying`, `remove`, `loop`, `shuffle`) and every button on the
+"Now Playing" embed (pause/resume, skip, stop, shuffle, loop, show
+queue). Hitting the cap returns a "Slow down" reply instead of
+executing the action.
+
+The rate limit is in addition to the existing practical limits:
 
 - Discord's voice-gateway rate limits.
 - `yt-dlp` startup time (it forks a subprocess per resolve).
 - The 100-track queue cap.
 
-If you want to throttle abuse, gate the commands with DJ mode.
+If you want stricter throttling than per-user, gate the commands
+with DJ mode.
 
 ## Cross-references
 

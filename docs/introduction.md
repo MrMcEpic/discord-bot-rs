@@ -71,6 +71,6 @@ is the shortest path to "how does this actually work."
 
 discord-bot-rs is licensed under the [GNU Affero General Public License
 v3.0 or later](https://github.com/MrMcEpic/discord-bot-rs/blob/master/LICENSE).
-Contributions are accepted under the same license — see
+See
 [CONTRIBUTING.md](https://github.com/MrMcEpic/discord-bot-rs/blob/master/CONTRIBUTING.md)
-for the inbound-license note.
+for contribution terms.

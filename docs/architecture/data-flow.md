@@ -128,8 +128,9 @@ depending on where they start.
 
 - **Command handler returns `Err(BotError)`.** Poise catches this and
   calls its `on_error` hook, which is wired in `main.rs` to log the
-  error through `tracing` and post a short `Error: {e}` message in the
-  channel. See [Error Handling](error-handling.md) for the full picture.
+  full error via `tracing::error!` and post `error.user_message()` —
+  a short, sanitised, per-variant string — in the channel. See
+  [Error Handling](error-handling.md) for the full picture.
 - **DB query fails.** `sqlx::Error` converts into `BotError::Sqlx` via a
   `From` impl in `src/error.rs`, so `?` in a command handler turns a
   query failure into an automatic early-return with a user-visible

@@ -40,9 +40,23 @@ per instance via `command_prefix` in `config.toml`; the examples assume
 | `!m wordle random` | `!m w rand`, `!m w r` | Start a random puzzle from the back catalogue. |
 | `!m wordle date <YYYY-MM-DD>` | `!m w d <date>` | Start a specific date's puzzle. The argument is `#[rest]`, so trailing whitespace is fine. |
 
-Starting a new game in a channel that already has one in progress
-**replaces** the old game — there's no "are you sure?" prompt. One puzzle
-per channel at a time.
+Starting a new game in a channel that **already has an active
+(non-expired) game** is refused — the bot replies that there's a
+game in progress and asks you to finish or wait for it to expire
+(30 minutes idle). Once the existing game is solved, lost, or
+times out, you can start a new one. This applies to the AI
+`wordle_start` tool path as well, so the AI can't accidentally
+clobber an in-progress game either. One puzzle per channel at a
+time.
+
+The `date` subcommand validates its argument up front via
+`chrono::NaiveDate::parse`. Bad input (`!m wordle date today`,
+`!m wordle date 2026/04/16`, `!m wordle date april 16`) gets a
+"Use YYYY-MM-DD format" reply and no NYT call. If the request
+parses but NYT returns a puzzle whose `print_date` doesn't match
+the requested date, the bot prepends a warning before the game
+embed (NYT occasionally serves the previous day's puzzle near
+the rollover boundary).
 
 ## How to play
 
@@ -109,10 +123,19 @@ with Discord permissions.
 
 ## Common issues
 
-- **"No Wordle found for date `YYYY-MM-DD`"** — either the date is
-  before `2021-06-19` (when the NYT bought Wordle and started serving
-  puzzles via this API) or the date string is malformed. Use ISO format,
-  zero-padded.
+- **"Use YYYY-MM-DD format"** — your `date` argument didn't parse
+  as an ISO date. Examples that work: `2024-01-15`, `2021-06-19`.
+  Examples that don't: `today`, `2024/01/15`, `Jan 15 2024`.
+- **"No Wordle found for date `YYYY-MM-DD`"** — the date parsed
+  but is before `2021-06-19` (when the NYT bought Wordle and started
+  serving puzzles via this API) or NYT has no puzzle for that day.
+- **"There's already a Wordle in progress in this channel"** —
+  someone started a game and it hasn't finished or timed out
+  (30 minutes idle). Finish the game or wait it out.
+- **"NYT served a different date than requested"** warning above
+  the game — happens occasionally when NYT's rollover lags the
+  requested date. The bot still posts the puzzle; the warning is
+  just so you don't think you're playing the wrong day's game.
 - **Five-letter guesses do nothing** — there is no active game in the
   channel. Start one with `!m wordle`. Or the previous game just expired
   (30 minutes idle); the next guess after expiry is silently ignored

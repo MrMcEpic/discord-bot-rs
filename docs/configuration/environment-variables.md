@@ -92,11 +92,11 @@ See [Minecraft Verify](../features/minecraft-verify.md), [Minecraft Donator Sync
 
 The bot embeds a [Model Context Protocol](../features/mcp-server.md) server so external tools can drive Discord operations programmatically. These three variables control where it listens and how it authenticates.
 
-| Name              | Required | Default     | Description                                       |
-|-------------------|----------|-------------|---------------------------------------------------|
-| `MCP_PORT`        | no       | `9090`      | TCP port the MCP server listens on                |
-| `MCP_BIND_ADDR`   | no       | `127.0.0.1` | Bind address for the MCP server                   |
-| `MCP_AUTH_TOKEN`  | no       | empty       | Required bearer token for MCP requests            |
+| Name              | Required              | Default     | Description                                       |
+|-------------------|-----------------------|-------------|---------------------------------------------------|
+| `MCP_PORT`        | no                    | `9090`      | TCP port the MCP server listens on                |
+| `MCP_BIND_ADDR`   | no                    | `127.0.0.1` | Bind address for the MCP server                   |
+| `MCP_AUTH_TOKEN`  | when bind is non-loopback | empty   | Bearer token for MCP requests; hard-required on any non-loopback bind |
 
 ### `MCP_PORT`
 
@@ -104,11 +104,27 @@ The port the in-process MCP server binds to. Must be a number; an unparseable va
 
 ### `MCP_BIND_ADDR`
 
-The address to bind to. Default `127.0.0.1` keeps the MCP server reachable only from inside the container. Set it to `0.0.0.0` to listen on all interfaces — for example, when the [MCP gateway](../architecture/mcp-gateway-routing.md) needs to reach this instance over the Docker network. Pair any external exposure with `MCP_AUTH_TOKEN`. See [MCP Exposure](../deployment/mcp-exposure.md) for the threat model.
+The address to bind to. Two defaults are in play here, and the difference matters:
+
+- **`Config::load()` fallback (no value set anywhere):** `127.0.0.1`. Loopback only.
+- **Shipped `instances/example/.env.example`:** `0.0.0.0`. The bundled Compose stack has the `mcp-gateway` sidecar reach the bot over the Docker bridge network at `http://bot:9090`, which requires the bot to bind on a non-loopback interface inside its own container.
+
+Pick based on shape:
+
+- **Single-host, no gateway, you only want loopback access:** set `MCP_BIND_ADDR=127.0.0.1` (or simply unset it and let the fallback apply).
+- **Bundled Docker Compose with the gateway sidecar:** keep `MCP_BIND_ADDR=0.0.0.0` from the example. Each bot lives in its own container, so "all interfaces" means "the container's interface on the Compose bridge network" — not the host's public IP. Pair this with `MCP_AUTH_TOKEN`; the bot now refuses to start without one (see below).
+
+See [MCP Exposure](../deployment/mcp-exposure.md) for the threat model and the deploy shapes in detail.
 
 ### `MCP_AUTH_TOKEN`
 
-Bearer token required on all MCP requests. The default is an empty string, which disables auth entirely. **Always set this to a long random value when binding to anything other than `127.0.0.1`.** A leaked or empty token on a public address gives anyone full programmatic control of the bot.
+Bearer token required on all MCP requests. The default is an empty string, which disables auth entirely.
+
+**This is now a hard startup requirement when `MCP_BIND_ADDR` is anything other than a loopback address.** If `MCP_AUTH_TOKEN` is empty *and* the bind address is non-loopback, the bot logs an error and refuses to start. The check is in `src/mcp/mod.rs`. The intent is to prevent the easy mistake of binding `0.0.0.0` for a Compose deploy and forgetting to set a token — which would otherwise hand programmatic control of the bot to anyone who could reach the port.
+
+Loopback binds with no token are still allowed (and are the right answer for a single-host bot with no gateway). Comparison against the configured token is constant-time (via the `subtle` crate) so the auth path doesn't leak token contents through timing.
+
+See [MCP Exposure](../deployment/mcp-exposure.md) for the full security model and the two deploy shapes.
 
 ## MCP gateway (optional)
 
@@ -117,6 +133,8 @@ Bearer token required on all MCP requests. The default is an empty string, which
 | `MCP_GATEWAY_AUTH_TOKEN` | gateway service | unset   | Bearer token clients use to talk to the gateway |
 
 This variable is read by the separate `mcp-gateway` service in `docker-compose.yml`, not by the bot binary itself. It is the token that external MCP clients (Claude Code, etc.) present when calling the gateway, which then proxies the request to the appropriate per-instance MCP server. See [MCP Gateway Routing](../architecture/mcp-gateway-routing.md).
+
+**The gateway always binds non-loopback and treats this token as mandatory.** If `MCP_GATEWAY_AUTH_TOKEN` is empty the gateway refuses to start at all — there is no loopback escape hatch like the bot has, because the gateway's whole job is to be reachable from outside its container.
 
 ## A note on placeholder detection
 

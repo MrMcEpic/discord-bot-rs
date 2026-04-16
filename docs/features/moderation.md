@@ -167,6 +167,16 @@ buttons (only the original requester can press them, requester's
 Discord permissions still checked, expires after 30 seconds). See
 [AI Chat: Moderation confirmation](ai-chat.md#moderation-confirmation).
 
+## Rate limiting
+
+The moderation rate limiter applies to **both** the AI tool path
+and the prefix commands. `!m ban`, `!m unban`, and `!m nuke` each
+check the per-user moderation rate limiter before running, so a
+moderator can't bypass it by typing the prefix command instead of
+asking the AI. The Poise `required_permissions` check still
+fires first; the rate-limit check follows. Hitting the cap
+returns a "Slow down" reply and skips the action.
+
 ## Permissions required
 
 The bot itself needs `BAN_MEMBERS` (for `!m ban` and

@@ -35,7 +35,7 @@ sequenceDiagram
     E->>R: classify message: reasoning or chat?
     R->>API: chat completion with tools
     API-->>R: content + tool_calls (web_search, play_song, ...)
-    loop up to 5 rounds
+    loop up to 3 rounds
         R->>T: run search tool calls
         T-->>R: search results
         R->>API: re-call with results
@@ -183,10 +183,10 @@ sends the user's most recent message to DeepSeek V3 with a one-shot
 "yes/no — does this need deep reasoning?" prompt. If the classifier
 says yes, the pipeline switches the active endpoint to DeepSeek
 Reasoner. Because Reasoner can't use tools, the pipeline first runs a
-**pre-flight** loop on V3 that's allowed to call `web_search` up to 5
-times, collects the results, and injects them into the Reasoner's
-conversation as extra system context before asking Reasoner the real
-question.
+**pre-flight** loop on V3 that's allowed to call `web_search` up to
+`MAX_SEARCH_ROUNDS` times (currently 3), collects the results, and
+injects them into the Reasoner's conversation as extra system context
+before asking Reasoner the real question.
 
 If the classifier itself fails (network error, timeout), the pipeline
 defaults to V3 without reasoning — "failing toward the cheap path" is
@@ -206,8 +206,12 @@ Tools come in two flavours:
 - **Search tools** — just `web_search` today. The model asks for a
   search, the bot runs it, the result goes back to the model as a
   `role: "tool"` message, and the model gets another turn to decide
-  whether to search again or answer. Up to 5 rounds, after which the
-  pipeline forces a final answer with tools disabled.
+  whether to search again or answer. Up to `MAX_SEARCH_ROUNDS` rounds
+  (currently 3), after which the pipeline forces a final answer with
+  tools disabled. The same `MAX_SEARCH_ROUNDS` constant in
+  `src/ai/deepseek.rs` is interpolated into the system prompt and
+  drives both the V3 chat loop and the Reasoner pre-flight loop, so
+  the prompt and the code can never disagree about the limit.
 - **Action tools** — everything that changes state: `play_song`,
   `skip`, `stop`, `pause`, `resume`, `show_queue`, `now_playing`,
   `shuffle`, `set_loop`, `remove_from_queue`, `tempban`, `unban`,
@@ -297,10 +301,12 @@ boundaries, so multi-byte characters don't get cut in half.
 Rate limiting for the AI path is a per-user sliding window configured in
 [`src/util/ratelimit.rs`](https://github.com/MrMcEpic/discord-bot-rs/blob/master/src/util/ratelimit.rs):
 10 requests per 60 seconds, shared across every AI interaction. It's
-enforced in `handle_mention` before any API call. There are separate
-limiters for music, moderation, and stock tools, but the moderation
-limiter is the only other one currently checked — the music and stock
-limiters are defined for future use.
+enforced in `handle_mention` before any API call. The other limiters —
+`music`, `moderation`, `stocks`, and `welcome` — are all enforced too
+on their respective paths; see the
+[Concurrency Model rate-limiter section](concurrency-model.md#rate-limiting)
+for the full table and the periodic bucket-cleanup task that keeps the
+limiter maps from growing without bound.
 
 Rate limiting at the API layer (DeepSeek / Gemini quotas) is the
 provider's responsibility; the bot doesn't pre-check quotas and relies
@@ -322,6 +328,14 @@ Each layer has its own fallback:
   `unwrap_or(...)` past missing fields rather than erroring, because
   the user has already waited for the model and a silent no-op is
   better than a red error string.
+- **Tool dispatch / DB / HTTP failures inside a tool** → all
+  user-facing replies in `handle_mention`'s tool loop now use the
+  same generic, sanitised wording as `BotError::user_message()`
+  ("Something went wrong talking to the database. Please try again
+  later.", etc.). Operators still see the full upstream error via
+  `tracing::error!` with the failing tool name and guild ID, but
+  raw `sqlx`/`reqwest`/`serde_json` strings never reach Discord.
+  See [Error Handling](error-handling.md) for the mapping table.
 
 The typing indicator is re-triggered every 8 seconds by a spawned
 background task, so users see the bot "thinking" for the whole duration

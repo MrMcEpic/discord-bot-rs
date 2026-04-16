@@ -46,7 +46,7 @@ erDiagram
     stock_portfolios {
         TEXT guild_id PK
         TEXT user_id PK
-        DOUBLE cash_balance
+        NUMERIC cash_balance
         TIMESTAMPTZ created_at
     }
     stock_holdings {
@@ -54,8 +54,8 @@ erDiagram
         TEXT guild_id
         TEXT user_id
         TEXT symbol
-        DOUBLE quantity
-        DOUBLE avg_cost
+        NUMERIC quantity
+        NUMERIC avg_cost
     }
     stock_transactions {
         SERIAL id PK
@@ -63,9 +63,9 @@ erDiagram
         TEXT user_id
         TEXT symbol
         TEXT action
-        DOUBLE quantity
-        DOUBLE price_per_share
-        DOUBLE total_amount
+        NUMERIC quantity
+        NUMERIC price_per_share
+        NUMERIC total_amount
         TIMESTAMPTZ created_at
     }
     stock_price_cache {
@@ -188,9 +188,18 @@ avg_cost = (old_avg * old_qty + new_price * new_qty) / (old_qty + new_qty)
 
 `sell_stock` either reduces the quantity or deletes the row when the
 remaining amount is exactly zero (`Decimal::is_zero()` — replaces the
-old float-epsilon `< 0.0001` guard now that arithmetic is exact). Both
-run inside a sqlx transaction so the cash update, holdings update, and
-transaction-log insert commit atomically.
+old float-epsilon `< 0.0001` guard now that arithmetic is exact).
+
+All three mutating paths — `buy_stock`, `sell_stock`, and
+`reset_portfolio` — run inside a sqlx transaction that begins with
+a `SELECT cash_balance FROM stock_portfolios WHERE ... FOR UPDATE`
+on the relevant `(guild_id, user_id)` portfolio row. That row-level
+lock serialises every concurrent action against one user's
+portfolio, so a `!m stock reset` running at the same time as a
+`!m stock sell` (or a parallel buy from the AI tool path) cannot
+interleave their reads of `cash_balance` and produce divergent
+totals. The cash update, holdings update, and transaction-log
+insert all commit atomically with that lock held.
 
 ### `stock_transactions`
 
@@ -253,6 +262,17 @@ Primary key is `(guild_id, user_id)`. `increment_message_count` uses
 gets the latest counts in one round trip, which is what the message
 handler uses to decide whether to queue a promotion attempt. See
 [Auto-Role](../features/auto-role.md) for the thresholds.
+
+The two promotion paths — the per-message scanner inside
+`handle_message` and the 60-second background loop — would otherwise
+race on the same user when they happen to fire close together. The
+`try_promote` query closes that race with a single atomic claim:
+`UPDATE member_activity SET promoted = TRUE WHERE guild_id = $1 AND
+user_id = $2 AND promoted = FALSE RETURNING ...`. Only one of the
+concurrent updates returns a row; the other returns nothing and
+exits silently. The caller that wins the claim is the one that
+performs the actual Discord role add, so a member is never
+double-promoted and never sees two welcome reactions.
 
 ## What's not stored
 

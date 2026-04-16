@@ -71,8 +71,11 @@ defined at the top of `src/main.rs`. It holds:
   guild; `track_handles` is the exception — it stores `TrackHandle`
   directly because songbird's handle is already cheap to clone and
   internally synchronised.
-- **`rate_limiters: RateLimiters`** — sliding-window limiters for AI, music,
-  moderation, and stock tools, keyed by user ID.
+- **`rate_limiters: RateLimiters`** — sliding-window limiters for AI,
+  music, moderation, stock tools, and the welcome/join flow, keyed
+  by user ID. All five are enforced; a periodic cleanup task in
+  `main.rs` evicts empty buckets every 5 minutes. See
+  [Concurrency Model](concurrency-model.md#rate-limiting).
 - **`mcp_started: AtomicBool`** and **`started_at: DateTime<Utc>`** — one-shot
   flags used to guard the MCP server against gateway reconnects and to
   let the AI history builder ignore messages from previous bot

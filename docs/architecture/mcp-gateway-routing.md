@@ -111,15 +111,29 @@ responses). Once initialised, subsequent tool calls reuse that session.
 
 When a client sends a request to the gateway, the flow is:
 
-1. Client → Gateway: single JSON-RPC POST to `/mcp`.
-2. Gateway inspects `method`. For `tools/list`, the cached tool list
+1. Client → Gateway: single JSON-RPC POST to `/mcp`. Bodies are
+   capped at 64 KiB by a `RequestBodyLimitLayer` in
+   `mcp-gateway/src/main.rs` — JSON-RPC envelopes are tiny, and the
+   cap stops authenticated callers from saturating the gateway with
+   multi-MiB bodies.
+2. Gateway parses the body. A malformed JSON envelope returns the
+   spec-compliant JSON-RPC `-32700 Parse error` response instead of
+   axum's opaque 422, which keeps clients on the protocol's own
+   error model.
+3. Gateway inspects `method`. For `tools/list`, the cached tool list
    is returned immediately. For `tools/call`, the gateway extracts
-   `instance`, `guild_id`, and the tool arguments from `params`, picks a
-   target via the router, and forwards the call to the chosen backend's
-   `BackendClient::call_tool`.
-3. `BackendClient::call_tool` posts to `<backend>/mcp`, reads the
+   `instance`, `guild_id`, and the tool arguments from `params`, picks
+   a target via the router, and forwards the call to the chosen
+   backend's `BackendClient::call_tool`.
+4. `BackendClient::call_tool` posts to `<backend>/mcp`, reads the
    response from the POST's own SSE stream, and returns the result.
-4. Gateway wraps the result in an `event: message\ndata: {...}\n\n` SSE
+   (The earlier in-process pending-request dispatcher map has been
+   removed — the original prototype kept a `pending: HashMap<request_id,
+   oneshot::Sender>` and a background SSE reader, but in practice
+   every backend response arrives on the same POST's SSE stream, so
+   the dispatcher was dead code. Removing it cut about 77 lines and
+   eliminated a state machine that didn't earn its keep.)
+5. Gateway wraps the result in an `event: message\ndata: {...}\n\n` SSE
    frame and sends it back to the client with `Mcp-Session-Id: gateway-session`.
 
 The gateway uses a single synthetic session ID (`gateway-session`) for
@@ -175,10 +189,19 @@ catalog-building logic to union them.
 
 The gateway supports a single bearer token via the `MCP_AUTH_TOKEN`
 environment variable, enforced by an axum `auth_middleware` in
-`server.rs`. If the variable is set, every request must carry
-`Authorization: Bearer <token>` or it's rejected with 401. If the
-variable is unset or empty, the middleware passes everything through —
-useful for local development, not safe to run on a public port.
+`server.rs`. Every request must carry `Authorization: Bearer <token>`
+or it's rejected with 401.
+
+Because the gateway always binds `0.0.0.0:GATEWAY_PORT` (so sibling
+containers on the Docker network can reach it), there is no loopback
+escape hatch. Running it without a token would expose every
+backend's destructive Discord tools (ban, delete-channel,
+send-message, ...) to anyone with network reach. To make that
+impossible to do by accident, `mcp-gateway/src/main.rs` panics at
+startup if `MCP_AUTH_TOKEN` is missing or empty
+(`config.auth_token.is_none()`), with a message naming the risk.
+Local development inside the same compose network still works — the
+operator just has to set a token, even if it's a throwaway one.
 
 The gateway talks to each backend over plain HTTP on the internal
 Docker network with no auth, because the backends bind to `127.0.0.1`

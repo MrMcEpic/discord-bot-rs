@@ -54,7 +54,7 @@ instance.
 | `!m stock price <ticker>` | `!m stock quote`, `!m stock q` | Look up the current quote. No portfolio needed. |
 | `!m stock leaderboard` | `!m stock lb`, `!m stock top` | Top 10 portfolios by total value. |
 | `!m stock history` | `!m stock hist`, `!m stock h` | Your last 10 trades. |
-| `!m stock reset confirm` | — | Wipe your holdings and history; reset cash to `$1,000`. Requires the literal word `confirm`. |
+| `!m stock reset` | — | Wipe your holdings and history; reset cash to `$1,000`. Posts a confirmation embed with **Confirm** and **Cancel** buttons (gated to the original author, expires after 30 seconds). |
 
 Tickers are case-insensitive and normalized to uppercase. The Finnhub
 universe is **US-listed equities** — `AAPL`, `MSFT`, `TSLA`,
@@ -71,7 +71,7 @@ return "Could not find stock symbol".
 !m stock price MSFT            # look up Microsoft, no trade
 !m stock portfolio @someone    # peek at another user's portfolio
 !m stock leaderboard           # see the top 10
-!m stock reset confirm         # nuclear option
+!m stock reset                 # nuclear option (with button confirmation)
 ```
 
 The bot can also drive these commands via the AI tool layer: ask the
@@ -109,6 +109,12 @@ day's percent change.
 A buy debits cash, increments the holding, and updates the holding's
 weighted-average `avg_cost`. A sell credits cash and computes the
 realized P/L for that sale: `(sell_price − avg_cost) × quantity`.
+
+Both `buy` and `sell` (and `reset`) run inside a database transaction
+that takes a `SELECT … FOR UPDATE` row lock on the portfolio first,
+so concurrent trades — including a buy/sell racing against a reset —
+serialize cleanly instead of double-spending or deleting freshly
+purchased shares.
 
 Buys are sized one of two ways:
 
@@ -157,10 +163,35 @@ for readability.
 
 ### Reset
 
-`!m stock reset` is destructive. The first call gets a confirmation
-prompt; only `!m stock reset confirm` actually wipes the account.
-A reset clears all holdings and trade history and resets cash to
-`$1,000.00`. You can reset as often as you like.
+`!m stock reset` is destructive. Running it posts a confirmation
+embed with **Confirm** and **Cancel** buttons. Only the user who
+ran the command can press a button; if 30 seconds pass with no
+response the confirmation expires and nothing is wiped. Confirm
+clears all holdings and trade history and resets cash to
+`$1,000.00`; Cancel just dismisses the prompt. You can reset as
+often as you like.
+
+The reset itself runs in the same `FOR UPDATE`-locked transaction
+as buys and sells, so a sell that lands at the same instant won't
+beat the reset to the holdings table.
+
+### Decimal precision
+
+Money math throughout the stocks module uses `rust_decimal::Decimal`
+rather than `f64`. The database columns are `NUMERIC(18, 4)`, so
+share quantities and cash balances are precision-exact — no
+floating-point drift on cents or fractional shares from compound
+buy/sell sequences. Display rounds money to two decimal places
+(`.round_dp(2)`) and shares to four (`.round_dp(4)`), but the
+stored values keep full precision.
+
+### Rate limiting
+
+The buy, sell, and reset commands are throttled per user at
+**10 requests / 30 seconds** by the shared `RateLimiters`
+infrastructure. Hitting the cap returns a "Slow down" reply
+instead of executing the trade. Read-only commands
+(`portfolio`, `price`, `leaderboard`, `history`) aren't gated.
 
 ## Permissions
 
@@ -180,8 +211,9 @@ itself with role permissions.
 - **Stale price** — the quote came from cache. Trades use a
   fresh quote every time.
 - **Fractional-share rounding looks weird** — share counts are
-  stored to four decimals; values can drift by a fraction of a
-  cent on round trips.
+  stored to four decimals as `NUMERIC(18, 4)` Decimals (no f64
+  drift). Display rounds to four decimals for shares and two for
+  money; the stored values keep full precision.
 - **Lost my position after `reset`** — irreversible by design.
 - **Markets closed** — Finnhub returns the last traded price.
   Trades still execute; there's no "market closed" rejection.

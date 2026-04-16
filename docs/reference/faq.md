@@ -216,7 +216,7 @@ The shape of it for a bot host:
 Contributing back is welcome but not required by the license; the
 license only requires that derivative network services share their
 own source. See [CONTRIBUTING.md](https://github.com/MrMcEpic/discord-bot-rs/blob/master/CONTRIBUTING.md)
-for the inbound license terms.
+for the contribution terms.
 
 ### Can I commercialize this?
 

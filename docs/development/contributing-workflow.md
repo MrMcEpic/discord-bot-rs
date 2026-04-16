@@ -69,11 +69,13 @@ it to test your changes live.
 Follow the posture of the file you're editing — the existing code is
 the style guide. When in doubt:
 
-- **Add a test if reasonable.** Coverage is currently limited (pure
-  logic like `util::duration` and game state have unit tests; IO-bound
-  modules don't), so PRs here are welcome. For a bug fix, a test that
-  reproduces the bug is the best comment on the diff: it shows intent
-  and prevents regressions.
+- **Add a test if reasonable.** The crate ships with ~120 automated
+  tests (92 unit in main, 10 in the gateway, 18 Postgres-backed
+  integration tests under `tests/`). Pure logic and SQL queries are
+  well-covered; Discord-context handlers and the voice pipeline
+  aren't, so PRs that move the needle there are particularly welcome.
+  For a bug fix, a test that reproduces the bug is the best comment
+  on the diff. See [Testing](testing.md) for the patterns.
 - **Keep the PR focused.** One logical change per PR. A refactor and
   a feature and a docs rewrite are three PRs, not one.
 - **Update the docs.** If you changed a command, update the
@@ -113,10 +115,17 @@ Before you push and open a PR, run through:
 - [ ] `cargo fmt --check` (same thing, but catches files you forgot
       to stage)
 - [ ] `cargo clippy --all-targets -- -D warnings`
-- [ ] `cargo test`
+- [ ] `cargo test --bins` (minimum — unit tests, no Postgres needed)
+- [ ] `cargo test` with a `DATABASE_URL` pointing at a Postgres
+      (full — runs the integration tests under `tests/`). Easy
+      throwaway: `docker run -d --rm -p 5433:5432 -e POSTGRES_USER=test
+      -e POSTGRES_PASSWORD=test -e POSTGRES_DB=test postgres:17`,
+      then `DATABASE_URL=postgres://test:test@localhost:5433/test
+      cargo test`. See [Testing](testing.md) for the long version.
 - [ ] For changes touching the gateway crate, the same three commands
       again with `--manifest-path mcp-gateway/Cargo.toml` or from
-      inside `mcp-gateway/`
+      inside `mcp-gateway/` (the gateway has no DB-backed tests, so
+      `cargo test` is enough)
 - [ ] Docs updated if behaviour changed
 - [ ] CHANGELOG entry under `[Unreleased]`
 - [ ] Manual test in a live Discord server
@@ -158,8 +167,12 @@ When you push, CI runs the
 workflow, which has four jobs:
 
 - **check-main** — `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
-  `cargo check --all-targets`, `cargo test` on the main crate.
-- **check-gateway** — the same four commands inside `mcp-gateway/`.
+  `cargo check --all-targets`, `cargo test` on the main crate. The
+  job stands up a `postgres:17` service container with a health
+  check and exports `DATABASE_URL` so the integration tests under
+  `tests/` run for real against a live database.
+- **check-gateway** — the same four commands inside `mcp-gateway/`
+  (no Postgres service; the gateway's tests are pure).
 - **docker-main** — builds the top-level `Dockerfile` (no push).
 - **docker-gateway** — the same for `mcp-gateway/Dockerfile`.
 

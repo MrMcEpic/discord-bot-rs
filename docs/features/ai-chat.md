@@ -128,8 +128,10 @@ The AI has access to a set of function-calling tools defined in
   moderation tool call goes through a confirmation embed (see below)
   before it actually runs.
 - **Web search** — `web_search`, used for current-events questions and
-  fact-checking. Up to five rounds of search are allowed per request, so
-  the AI can refine queries based on results.
+  fact-checking. Up to **three** rounds of search are allowed per
+  request (the `MAX_SEARCH_ROUNDS` constant in `src/ai/deepseek.rs`,
+  also interpolated into the system prompt so the model and the loop
+  agree), so the AI can refine queries based on results.
 - **Stocks** — `stock_buy`, `stock_sell`, `stock_price`, `stock_portfolio`,
   `stock_leaderboard`. Bound to the virtual portfolio system.
 - **Games** — `connections_start`, `wordle_start`. Lets users say "start a

@@ -190,7 +190,7 @@ A third environment variable controls authentication:
 
 | Variable | Default | Notes |
 |---|---|---|
-| `MCP_AUTH_TOKEN` | empty (none) | Bearer token. When empty, the server accepts requests with no auth. |
+| `MCP_AUTH_TOKEN` | empty (none) | Bearer token. **Required** unless `MCP_BIND_ADDR` is a loopback interface (`127.0.0.1`, `::1`). |
 
 The middleware in `src/mcp/mod.rs` is a single `from_fn` layer:
 
@@ -198,11 +198,30 @@ The middleware in `src/mcp/mod.rs` is a single `from_fn` layer:
 - If it is set, every request must carry a matching
   `Authorization: Bearer <token>` header, otherwise it is rejected
   with `401 Unauthorized`.
+- The bearer-token comparison is **constant-time** (via
+  `subtle::ConstantTimeEq`) so a network attacker can't use response
+  timing to probe the token byte-by-byte.
 
-The default — no token — is fine when you're listening on
-`127.0.0.1` and only your local Claude Code is talking to the server.
-It's *not* fine if the port is reachable from anywhere else. **Don't
-expose this server on a network without setting `MCP_AUTH_TOKEN`.**
+### Strict startup guard
+
+The bot **refuses to start** if `MCP_AUTH_TOKEN` is empty *and*
+`MCP_BIND_ADDR` is not a loopback address. This replaces the older
+"soft warning" behaviour — the misconfiguration that used to expose
+an unauthenticated MCP endpoint on the public internet now fails the
+boot instead, with a pointed error explaining how to fix it. Either
+set a token or bind to loopback; there is no third option.
+
+The mcp-gateway applies the same rule even more strictly: because it
+always listens on `0.0.0.0`, it refuses to start without
+`MCP_AUTH_TOKEN` set, no loopback escape hatch available.
+
+### Request size limit
+
+Every incoming request body is capped at **64 KiB**. Oversize bodies
+are rejected with `413 Payload Too Large`. Bodies that fit but aren't
+valid JSON-RPC come back with a standards-conformant
+`{"jsonrpc":"2.0","error":{"code":-32700,"message":"Parse error"},"id":null}`
+response rather than a generic 400.
 
 ## The MCP gateway
 
@@ -236,11 +255,13 @@ session into your Discord server.
 
 Concrete recommendations:
 
+- **`MCP_AUTH_TOKEN` is required unless bound to loopback.** The bot
+  enforces this at startup: if `MCP_BIND_ADDR` is anything other than
+  a loopback address and the token is unset, the process refuses to
+  boot. Generate the token with `openssl rand -hex 32` or similar.
 - **Default to `127.0.0.1`.** The default `MCP_BIND_ADDR` is localhost
   for a reason. Do not change it unless you're putting something
   meaningful in front of it.
-- **Set `MCP_AUTH_TOKEN` whenever you bind to a non-loopback
-  interface.** Generate it with `openssl rand -hex 32` or similar.
 - **Do not put the port on the public internet.** Even with a bearer
   token, you're one token leak away from a takeover. Use a
   WireGuard / Tailscale / SSH tunnel / VPN to reach it remotely.

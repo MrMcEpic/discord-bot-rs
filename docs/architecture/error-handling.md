@@ -57,14 +57,19 @@ errors the bot actually handles.
 framework error hook. A command returning `Err(BotError::Sqlx(...))`
 or `Err(BotError::Other("...".into()))` raises a
 `FrameworkError::Command`, which the hook turns into a user-facing
-reply and a tracing log. That hook lives in `main.rs`:
+reply and a tracing log. That hook lives in `main.rs` and now uses
+`BotError::user_message()` to keep operator-only details out of
+chat:
 
 ```rust
 on_error: |error| Box::pin(async move {
     match error {
         poise::FrameworkError::Command { error, ctx, .. } => {
+            // Full error (including upstream sqlx/reqwest text) goes
+            // to logs only.
             tracing::error!("Command error: {error}");
-            let _ = ctx.say(format!("Error: {error}")).await;
+            // Sanitised, per-variant copy goes to the user.
+            let _ = ctx.say(error.user_message()).await;
         }
         other => {
             tracing::error!("Framework error: {other}");
@@ -73,13 +78,22 @@ on_error: |error| Box::pin(async move {
 })
 ```
 
-The user sees `Error: <display representation of BotError>`, which
-means the `Display` impls in `src/error.rs` are effectively the UX
-copy for command failures. They're short: `"Database error: {e}"`,
-`"Discord error: {e}"`, `"HTTP error: {e}"`, `"JSON error: {e}"`, or
-just the string for `Other`. This is terse on purpose — nobody wants
-a stack trace in Discord — and the full error (with any upstream
-context) goes to the tracing log.
+The split between `Display` and `user_message()` is deliberate:
+
+- **`Display`** still produces the verbose form (`"Database error:
+  <sqlx message>"`, `"HTTP error: <reqwest message>"`, ...) and is
+  what gets logged. It carries every byte of upstream context an
+  operator might want to grep for.
+- **`user_message()`** returns a fixed, generic per-variant string
+  ("Something went wrong talking to the database. Please try again
+  later.", "Couldn't reach an external service. Please try again.",
+  ...) — except for `Other(s)`, which is treated as already-curated
+  copy and passed through verbatim. That last case is what makes
+  short messages like `"Not in a guild"` and validation errors
+  still surface naturally.
+
+The user sees the short, friendly form. The operator sees the full
+upstream chain in the logs and can correlate by timestamp.
 
 Other `FrameworkError` variants (permission denied, argument parse
 failure, missing subcommand) are logged but not replied to. The
@@ -104,11 +118,18 @@ path inside `handle_message` spawns a task that logs via
 user sees nothing; the operator sees the error in the logs.
 
 **Background task errors.** `main.rs` spawns several long-running
-tasks (tempban unban sweep, auto-role time-based check, donator sync).
-They all run inside `tokio::spawn` blocks and use a `match` pattern
-that logs failures with `tracing::warn!` or `tracing::error!` and
-continues the loop. None of them panic — the rule is "a background
-task should never take the bot down."
+tasks (rate-limiter cleanup, tempban unban sweep, auto-role
+time-based check, donator sync). Each iteration body runs inside the
+`run_supervised` helper, which wraps it in
+`AssertUnwindSafe(...).catch_unwind()`. A panic inside one iteration
+is caught and logged via `tracing::error!` with the task name and
+panic payload, and the outer loop continues to the next iteration —
+"a background task should never take the bot down" is now enforced
+by the wrapper, not just by convention. Recoverable errors inside the
+body still use the same `tracing::warn!` / `tracing::error!` pattern
+and continue. See
+[Concurrency Model: background task supervision](concurrency-model.md#background-task-supervision)
+for the JoinSet plumbing and graceful-shutdown story.
 
 **The AI pipeline.** `handle_mention` doesn't return a `Result` at
 all. It uses pattern matching and explicit `return` statements to
@@ -117,26 +138,41 @@ things like "Something went wrong talking to the AI." This is by
 design: the pipeline has too many recoverable states (classifier
 failure, vision failure, censored response, search failure) for the
 `?` operator to express naturally, so it handles each one explicitly.
+The tool dispatch paths used to compose user-facing replies as
+`message.reply(format!("Database error: {e}"))` (and similar for
+`reqwest`/`serde_json`/MCP errors), which leaked the same internal
+detail the command path now hides. Those reply sites have all been
+swept to use the same generic copy as `BotError::user_message()`,
+with the full upstream error logged via `tracing::error!` carrying
+the failing tool name and guild ID for operator diagnostics.
 
 ## Debug vs production
 
 What gets logged and what gets shown to users is split on purpose:
 
-- **Logs** (`tracing::error!`, `tracing::warn!`): full error, full
-  upstream message, any context the handler can add. These go to
-  stderr and whatever log aggregator the operator has set up.
-  `tracing_subscriber::fmt::init()` in `main.rs` is the default config
-  — override with `RUST_LOG` to raise or lower the level.
-- **User messages** (`ctx.say(...)`, `message.reply(...)`): short,
-  polite, not leaking the full upstream. A failed DB query becomes
-  `Error: Database error: <sqlx message>`, which is ugly but
-  honest — the user knows something is broken and the operator has
-  the real error in the log to correlate against.
+- **Logs** (`tracing::error!`, `tracing::warn!`): the full
+  `Display` form of `BotError`, including every byte of upstream
+  context. These go to stderr and whatever log aggregator the
+  operator has set up. `tracing_subscriber::fmt::init()` in `main.rs`
+  is the default config — override with `RUST_LOG` to raise or lower
+  the level.
+- **User messages** (`ctx.say(...)`, `message.reply(...)`): the
+  output of `BotError::user_message()`. A failed DB query becomes
+  `"Something went wrong talking to the database. Please try again
+  later."`; a flaky upstream API becomes `"Couldn't reach an external
+  service. Please try again."`. The user knows something is broken
+  and that retrying is reasonable, but no SQL fragment, hostname, or
+  serde path leaks to chat.
 
 The split matters because upstream error messages can contain
 information that shouldn't be in Discord — file paths, internal
-hostnames, full stack traces from dependencies. Sticking to the
-short Display impls for user output keeps those details out of chat.
+hostnames, table names, partial stack traces from dependencies. The
+old `format!("Error: {e}")` path leaked all of that whenever a
+handler bubbled up a `BotError::Sqlx` or `BotError::Reqwest`; the
+`user_message()` mapping closes that gap. The same swept the
+`BotError::Other(format!("...{e}"))` pattern out of the AI tool
+dispatch paths so a failing DeepSeek call can't smuggle a raw HTTP
+body into chat by way of `Other`.
 
 ## Panics
 

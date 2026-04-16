@@ -165,18 +165,70 @@ concurrent `check` calls for the *same* user serialise naturally
 through the entry guard. Two calls for *different* users land on
 different shards and don't block each other.
 
-`Data::rate_limiters` holds four of these:
+`Data::rate_limiters` holds five of these, all enforced:
 
 - **`ai`** — 10 requests per 60 seconds, used by the AI chat
   pipeline.
-- **`music`** — 15 requests per 30 seconds. Defined but not currently
-  enforced.
-- **`moderation`** — 5 requests per 60 seconds. Enforced only by the
-  AI pipeline's moderation tool execution path. The prefix
-  `!m ban` / `!m unban` / `!m nuke` commands do not currently consult
-  this limiter (Discord-side permission checks are the only gate).
-- **`stocks`** — 10 requests per 30 seconds. Defined but not currently
-  enforced.
+- **`music`** — 15 requests per 30 seconds, enforced on every `!m`
+  music command and every AI music tool call.
+- **`moderation`** — 5 requests per 60 seconds. Enforced both by the
+  AI pipeline's moderation tool execution path and by the prefix
+  `!m ban` / `!m unban` / `!m nuke` commands. (Discord-side permission
+  checks still apply on top.)
+- **`stocks`** — 10 requests per 30 seconds, enforced on every `!m
+  stock` command and every AI stock tool call.
+- **`welcome`** — 1 event per 5 seconds per joining user. Throttles
+  the join flow so a fast-rejoining account can't spam the welcome
+  prompt or AI greeting.
+
+### Bucket cleanup
+
+Every `check` call inserts a vector of timestamps into the limiter's
+DashMap entry, but nothing removes empty entries on its own. Without
+periodic eviction, memory would grow with the unique-user count over
+the lifetime of the process. To fix that, `main.rs` spawns a
+`rate_limiter_cleanup` background task that calls
+`RateLimiters::cleanup_all()` every 5 minutes. `cleanup_all` walks all
+five limiters, prunes timestamps older than each window, and drops
+entries that are now empty. This keeps the steady-state memory
+footprint proportional to the *active* user count rather than the
+all-time-unique user count.
+
+## Background task supervision
+
+`main.rs` spawns several long-running loops (rate-limiter cleanup,
+tempban unban sweep, auto-role time check, donator sync). They used to
+be plain `tokio::spawn` calls with no panic recovery — a single panic
+inside the loop body would silently kill the whole task and the
+feature would simply stop working until the next restart, with nothing
+in the logs to tell the operator what happened.
+
+The current pattern has two layers:
+
+1. **Per-iteration panic recovery.** Every loop body runs inside the
+   `run_supervised(task_name, || async { ... })` helper defined at the
+   top of `main.rs`. The helper wraps the body in
+   `AssertUnwindSafe(...).catch_unwind()` so a panic inside one
+   iteration is caught, logged via `tracing::error!` with the task
+   name and panic payload, and then swallowed. The outer `loop { ...
+   sleep ... }` continues to the next iteration. A bug in one tempban
+   sweep doesn't break tomorrow's sweeps.
+2. **Task-level tracking via `JoinSet`.** Background tasks are
+   spawned into a `JoinSet<()>` owned by `main()`. A separate task
+   awaits `join_next` in a loop and logs at `error` level if any
+   supervised loop ever exits — which, with the panic-recovery wrapper
+   in place, should never happen. If it does, the operator knows
+   immediately rather than waiting to notice the missing behaviour.
+
+### Graceful shutdown
+
+`main.rs` races `client.start()` against a `shutdown_signal()` future
+inside `tokio::select!`. `shutdown_signal()` resolves on Ctrl-C, and
+on unix it also resolves on `SIGTERM` (so `docker stop` and `kill`
+are honoured). When the signal fires, `shard_manager.shutdown_all()`
+is called before exit, which closes the gateway shards cleanly and
+gives songbird a chance to tear down voice connections instead of
+leaving them dangling on the Discord side.
 
 ## Database pool concurrency
 

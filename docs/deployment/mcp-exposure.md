@@ -11,34 +11,89 @@ If you have not read [MCP Server](../features/mcp-server.md) yet,
 do that first — it covers what the tools do and how a client
 connects. This page is about the network and authentication layer.
 
-## The default: localhost only
+## Two deploy shapes
 
-The defaults are deliberately safe:
+There are two reasonable shapes for an MCP-exposing deployment, and
+the rest of this page assumes you have picked one:
 
-- The bot's own MCP server defaults to `MCP_BIND_ADDR=127.0.0.1`
-  and `MCP_PORT=9090`. Inside the Compose stack, each bot
-  container has its own loopback, so this means "reachable from
-  inside the bot's container only," and the gateway reaches the
-  bots over the Docker bridge network using each bot's service
-  name (`http://bot:9090`). Nothing on the host can hit the bot's
-  MCP port directly.
-- The gateway publishes `127.0.0.1:9100` on the host. That means
-  it is reachable from any process running on the host (an
-  `ssh`-ed user, a process started by your shell), but **not** from
-  any other machine on the network and not from the public
-  internet.
-- `MCP_AUTH_TOKEN` and `MCP_GATEWAY_AUTH_TOKEN` both default to
-  empty, which disables auth — fine on a loopback address, fatal
-  anywhere else.
+### Shape A — loopback-only bot, no gateway
 
-A fresh `docker compose up -d` therefore exposes nothing to the
-internet. The MCP endpoint is available to a Claude Code on the
-same host (`http://localhost:9100/mcp`), to anyone you `ssh -L
-9100:localhost:9100` to, and to nothing else.
+A single bot, no `mcp-gateway` sidecar. The bot's MCP server binds
+`127.0.0.1` and is reachable only from inside the bot's container
+(or from the host, if you publish the port to `127.0.0.1`). This is
+the right default if you are not using the gateway and you only
+need MCP locally. `MCP_AUTH_TOKEN` is **optional** in this shape;
+loopback binds are allowed to ship without a token.
 
-If that covers your use case, **stop here**. The default is the
-right answer for most operators. The rest of this page is about
-the cases where it is not.
+Set in `.env`:
+
+```
+MCP_BIND_ADDR=127.0.0.1
+MCP_AUTH_TOKEN=        # optional on loopback
+```
+
+### Shape B — bundled Compose with the gateway
+
+The shape the shipped `docker-compose.yml` is built for. The
+`mcp-gateway` sidecar publishes `127.0.0.1:9100` on the host and
+reaches each bot at `http://<bot-service>:9090` over the internal
+Docker bridge network. Because the gateway is in a different
+container from the bot, the bot must bind on a non-loopback
+interface inside its own container (`MCP_BIND_ADDR=0.0.0.0`),
+otherwise the gateway cannot reach it. The shipped
+`instances/example/.env.example` already does this.
+
+`MCP_AUTH_TOKEN` is **mandatory** in this shape. The bot refuses
+to start if `MCP_BIND_ADDR` is non-loopback and `MCP_AUTH_TOKEN`
+is empty — see "Hard auth requirements" below.
+`MCP_GATEWAY_AUTH_TOKEN` is mandatory always; the gateway refuses
+to start without it.
+
+Set in `.env`:
+
+```
+MCP_BIND_ADDR=0.0.0.0
+MCP_AUTH_TOKEN=$(openssl rand -hex 32)         # required
+MCP_GATEWAY_AUTH_TOKEN=$(openssl rand -hex 32) # required (gateway service)
+```
+
+Even in Shape B nothing is exposed to the internet by default —
+the gateway publishes only on `127.0.0.1:9100` on the host, so
+the MCP endpoint is reachable from a Claude Code on the same host
+(`http://localhost:9100/mcp`), from anyone you `ssh -L
+9100:localhost:9100` to, and from nothing else. The "expose this
+to a remote machine" patterns later on this page apply on top of
+Shape B.
+
+## Hard auth requirements
+
+The bot and the gateway both refuse to start in obviously unsafe
+configurations:
+
+- **Bot:** if `MCP_AUTH_TOKEN` is empty *and* `MCP_BIND_ADDR` is
+  not a loopback address, startup aborts with an error pointing
+  at `src/mcp/mod.rs`. This is to prevent the easy mistake of
+  switching to `0.0.0.0` (for a Compose deploy, or any
+  cross-container reach) and forgetting to set a token.
+- **Gateway:** if `MCP_GATEWAY_AUTH_TOKEN` is empty, startup
+  aborts unconditionally. The gateway's whole job is to be
+  reachable from outside its container, so there is no loopback
+  escape hatch.
+
+Bearer comparison on both is constant-time (via the `subtle`
+crate), so a brute-force probe cannot distinguish "token wrong by
+the first byte" from "token wrong by the last byte" through
+timing.
+
+Both servers also cap incoming request bodies at **64 KiB**
+(`RequestBodyLimitLayer`), so a misbehaving or malicious client
+cannot tie up RAM with an oversized payload, and malformed JSON
+returns a proper JSON-RPC parse-error response rather than
+crashing the connection.
+
+If that covers your use case, **stop here**. The defaults plus a
+token are the right answer for most operators. The rest of this
+page is about the cases where it is not.
 
 ## When to expose MCP
 
@@ -223,16 +278,19 @@ A few mitigations worth knowing about:
 
 ## Authentication on the bot's MCP, not just the gateway
 
-In a default Compose deployment the bots' MCP servers are not
-exposed to anything outside the Compose network, so leaving
-`MCP_AUTH_TOKEN` empty per bot is fine — the gateway is the
-authenticated front door and the bots' own ports are private. The
-gateway talks to bots over the internal network with no auth.
+In a Compose deployment the bot's MCP server binds `0.0.0.0`
+inside its container so the gateway sidecar can reach it over the
+Docker bridge network. That is a non-loopback bind, so the bot's
+own startup check requires `MCP_AUTH_TOKEN` to be set on every
+bot. The gateway forwards the operator-supplied bearer to each
+bot when proxying, so a single rotation of `MCP_AUTH_TOKEN` on
+the bot pair (plus the matching update wherever the gateway
+learns about the per-instance token) is the rotation step.
 
 If you ever bind a bot's MCP server to a host port directly
-(rare, and usually wrong — use the gateway), set `MCP_AUTH_TOKEN`
-on that bot's `.env` and configure your client with the matching
-bearer.
+(rare, and usually wrong — use the gateway), the same rule
+applies: non-loopback means `MCP_AUTH_TOKEN` is required, and the
+bot will refuse to start without one.
 
 ## Token rotation
 

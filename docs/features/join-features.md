@@ -130,9 +130,11 @@ message). Suggest one channel they should check out first.
 After the join-role step, `handle_member_join` checks for both
 `welcome_config` and `welcome_prompt`. If both are present, it:
 
-1. **Rate-limits.** If a welcome was sent in the last 5 seconds,
-   skip this one. This prevents the bot from spamming the channel
-   during a join raid.
+1. **Rate-limits per user.** Each joining user gets their own
+   5-second budget through the shared `RateLimiters` infrastructure
+   (1 request / 5 seconds, keyed on the joining user's ID). A
+   single user re-joining repeatedly is throttled, but a raid of
+   distinct users all get their own welcomes.
 2. **Picks a provider.** If `DEEPSEEK_API_KEY` is set, use
    DeepSeek (`deepseek-chat`). Otherwise fall back to Gemini
    (`gemini-3-flash-preview`). Both providers are called via
@@ -160,15 +162,17 @@ bot lacks permission) are logged at `warn` and silently swallowed
 
 ### Rate limiting
 
-Welcome generation is rate-limited per **bot instance** — a single
-`Mutex<Option<Instant>>` tracks when the last welcome was sent.
-If a join arrives within 5 seconds of the last one, the bot
-silently skips it. This is intentional: during a join raid the
-last thing you want is the bot generating dozens of AI calls and
-flooding the welcome channel.
+Welcome generation is rate-limited **per joining user** through the
+bot's shared `RateLimiters` infrastructure: 1 request per 5 seconds,
+keyed on the new member's user ID. The same user re-joining within
+the window gets a single welcome; ten distinct users joining inside
+the same five seconds get ten welcomes (one each).
 
-The window is short (5 seconds), so under normal traffic every
-new member gets their own welcome. It only suppresses bursts.
+This is the fix for the older global-mutex rate limit, which
+suppressed legitimate joins during a raid: a burst of 10 joiners
+used to produce one welcome and nine silent skips. Now the
+limiter only throttles a single user's repeated joins, not the
+whole channel.
 
 ### Permissions
 
@@ -201,8 +205,10 @@ covers most casual join volumes; check
   inheriting the bot's overall personality. Make the prompt more
   specific — tell it the server's tone, what to highlight, what
   to avoid.
-- **Welcomes stop firing during a raid** — that's the rate
-  limiter. By design.
+- **The same user keeps re-joining and only gets one welcome** —
+  the per-user 5-second rate limiter. Distinct users in a raid
+  each get their own welcome; a single user looping through
+  join/leave/join is throttled.
 - **Welcome posted to wrong channel** — verify the snowflake ID
   in `[welcome].channel` is for the channel you actually meant.
   No mention syntax; just the raw ID as a string.

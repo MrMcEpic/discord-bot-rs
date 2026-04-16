@@ -1,106 +1,59 @@
 # Testing
 
-This page is honest about where the test suite is today and what kinds
-of tests are most useful to add. The short version: coverage is
-minimal, the project compiles cleanly without it, and any well-scoped
-unit test is a welcome contribution.
+This page describes the test suite as it stands today: how it's
+structured, how to run it, what it covers, and where the gaps still
+are. Coverage grew substantially during the v0.5.0 hardening cycle —
+the crate went from zero tests to a little over a hundred — so the
+tone of this page is no longer "we wish we had tests." It's "here's
+how to run them and where to add more."
 
-## Where the project is today
+## Current coverage
 
-A truthful inventory of automated coverage as of the public launch:
+A truthful inventory as of `v0.5.0`:
 
-- **Main crate (`src/`)** — zero unit tests. `cargo test` passes
-  because there's nothing to fail. The crate compiles, clippy passes
-  with `-D warnings`, and CI is green; what's missing is asserts.
-- **`mcp-gateway/` crate** — ten unit tests in
-  [`mcp-gateway/src/routing.rs`](https://github.com/MrMcEpic/discord-bot-rs/blob/master/mcp-gateway/src/routing.rs).
-  They cover the `Router::resolve` decision tree (explicit instance
-  vs guild lookup vs neither, unknown instance, unknown guild,
-  guild-map updates, override semantics). Read those tests before
-  writing your first one — they're the canonical example of the
-  project's test style.
-- **Integration tests** — none. There's no harness that boots the
-  bot against a fake Discord, no end-to-end flow against a real
-  Postgres in CI.
-- **Doc tests** — none worth mentioning.
+- **Main crate unit tests — 92.** Live alongside the code they cover
+  in `#[cfg(test)] mod tests` blocks at the bottom of each file.
+  Split across `src/util/duration.rs`, `src/util/ratelimit.rs`,
+  `src/ai/dsml.rs`, `src/ai/sanitize.rs`, `src/ai/split.rs`,
+  `src/error.rs`, `src/wordle/game.rs`, `src/connections/game.rs`,
+  `src/autorole.rs`, and the `parse_duration_secs` helper on the MCP
+  tool surface.
+- **`mcp-gateway/` unit tests — 10.** In
+  [`mcp-gateway/src/routing.rs`](https://github.com/MrMcEpic/discord-bot-rs/blob/master/mcp-gateway/src/routing.rs),
+  covering the `Router::resolve` decision tree (explicit instance,
+  guild lookup, unknown instance, guild-map updates, override
+  semantics). The canonical example of the project's test style for
+  pure async logic.
+- **Main crate integration tests — 18.** Under
+  [`tests/`](https://github.com/MrMcEpic/discord-bot-rs/tree/master/tests)
+  as four files (`db_stocks.rs`, `db_autorole.rs`, `db_moderation.rs`,
+  `db_settings.rs`) driven by `#[sqlx::test]`. They require a running
+  Postgres — see below.
+- **Doc tests — none worth mentioning.**
 
-The reason coverage is thin is straightforward: the codebase grew
-fast, the modules that benefit most from tests (pure logic) are small,
-and the modules that have the most lines (Discord I/O, voice
-playback, AI calls) are the hardest to test without elaborate mocks.
-This isn't a defence; it's an explanation. If you want to write tests
-for any of it, the door is wide open.
+Total: **120 automated tests.** CI runs them all on every push and PR.
 
-## What's worth testing
+Two of the integration tests deserve their own call-out because they
+exist to pin specific regressions:
 
-Three categories give the best return on effort.
+- `db_stocks::stocks_reset_sell_race_does_not_mint_money` — ten
+  iterations of a concurrent `sell_stock` + `reset_portfolio` race.
+  Confirms the `FOR UPDATE` row-lock fix (Tier 1.2) still holds; if
+  the lock ever regresses, this test mints money and turns red.
+- `db_autorole` — sixteen parallel tasks all trying to claim a role
+  for the same user. Verifies the atomic-claim path (Tier 2.x)
+  doesn't double-assign.
 
-### Pure logic
+If you touch the stock-trading SQL layer or autorole flow, run these
+tests before opening a PR.
 
-Anything that takes data in and returns data out, with no I/O, is
-trivially testable and tends to host the bugs. Good candidates:
+## How unit tests are structured
 
-- **`src/util/duration.rs`** — `parse_duration`, `format_duration_ms`,
-  `format_track_duration`. The rules are tight ("3d", "2h30m" not
-  supported, capped at 365 days, returns `None` on overflow) and
-  every consumer of these functions assumes they're correct. Even one
-  test per function would help.
-- **`src/wordle/game.rs`** — guess scoring (correct/present/absent),
-  win/loss detection, `is_valid_word`. All pure.
-- **`src/connections/game.rs`** — selection validation, mistake
-  counting, "all four found" detection. Pure.
-- **`src/autorole.rs`** — `meets_criteria(activity, config)` is a
-  small pure decision. Worth a handful of cases (just-old-enough,
-  just-enough-messages, both-required, either-required).
-- **`src/ai/sanitize.rs`** — strips role markers and prompt-injection
-  attempts. Tests would document the threat model.
-- **`src/ai/split.rs`** — splits over the 2000-char limit without
-  breaking code fences or multi-byte boundaries. Tests for the edge
-  cases (a code fence that crosses 2000 chars, an emoji at byte
-  1999, etc.) are very high-value.
-
-If you're looking for a first contribution and don't have a feature
-in mind, picking one of these and writing five-to-ten test cases is
-genuinely useful work.
-
-### Database queries
-
-The `query` / `query_as` runtime helpers don't validate SQL until
-they hit a live database. A test that boots an ephemeral Postgres
-(via [`testcontainers`](https://crates.io/crates/testcontainers) or
-similar), runs the migrations, and exercises each query function in
-`src/db/queries.rs` would catch a class of bugs the type system
-can't. We don't have this yet and the project would gladly accept it.
-
-### Routing and decision logic in `mcp-gateway`
-
-The gateway is the easiest crate to test because it's almost entirely
-pure: parse a request, decide where to send it, forward, return. The
-existing ten tests in `routing.rs` cover the resolver. The other
-files (`backend.rs`, `server.rs`, `config.rs`) have decision logic
-that would benefit from similar tests — particularly request parsing
-and the `tools/list` aggregation in `server.rs`.
-
-## What's not worth testing right now
-
-A few areas where the cost-benefit is bad enough that adding tests
-isn't recommended without buy-in from the maintainer:
-
-- **The Serenity / poise dispatch path.** Mocking the framework is
-  more code than the handlers. Test the inner functions that
-  handlers call instead.
-- **The `songbird` voice pipeline.** Same problem times ten —
-  testing voice would require either a real voice gateway or a
-  fixture-heavy mock layer that doesn't exist.
-- **Live external API calls** (DeepSeek, Gemini, Finnhub, NYT
-  Wordle/Connections). These belong in manual smoke tests, not
-  CI. The cost of a flaky test is worse than the cost of a missed
-  regression.
-
-## How to add a test
-
-Rust unit tests live alongside the code in a `mod tests` block at the
-bottom of the file:
+Every module that has pure logic worth testing carries its tests in
+the same file, under `#[cfg(test)] mod tests`. That's the whole
+pattern — there's no `tests/` subdirectory inside `src/`, no separate
+crate for fixtures, no shared helpers (yet). When you add a new
+function worth testing, add the tests to the same file.
 
 ```rust
 // src/util/duration.rs
@@ -112,32 +65,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_seconds_minutes_hours_days_weeks() {
+    fn parses_common_units() {
         assert_eq!(parse_duration("30s"), Some(30_000));
         assert_eq!(parse_duration("5m"), Some(300_000));
         assert_eq!(parse_duration("2h"), Some(7_200_000));
-        assert_eq!(parse_duration("3d"), Some(259_200_000));
-        assert_eq!(parse_duration("1w"), Some(604_800_000));
     }
 
     #[test]
     fn rejects_unknown_units() {
         assert_eq!(parse_duration("3y"), None);
-        assert_eq!(parse_duration("3"), None);
         assert_eq!(parse_duration(""), None);
-    }
-
-    #[test]
-    fn caps_at_365_days() {
-        assert_eq!(parse_duration("365d"), Some(365 * 86_400_000));
-        assert_eq!(parse_duration("366d"), None);
-        assert_eq!(parse_duration("53w"), None);
     }
 }
 ```
 
-For an async test (any function that uses `await`), use `tokio::test`
-the way the gateway tests do:
+For async tests, use `tokio::test` the way the gateway's routing
+tests do:
 
 ```rust
 #[tokio::test]
@@ -148,47 +91,198 @@ async fn resolve_explicit_instance() {
 }
 ```
 
-Run them:
+## How integration tests work
 
-```bash
-cargo test                                              # main crate
-cargo test --manifest-path mcp-gateway/Cargo.toml       # gateway
-cargo test util::duration                               # filter by name
-cargo test -- --nocapture                               # show println! output
+The four files under `tests/` use `sqlx`'s test macro:
+
+```rust
+#[sqlx::test(migrations = "./migrations")]
+async fn buy_stock_decrements_cash_and_creates_holding(pool: PgPool) {
+    queries::get_or_create_portfolio(&pool, "test-guild", "test-user").await.unwrap();
+    let total = queries::buy_stock(&pool, "test-guild", "test-user", "AAPL", d("2"), d("100"))
+        .await
+        .unwrap();
+    assert_eq!(total, d("200"));
+    // ...
+}
 ```
 
-CI runs `cargo test` on both crates separately, so once your test
-passes locally it'll pass in CI.
+`#[sqlx::test(migrations = "./migrations")]` does three things per
+test: clones a fresh database from the `DATABASE_URL` target, applies
+every file under `./migrations/` into it, and passes the resulting
+`PgPool` into the test function. Tests run in parallel against
+independent databases, so there's no ordering coupling or teardown
+work to write.
+
+The tests link against the bot's own library crate — a minimal
+`src/lib.rs` facade that exposes `pub mod db;` and `pub mod stocks;`.
+The binary (`src/main.rs`) is unchanged; the library exists purely so
+`tests/*.rs` can call `discord_bot::db::queries::*` without reaching
+into private modules. If you need another module testable, add it to
+`src/lib.rs` — but keep the surface narrow (no Discord context, no
+Songbird, no MCP handlers).
+
+## Running tests locally
+
+The unit tests don't touch the database. The integration tests do.
+So there are two useful commands:
+
+```bash
+# Unit tests only, no Postgres needed:
+cargo test --bins
+
+# Full suite, requires a Postgres reachable at $DATABASE_URL:
+cargo test
+```
+
+The easiest way to get a throwaway Postgres for the full suite:
+
+```bash
+docker run -d --rm --name dbrs-test-pg -p 5433:5432 \
+    -e POSTGRES_USER=test \
+    -e POSTGRES_PASSWORD=test \
+    -e POSTGRES_DB=test \
+    postgres:17
+
+DATABASE_URL=postgres://test:test@localhost:5433/test cargo test
+```
+
+Stop it with `docker stop dbrs-test-pg` when done. `#[sqlx::test]`
+creates a fresh per-test database, so the container can be reused
+across `cargo test` invocations — nothing accumulates.
+
+The gateway crate runs independently:
+
+```bash
+cargo test --manifest-path mcp-gateway/Cargo.toml
+```
+
+Other useful invocations:
+
+```bash
+cargo test util::duration          # run tests matching a name
+cargo test --test db_stocks        # run one integration file
+cargo test -- --nocapture          # show println! output
+```
+
+## How CI runs tests
+
+[`ci.yml`](https://github.com/MrMcEpic/discord-bot-rs/blob/master/.github/workflows/ci.yml)'s
+`check-main` job stands up a `postgres:17` service container with a
+health check, then exports `DATABASE_URL` before running `cargo test`.
+Both unit and integration tests run in one invocation. If the
+container isn't healthy when the test step starts, the job fails
+outright — we don't fall through to running unit tests only.
+
+The `check-gateway` job runs `cargo test` inside `mcp-gateway/` with
+no services; the gateway's tests are pure and don't need a DB.
+
+## What's tested
+
+- Pure data transforms: `parse_duration` / `format_duration_ms` /
+  `format_track_duration`, `parse_duration_secs` (MCP-side), token
+  bucket arithmetic in `util::ratelimit`, DSML parsing, AI message
+  splitting across the 2000-char boundary, prompt-injection scrub in
+  `ai::sanitize`, `error::user_message` fallout.
+- Wordle game state: guess scoring (correct/present/absent), win/loss
+  detection, `is_valid_word`.
+- Connections game state: selection validation, mistake counting,
+  full-category detection.
+- Autorole: both the pure `meets_criteria` decision and the atomic
+  DB claim.
+- Stock trading SQL: buy, sell (partial and full), portfolio reset,
+  transaction log, and the concurrency-sensitive reset/sell race.
+- Moderation SQL: warnings, history queries, expiry sweeps.
+- Instance-settings SQL: round-trip reads/writes of guild settings.
+- Gateway routing: the `Router::resolve` decision tree.
+
+## What isn't tested
+
+Being honest about the gaps:
+
+- **Discord-context-dependent handlers.** Anything that needs a
+  `Context` or `CommandInteraction` from poise/Serenity. Mocking the
+  framework is more code than the handler; the pattern is to extract
+  the inner decision as a free function and test that instead.
+- **The `songbird` voice pipeline.** Requires a real voice gateway or
+  a fixture-heavy mock that doesn't exist.
+- **Live external API calls** — DeepSeek, Gemini, Finnhub, NYT.
+  These belong in manual smoke tests, not CI. The cost of flake is
+  worse than the cost of a missed regression.
+- **`mcp-gateway` `backend.rs` / `server.rs`.** The router is tested;
+  the request-parse and `tools/list` aggregation paths aren't yet.
+  Good first-PR territory.
+
+## Known quirks pinned by tests (not bugs, yet)
+
+Several tests encode present behaviour that's arguably wrong but
+hasn't been changed to avoid bundling a fix into a "just add tests"
+PR. If you're going to fix one of these, write the test-change and
+the code-change in the same PR so the intent is clear:
+
+- `parse_duration("0s")` returns `Some(0)` — a zero-length duration.
+  Consumers treat it as "no timeout," which may not be what the user
+  typing `0s` meant.
+- `parse_duration_secs` (MCP tool helper) silently accepts negative
+  values and can overflow on large inputs; the test pins the current
+  saturating behaviour.
+- `sanitize_content` strips role markers and prompt-injection
+  attempts but does **not** scrub bot tokens or other high-entropy
+  secrets that slip into AI context. The test suite documents the
+  current threat model rather than an aspirational one.
+- `format_duration_ms` doesn't clamp negative inputs — it renders
+  them with a leading minus. Fine for the display sites that guard
+  against negatives upstream, dubious as a general-purpose helper.
+- `ConnectionsGame::AlreadyGuessed` is dead-code today (no call path
+  constructs it). A test asserts it exists so nobody deletes it
+  during a cleanup before the feature that was going to produce it
+  lands.
+- `submit_guess` with fewer than four tiles selected is a no-op
+  rather than an error. Tests pin the no-op behaviour; change it
+  deliberately if needed.
+
+## Adding tests
+
+**For pure logic**, drop a `#[cfg(test)] mod tests` block at the
+bottom of the file and add `#[test]` functions. If the code under
+test is async, use `#[tokio::test]`. No ceremony.
+
+**For new SQL queries**, add a file under `tests/` named for the
+module (e.g. `tests/db_my_feature.rs`). Pattern:
+
+```rust
+use sqlx::PgPool;
+use discord_bot::db::queries;
+
+#[sqlx::test(migrations = "./migrations")]
+async fn my_query_does_the_thing(pool: PgPool) {
+    let result = queries::my_query(&pool, "guild", "user").await.unwrap();
+    assert_eq!(result, /* ... */);
+}
+```
+
+If the module you want to test isn't reachable through
+`discord_bot::…` yet, add it to `src/lib.rs`. Keep the library
+surface narrow: only modules that genuinely benefit from
+Postgres-backed integration testing belong there.
+
+For **race tests**, follow `stocks_reset_sell_race_does_not_mint_money`
+as a template — set up the scenario, spawn two `tokio::spawn` tasks,
+await both, then assert the invariant on the final state regardless
+of which task won.
 
 ## Test naming
 
-Match the existing convention in `mcp-gateway/src/routing.rs`:
-descriptive `snake_case` names that say what's expected, not what's
-being called. `resolve_unknown_guild_fails` beats `test_resolve_3`.
-Your future self reads test names when CI fails.
-
-## Mocking
-
-The project has no mocking infrastructure today. Where it'd be
-useful — Serenity HTTP, sqlx queries, reqwest calls — the right
-answer for now is usually one of:
-
-- **Refactor to extract pure logic.** Move the decision out of the
-  handler into a free function that takes data and returns data,
-  then test that.
-- **Skip mocking entirely.** Cover the unit, smoke-test the
-  integration manually.
-
-If you want to introduce a mocking framework
-([`mockall`](https://crates.io/crates/mockall),
-[`wiremock`](https://crates.io/crates/wiremock) for HTTP), open an
-issue first to discuss — it has long-term maintenance cost and the
-project hasn't picked one yet.
+`snake_case` names that say what's expected, not what's being called.
+`resolve_unknown_guild_fails` beats `test_resolve_3`.
+`buy_stock_rejects_insufficient_funds` beats `test_buy_2`. Your future
+self reads test names when CI fails.
 
 ## Manual testing
 
-For everything not covered by automation — and right now that's most
-of the bot — the manual loop is:
+Automation still doesn't cover most of the bot — anything that needs
+a live Discord connection, voice pipeline, or external API. The
+manual loop:
 
 1. Start a local instance with `CONFIG_DIR=instances/local cargo run`.
 2. Exercise the change in your test Discord server.
@@ -196,28 +290,12 @@ of the bot — the manual loop is:
    confirm there's no warning or error you didn't expect.
 
 The PR template's **Testing** section asks you to list what you
-manually verified. Be specific — "tested `!m play` and `!m skip`"
-is more useful than "tested music."
-
-## Where to look first
-
-When you want to add tests, in roughly this order of cost-benefit:
-
-1. `src/util/duration.rs`
-2. `src/ai/split.rs`
-3. `src/ai/sanitize.rs`
-4. `src/wordle/game.rs`
-5. `src/connections/game.rs`
-6. `src/autorole.rs`
-7. `mcp-gateway/src/server.rs`
-
-A PR that adds five tests to one of those files would be welcome. A
-PR that adds the first integration test (Postgres in a container)
-would be a milestone.
+manually verified. "Tested `!m play` and `!m skip` against a real
+voice channel" is more useful than "tested music."
 
 ## Next steps
 
 - [Debugging](debugging.md) — when a test fails and you don't know
   why, start there.
 - [Contributing Workflow](contributing-workflow.md) — the pre-PR
-  checklist includes `cargo test` on both crates.
+  checklist tells you which `cargo test` invocation to run when.

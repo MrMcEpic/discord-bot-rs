@@ -31,10 +31,19 @@ operations.
       reuse the same DeepSeek key across staging and production —
       separate billing and rate-limit blast radius.
 
-- [ ] **`MCP_GATEWAY_AUTH_TOKEN` is set if the gateway is reachable
-      from anything other than localhost.** Any non-loopback bind
-      requires a bearer token. The default empty string disables
-      auth.
+- [ ] **`MCP_AUTH_TOKEN` is set on every bot whose
+      `MCP_BIND_ADDR` is not loopback.** This is now enforced at
+      startup — the bot refuses to boot if the bind is
+      non-loopback and the token is empty. The bundled Compose
+      `.env.example` ships with `MCP_BIND_ADDR=0.0.0.0` (so the
+      gateway sidecar can reach it), so a Compose deploy without
+      a token will fail to start.
+      → [MCP Exposure](mcp-exposure.md)
+
+- [ ] **`MCP_GATEWAY_AUTH_TOKEN` is set on the gateway service.**
+      The gateway refuses to start at all without it — there is
+      no loopback escape hatch. Generate with `openssl rand -hex
+      32`.
       → [MCP Exposure](mcp-exposure.md)
 
 - [ ] **The Postgres password is not the default `discord_bot_pass`
@@ -126,6 +135,16 @@ operations.
       them. Stale schemas from removed instances waste space; drop
       them with `DROP SCHEMA "<name>" CASCADE;` once you are sure.
 
+- [ ] **You have read the migrations directory before upgrading.**
+      The bot now uses `sqlx::migrate!` against `migrations/`,
+      applied automatically on startup against each instance's
+      schema (tracked in a per-schema `_sqlx_migrations` table).
+      No operator action is required for ordinary releases — but
+      a release that ships a destructive or long-running
+      migration will be flagged in the CHANGELOG, and you should
+      take a backup before applying it.
+      → [Database Schema: Migrations](../architecture/database-schema.md#migrations)
+
 ## Configuration hygiene
 
 - [ ] **Each instance has its own directory under `instances/`.**
@@ -185,6 +204,13 @@ operations.
       proper monitoring agent (Healthchecks.io, Uptime Kuma,
       Datadog, etc.) hitting a wrapper script.
       → [Monitoring](monitoring.md)
+
+- [ ] **Rate limiters need no operator action.** All four
+      per-user limiters (ai / music / moderation / stocks) are
+      now wired into their respective command paths and clean up
+      stale entries automatically — there is nothing to schedule
+      or prune by hand. Previously only the AI limiter was
+      enforced; the rest were defined but unused.
 
 ## MCP-specific (if exposed)
 

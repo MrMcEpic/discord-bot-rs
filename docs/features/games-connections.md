@@ -45,8 +45,19 @@ configurable per instance.
 | `!m connections random` | `!m conn rand`, `!m conn r` | Start a random puzzle from the back catalogue. |
 | `!m connections date <YYYY-MM-DD>` | `!m conn d <date>` | Start a specific date's puzzle. |
 
-Starting a new game in a channel that already has one in progress
-**replaces** the old game. One puzzle per channel at a time.
+Starting a new game in a channel that **already has an active
+(non-expired) game** is refused — the bot replies that there's a
+game in progress and asks you to finish or wait for it to expire
+(30 minutes idle). Once the existing game is solved, lost, or
+times out, you can start a new one. The same guard applies to
+the AI `connections_start` tool path. One puzzle per channel at
+a time.
+
+The `date` subcommand validates its argument up front via
+`chrono::NaiveDate::parse`. Bad input (`!m connections date today`,
+`!m connections date 2026/04/16`) gets a "Use YYYY-MM-DD format"
+reply and no NYT call. If NYT returns a puzzle whose `print_date`
+doesn't match the requested date, the bot warns above the board.
 
 ## How to play
 
@@ -123,9 +134,17 @@ found for date".
 
 ## Common issues
 
-- **"No puzzle found for date `YYYY-MM-DD`"** — either the date is
-  before `2023-06-12` or the date is malformed. Use ISO format,
-  zero-padded.
+- **"Use YYYY-MM-DD format"** — your `date` argument didn't parse
+  as an ISO date. Examples that work: `2024-01-15`, `2023-06-12`.
+- **"No puzzle found for date `YYYY-MM-DD`"** — the date parsed
+  but is before `2023-06-12` (the first NYT Connections puzzle) or
+  NYT has no puzzle for that day.
+- **"There's already a Connections game in progress in this
+  channel"** — someone started a game and it hasn't finished or
+  timed out (30 minutes idle). Finish the game or wait it out.
+- **"NYT served a different date than requested"** warning above
+  the board — happens when NYT's rollover lags the requested date.
+  The bot still posts the puzzle.
 - **"Select exactly 4 words before submitting"** — the Submit button
   is meant to be disabled until you have four selected, but if you
   press it via tooling that ignores the disabled state, you'll get

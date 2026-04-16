@@ -50,6 +50,8 @@ Per-guild state lives in
   those three values when the loop button is pressed.
 - `paused: bool` — tracks paused state so the now-playing embed can
   show the right icon.
+- `skip_in_progress: Arc<AtomicBool>` — see
+  [Skip race](#skip-race-suppressing-the-spurious-trackend) below.
 
 The struct is plain data plus a handful of methods (`enqueue`,
 `enqueue_many`, `advance`, `skip_current`, `stop_all`, `remove`,
@@ -140,12 +142,62 @@ on every track via `track_handle.add_event(Event::Track(TrackEvent::End), handle
 When the event fires, the handler:
 
 1. Looks up the `GuildPlayer` for this guild.
-2. Calls `advance()` to figure out what plays next.
-3. Deletes the old "Now Playing" message (so channels don't pile up old
-   embeds with stale buttons).
-4. If there's a next track, starts it with `play_next_from_context` and
-   sends a new Now Playing embed.
+2. Checks the per-guild `skip_in_progress` flag and bails out if set
+   (see [Skip race](#skip-race-suppressing-the-spurious-trackend)).
+3. Calls `advance()` to figure out what plays next.
+4. If there's a next track, starts it with `play_next_from_context`
+   and replaces the prior "Now Playing" message via
+   `replace_now_playing_message` (delete old + send new under one
+   mutex hold).
 5. If there isn't, starts the idle timer.
+
+### Skip race: suppressing the spurious TrackEnd
+
+`handler.stop()` causes songbird to fire `TrackEvent::End` for the
+track being stopped. The end handler attached to that track would
+then see "track ended naturally" and call `advance()` — which on a
+`!m skip` would skip *past* the song the caller is about to play,
+because the caller has already advanced the queue itself before
+calling `play_track`. Songbird 0.6 has no way to detach an event
+listener from a `TrackHandle`, so the bot can't simply remove the
+handler before the stop.
+
+The fix is a per-guild `skip_in_progress: Arc<AtomicBool>` on
+`GuildPlayer`. Right before any code path that calls
+`handler.stop()` on an existing track and immediately starts a new
+one, the caller sets the flag to `true`. When the stale `TrackEnd`
+event arrives, `TrackEndHandler::act` swaps the flag back to `false`
+with `swap(false, Ordering::SeqCst)` and, if it was `true`, returns
+early without advancing. The next *natural* `TrackEnd` (after the
+new track finishes) sees the flag as `false` and proceeds normally.
+
+Because the flag is an `AtomicBool`, no lock is needed, and the
+swap-on-read pattern guarantees exactly one of the two events
+(skip-induced End vs. natural End) is consumed by the bail-out path.
+
+### NP message lifecycle
+
+Three different code paths can replace the "Now Playing" embed:
+the prefix command, the AI tool's "play song" path, and the
+`TrackEndHandler` advancing to the next track. Previously each path
+sent its new NP message independently and only the track-end handler
+remembered to delete the prior one, leaving orphan embeds with stale
+buttons whenever a `!m play` or AI tool call replaced an existing
+track.
+
+All three paths now go through a single
+`replace_now_playing_message` helper in
+[`src/music/voice.rs`](https://github.com/MrMcEpic/discord-bot-rs/blob/master/src/music/voice.rs).
+The helper takes the per-guild `Arc<Mutex<Option<MessageId>>>` slot,
+locks it for the whole sequence, deletes the prior message ID if
+one is stored, sends the new embed (with optional component rows),
+and stores the new message ID into the slot before releasing the
+mutex. Holding the lock across delete-then-send is intentional: it
+prevents two concurrent skip operations in the same guild from
+racing each other into a partially-deleted, partially-orphaned
+state. Failures to delete the prior message (the user could have
+deleted it manually) are swallowed at debug level — the new message
+still gets sent and recorded.
 
 The idle timer is the mechanism that gets the bot out of the channel
 politely when the queue runs dry. `start_idle_timer` spawns a task that
