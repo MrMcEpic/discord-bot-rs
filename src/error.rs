@@ -76,3 +76,64 @@ impl From<String> for BotError {
 		Self::Other(s)
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn other_user_message_is_passthrough() {
+		let e = BotError::Other("Not in a guild".to_string());
+		assert_eq!(e.user_message(), "Not in a guild");
+	}
+
+	#[test]
+	fn sqlx_user_message_hides_internals() {
+		// Construct an `sqlx::Error` via the `Protocol` variant — no DB needed.
+		let e = BotError::Sqlx(sqlx::Error::Protocol("FOO BAR baz_table".into()));
+		let msg = e.user_message();
+		// Must NOT leak the internal protocol detail.
+		assert!(!msg.contains("FOO BAR"));
+		assert!(!msg.contains("baz_table"));
+		assert!(msg.to_lowercase().contains("database"));
+	}
+
+	#[test]
+	fn serdejson_user_message_hides_internals() {
+		// Force a JSON parse error so we don't have to fabricate a `serde_json::Error`.
+		let inner = serde_json::from_str::<serde_json::Value>("not json").unwrap_err();
+		let e = BotError::SerdeJson(inner);
+		let msg = e.user_message();
+		assert!(msg.to_lowercase().contains("parse"));
+		assert!(!msg.contains("not json"));
+	}
+
+	#[test]
+	fn from_string_yields_other_variant() {
+		let e: BotError = "validation failed".to_string().into();
+		match e {
+			BotError::Other(s) => assert_eq!(s, "validation failed"),
+			_ => panic!("expected Other variant"),
+		}
+	}
+
+	#[test]
+	fn display_includes_inner_for_other() {
+		let e = BotError::Other("boom".to_string());
+		assert_eq!(format!("{e}"), "boom");
+	}
+
+	#[test]
+	fn user_message_strings_have_no_trailing_whitespace() {
+		// Sanity: every fixed user-facing message should be tidy.
+		let cases = [
+			BotError::Sqlx(sqlx::Error::Protocol("x".into())),
+			BotError::SerdeJson(serde_json::from_str::<serde_json::Value>("x").unwrap_err()),
+		];
+		for c in &cases {
+			let m = c.user_message();
+			assert_eq!(m.trim(), m, "user_message has stray whitespace: {m:?}");
+			assert!(!m.is_empty());
+		}
+	}
+}

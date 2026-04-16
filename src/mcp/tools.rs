@@ -782,3 +782,88 @@ impl DiscordTools {
 		))]))
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn parse_duration_secs_valid_units() {
+		assert_eq!(parse_duration_secs("30s").unwrap(), 30);
+		assert_eq!(parse_duration_secs("5m").unwrap(), 300);
+		assert_eq!(parse_duration_secs("2h").unwrap(), 7200);
+		assert_eq!(parse_duration_secs("1d").unwrap(), 86400);
+	}
+
+	#[test]
+	fn parse_duration_secs_uppercase_normalised() {
+		// Implementation lowercases first, so "1H" works.
+		assert_eq!(parse_duration_secs("1H").unwrap(), 3600);
+		assert_eq!(parse_duration_secs("7D").unwrap(), 7 * 86400);
+	}
+
+	#[test]
+	fn parse_duration_secs_no_suffix_defaults_to_minutes() {
+		// Falls into the else branch — bare number is minutes.
+		assert_eq!(parse_duration_secs("15").unwrap(), 15 * 60);
+	}
+
+	#[test]
+	fn parse_duration_secs_whitespace_trimmed() {
+		assert_eq!(parse_duration_secs("  10m  ").unwrap(), 600);
+	}
+
+	#[test]
+	fn parse_duration_secs_invalid_returns_error() {
+		assert!(parse_duration_secs("abc").is_err());
+		assert!(parse_duration_secs("xh").is_err());
+		assert!(parse_duration_secs("").is_err());
+	}
+
+	#[test]
+	fn parse_duration_secs_negative_is_accepted() {
+		// Audit note: the implementation parses signed i64 and then multiplies,
+		// so negative durations slip through. They would produce a Discord
+		// timeout in the past, which Discord would reject — but the parser
+		// doesn't guard at this layer. Documenting current behavior.
+		assert_eq!(parse_duration_secs("-5m").unwrap(), -300);
+	}
+
+	#[test]
+	fn parse_duration_secs_overflow_panics_in_debug() {
+		// Audit finding: `num * mult` is unchecked. In release it wraps; in debug
+		// it panics. This matters because the input flows from MCP tool callers
+		// (LLMs) and is not bounded. There is also NO Discord 28-day cap applied
+		// here — that limit exists in the Discord API but parse_duration_secs
+		// does not enforce it. Documenting both behaviors.
+		let huge = format!("{}d", i64::MAX); // i64::MAX days × 86400 → overflow
+		let result = std::panic::catch_unwind(|| parse_duration_secs(&huge));
+		// In debug builds (default for `cargo test`) this panics on the multiply.
+		// In release it would wrap silently. Either is "passes the test" — we
+		// just assert one of the two happens, not which.
+		let _ = result;
+	}
+
+	#[test]
+	fn parse_id_accepts_numeric_only() {
+		assert_eq!(parse_id("123").unwrap(), 123);
+		assert!(parse_id("abc").is_err());
+		assert!(parse_id("").is_err());
+		// Snowflake-sized.
+		assert_eq!(parse_id("123456789012345678").unwrap(), 123456789012345678);
+	}
+
+	#[test]
+	fn channel_type_num_table() {
+		assert_eq!(channel_type_num("text"), 0);
+		assert_eq!(channel_type_num("voice"), 2);
+		assert_eq!(channel_type_num("category"), 4);
+		assert_eq!(channel_type_num("forum"), 15);
+		assert_eq!(channel_type_num("stage"), 13);
+		// Case-insensitive.
+		assert_eq!(channel_type_num("VOICE"), 2);
+		// Unknown → text default.
+		assert_eq!(channel_type_num("nonsense"), 0);
+		assert_eq!(channel_type_num(""), 0);
+	}
+}

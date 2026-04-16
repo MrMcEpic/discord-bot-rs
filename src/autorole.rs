@@ -92,3 +92,93 @@ pub async fn try_promote(
 
 	Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use chrono::Duration;
+
+	fn activity(message_count: i32, age_days: i64) -> MemberActivity {
+		MemberActivity {
+			guild_id: "123".into(),
+			user_id: "456".into(),
+			message_count,
+			first_seen: Utc::now() - Duration::days(age_days),
+			promoted: false,
+		}
+	}
+
+	fn config(min_age: &str, min_messages: i64, require_all: bool) -> AutoRoleConfig {
+		AutoRoleConfig {
+			from_role: "1".into(),
+			to_role: "2".into(),
+			min_age: min_age.into(),
+			min_messages,
+			require_all,
+		}
+	}
+
+	#[test]
+	fn require_all_with_both_conditions_met_returns_true() {
+		let a = activity(50, 5);
+		let c = config("3d", 20, true);
+		assert!(meets_criteria(&a, &c));
+	}
+
+	#[test]
+	fn require_all_with_only_age_met_returns_false() {
+		let a = activity(5, 5);
+		let c = config("3d", 20, true);
+		assert!(!meets_criteria(&a, &c));
+	}
+
+	#[test]
+	fn require_all_with_only_messages_met_returns_false() {
+		let a = activity(50, 1);
+		let c = config("3d", 20, true);
+		assert!(!meets_criteria(&a, &c));
+	}
+
+	#[test]
+	fn any_with_only_age_met_returns_true() {
+		let a = activity(5, 5);
+		let c = config("3d", 20, false);
+		assert!(meets_criteria(&a, &c));
+	}
+
+	#[test]
+	fn any_with_only_messages_met_returns_true() {
+		let a = activity(50, 1);
+		let c = config("3d", 20, false);
+		assert!(meets_criteria(&a, &c));
+	}
+
+	#[test]
+	fn neither_condition_met_returns_false() {
+		let a = activity(5, 1);
+		let c_all = config("3d", 20, true);
+		let c_any = config("3d", 20, false);
+		assert!(!meets_criteria(&a, &c_all));
+		assert!(!meets_criteria(&a, &c_any));
+	}
+
+	#[test]
+	fn invalid_min_age_falls_back_to_3d_default() {
+		// `parse_duration("garbage")` is None → falls back to 3 days. So a
+		// 4-day-old member with enough messages should pass.
+		let a = activity(50, 4);
+		let c = config("garbage", 20, true);
+		assert!(meets_criteria(&a, &c));
+
+		// A 2-day-old member with enough messages should NOT pass under default.
+		let a2 = activity(50, 2);
+		assert!(!meets_criteria(&a2, &c));
+	}
+
+	#[test]
+	fn boundary_exact_message_count_matches() {
+		let a = activity(20, 5);
+		let c = config("3d", 20, true); // >= 20 messages, >= 3 days
+		assert!(meets_criteria(&a, &c));
+	}
+}

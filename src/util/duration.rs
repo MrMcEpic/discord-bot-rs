@@ -179,6 +179,22 @@ mod tests {
 	// --- format_track_duration ---
 
 	#[test]
+	fn parse_duration_leading_zeros_accepted() {
+		// The regex `\d+` matches "01", "007" etc. Document the current behavior
+		// — leading zeros are accepted and parsed as their numeric value.
+		assert_eq!(parse_duration("01s"), Some(1_000));
+		assert_eq!(parse_duration("007h"), Some(7 * 3_600_000));
+		assert_eq!(parse_duration("00d"), Some(0));
+	}
+
+	#[test]
+	fn parse_duration_plus_sign_rejected() {
+		// `\d+` does NOT match a leading `+`, so signed-positive notation is
+		// rejected. Worth pinning so a future regex tweak doesn't change this.
+		assert_eq!(parse_duration("+1h"), None);
+	}
+
+	#[test]
 	fn format_track_duration_mmss_and_hmmss() {
 		assert_eq!(format_track_duration(0), "0:00");
 		assert_eq!(format_track_duration(5), "0:05");
