@@ -122,12 +122,12 @@ phases per tick:
 
 4. **Add missing roles.** For each user who should have a tier
    but doesn't, call `add_member_role` with the audit-log
-   reason `Donator sync: <tier> tier`. Restricted users are
+   reason `` `Donator sync: {tier} tier` ``. Restricted users are
    skipped.
 
 5. **Remove stale roles, then handle tier transitions.** Anyone
    who has a tier role but isn't on the MC list loses the role
-   ("Donator sync: <tier> expired"). Anyone whose tier moved
+   ("Donator sync: {tier} expired"). Anyone whose tier moved
    gets the old role removed ("upgraded to premium" or
    "downgraded to supporter").
 

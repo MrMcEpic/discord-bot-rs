@@ -156,8 +156,7 @@ When a staff member clicks **Ban**:
    the player's UUID and a reason identifying the staff member.
 3. **Failure surfacing.** If the MC ban returns non-2xx or
    transport-fails, the bot reposts the failure into the staff
-   channel: `⚠️ MC ban failed for UUID <uuid>: <status>
-   <body>`.
+   channel: `⚠️ MC ban failed for UUID {uuid}: {status} {body}`.
 
 ## Dismiss action
 

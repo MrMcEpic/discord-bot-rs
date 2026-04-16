@@ -10,13 +10,12 @@ build-dir = "book"
 
 [output.html]
 git-repository-url = "https://github.com/MrMcEpic/discord-bot-rs"
-git-repository-icon = "fa-github"
 edit-url-template = "https://github.com/MrMcEpic/discord-bot-rs/edit/master/{path}"
 site-url = "/discord-bot-rs/book/"
 default-theme = "ayu"
 preferred-dark-theme = "ayu"
 additional-css = ["theme/custom.css"]
-copy-fonts = true
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
 
 [output.html.fold]
 enable = true
@@ -35,3 +34,8 @@ heading-split-level = 3
 [output.html.playground]
 editable = false
 runnable = false
+
+[preprocessor]
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
