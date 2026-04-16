@@ -358,7 +358,7 @@ pub async fn leaderboard(ctx: Context<'_>) -> Result<(), BotError> {
 
 	// Sort by total value descending. Decimal implements `Ord`, so no
 	// `partial_cmp` NaN-dance like the old f64 version needed.
-	entries.sort_by(|a, b| b.1.cmp(&a.1));
+	entries.sort_by_key(|b| std::cmp::Reverse(b.1));
 
 	let leaderboard_entries: Vec<LeaderboardEntry> = entries
 		.iter()

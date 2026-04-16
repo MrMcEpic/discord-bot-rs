@@ -1552,7 +1552,7 @@ async fn execute_stock_tool(
 				entries.push((p.user_id.clone(), total_value));
 			}
 
-			entries.sort_by(|a, b| b.1.cmp(&a.1));
+			entries.sort_by_key(|b| std::cmp::Reverse(b.1));
 
 			let leaderboard_entries: Vec<stock_embeds::LeaderboardEntry> = entries
 				.iter()
