@@ -436,19 +436,20 @@ async fn handle_component_interaction(
 						)
 						.await;
 
-					// Send a new "Now Playing" embed with controls
+					// Replace the prior "Now Playing" embed with controls.
 					let embed = now_playing_embed(&next_track);
 					let controls = music_controls(false, loop_mode);
-					if let Ok(msg) = interaction
-						.channel_id
-						.send_message(
+					if let Some(ref pctx) = pctx {
+						if let Err(e) = voice::replace_now_playing_message(
 							&ctx.http,
-							CreateMessage::new().embed(embed).components(controls),
+							interaction.channel_id,
+							&pctx.now_playing_msg,
+							embed,
+							Some(controls),
 						)
 						.await
-					{
-						if let Some(ref pctx) = pctx {
-							*pctx.now_playing_msg.lock().await = Some(msg.id);
+						{
+							tracing::warn!("music_skip button: failed to send NP message: {e}");
 						}
 					}
 				} else {

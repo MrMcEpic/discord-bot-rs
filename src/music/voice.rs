@@ -3,7 +3,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use dashmap::DashMap;
-use serenity::all::{ChannelId, Context, CreateMessage, GuildId, Http, MessageId};
+use serenity::all::{
+	ChannelId, Context, CreateActionRow, CreateEmbed, CreateMessage, GuildId, Http, MessageId,
+};
 use songbird::driver::Bitrate;
 use songbird::events::{Event, EventContext, EventHandler, TrackEvent};
 use songbird::input::YoutubeDl;
@@ -68,6 +70,45 @@ pub async fn leave_channel(ctx: &Context, guild_id: GuildId) {
 	if let Some(manager) = songbird::get(ctx).await {
 		let _ = manager.leave(guild_id).await;
 	}
+}
+
+/// Replace the per-guild "Now Playing" message: delete the prior one (if any),
+/// send a new one with the given embed and optional components, and store the
+/// new message ID into the per-guild slot.
+///
+/// Holds the `now_playing_msg` lock across the whole delete+send+store
+/// sequence so two concurrent skip operations cannot interleave their
+/// inserts/deletes (per-guild serialization is the desired semantics).
+///
+/// Errors deleting the prior message are swallowed (it may have been deleted
+/// by a moderator or a user) and only logged at debug level.
+pub async fn replace_now_playing_message(
+	ctx_http: &Http,
+	channel_id: ChannelId,
+	now_playing_slot: &Mutex<Option<MessageId>>,
+	embed: CreateEmbed,
+	components: Option<Vec<CreateActionRow>>,
+) -> Result<MessageId, serenity::Error> {
+	let mut slot = now_playing_slot.lock().await;
+
+	// Delete the prior NP message, if any.
+	if let Some(prior) = slot.take() {
+		if let Err(e) = channel_id.delete_message(ctx_http, prior).await {
+			tracing::debug!(
+				"replace_now_playing_message: failed to delete prior NP message {prior} in channel {channel_id}: {e}"
+			);
+		}
+	}
+
+	// Build and send the new NP message.
+	let mut msg = CreateMessage::new().embed(embed);
+	if let Some(rows) = components {
+		msg = msg.components(rows);
+	}
+	let sent = channel_id.send_message(ctx_http, msg).await?;
+	let new_id = sent.id;
+	*slot = Some(new_id);
+	Ok(new_id)
 }
 
 /// Create a YoutubeDl input source with our custom yt-dlp args (cookies, etc).
@@ -246,36 +287,28 @@ impl EventHandler for TrackEndHandler {
 					track.title
 				);
 
-				// Delete the old "Now Playing" message
-				let old_msg = self.pctx.now_playing_msg.lock().await.take();
-				if let Some(msg_id) = old_msg {
-					let _ = self
-						.pctx
-						.channel_id
-						.delete_message(&self.pctx.serenity_http, msg_id)
-						.await;
-				}
-
 				match play_next_from_context(&self.pctx, &track.url).await {
 					Ok(handle) => {
 						self.pctx.track_handles.insert(guild_id, handle);
 
-						// Send new "Now Playing" embed with controls
+						// Replace the prior "Now Playing" embed with controls.
 						let p = player_arc.lock().await;
 						let embed = now_playing_embed(&track);
 						let controls = music_controls(false, p.loop_mode);
 						drop(p);
 
-						if let Ok(msg) = self
-							.pctx
-							.channel_id
-							.send_message(
-								&self.pctx.serenity_http,
-								CreateMessage::new().embed(embed).components(controls),
-							)
-							.await
+						if let Err(e) = replace_now_playing_message(
+							&self.pctx.serenity_http,
+							self.pctx.channel_id,
+							&self.pctx.now_playing_msg,
+							embed,
+							Some(controls),
+						)
+						.await
 						{
-							*self.pctx.now_playing_msg.lock().await = Some(msg.id);
+							tracing::warn!(
+								"TrackEndHandler: failed to send NP message in guild {guild_id}: {e}"
+							);
 						}
 					}
 					Err(e) => {

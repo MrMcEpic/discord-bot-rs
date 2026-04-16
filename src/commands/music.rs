@@ -356,19 +356,20 @@ pub async fn skip(ctx: Context<'_>) -> Result<(), BotError> {
 				Err(e) => tracing::error!("Playback error on skip: {e}"),
 			}
 			ctx.say(format!("Skipped **{title}**.")).await?;
-			// Send new "Now Playing" embed with controls
+			// Replace the prior "Now Playing" embed with controls.
 			let embed = now_playing_embed(&next_track);
 			let controls = music_controls(false, loop_mode);
-			let reply = ctx
-				.send(
-					poise::CreateReply::default()
-						.embed(embed)
-						.components(controls),
+			if let Some(ref pctx) = pctx {
+				if let Err(e) = voice::replace_now_playing_message(
+					&ctx.serenity_context().http,
+					ctx.channel_id(),
+					&pctx.now_playing_msg,
+					embed,
+					Some(controls),
 				)
-				.await?;
-			if let Ok(msg) = reply.message().await {
-				if let Some(ref pctx) = pctx {
-					*pctx.now_playing_msg.lock().await = Some(msg.id);
+				.await
+				{
+					tracing::warn!("skip: failed to send NP message: {e}");
 				}
 			}
 		} else {
