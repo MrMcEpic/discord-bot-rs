@@ -23,6 +23,16 @@ pub fn meets_criteria(activity: &MemberActivity, config: &AutoRoleConfig) -> boo
 }
 
 /// Promote a member: add to_role, remove from_role, mark in DB.
+///
+/// Race-safe: the DB claim runs FIRST and is atomic
+/// (`UPDATE ... WHERE promoted = FALSE RETURNING user_id`). If this caller
+/// loses the race (message handler vs. 60s background scanner firing within
+/// ~100ms of each other), the claim returns `false` and we early-return
+/// without touching Discord — no duplicate API calls, no duplicate log lines.
+///
+/// If a Discord call fails AFTER a successful claim, we log it but do NOT
+/// unclaim. The user's roles may end up slightly inconsistent, but the bot
+/// won't loop forever trying to re-promote them.
 pub async fn try_promote(
 	http: &Http,
 	pool: &PgPool,
@@ -38,6 +48,26 @@ pub async fn try_promote(
 		.to_role
 		.parse::<u64>()
 		.map_err(|_| "Invalid to_role ID".to_string())?;
+
+	// Config sanity: from_role == to_role is a no-op promotion that would
+	// remove the role we just added. Skip and warn — it's a config error.
+	if from_role == to_role {
+		tracing::warn!(
+			"Auto-role config error: from_role == to_role ({}) for guild {} — skipping promotion",
+			from_role,
+			guild_id
+		);
+		return Ok(());
+	}
+
+	// Atomically claim the promotion. If we lose the race, another caller is
+	// already handling this user — bail out without touching Discord.
+	let claimed = queries::try_claim_promotion(pool, &guild_id.to_string(), &user_id.to_string())
+		.await
+		.map_err(|e| format!("Failed to claim promotion: {e}"))?;
+	if !claimed {
+		return Ok(());
+	}
 
 	// Add the new role first, then remove the old one
 	http.add_member_role(
@@ -57,10 +87,6 @@ pub async fn try_promote(
 	)
 	.await
 	.map_err(|e| format!("Failed to remove role: {e}"))?;
-
-	queries::mark_promoted(pool, &guild_id.to_string(), &user_id.to_string())
-		.await
-		.map_err(|e| format!("Failed to mark promoted: {e}"))?;
 
 	tracing::info!("Auto-promoted user {} in guild {}", user_id, guild_id);
 

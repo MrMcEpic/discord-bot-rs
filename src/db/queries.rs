@@ -502,15 +502,23 @@ pub async fn get_unpromoted_members(
 	.await
 }
 
-pub async fn mark_promoted(
+/// Atomically claim a promotion for a member. Returns `true` if this caller
+/// won the race and should perform the Discord role changes; `false` if the
+/// member was already promoted (another caller — message handler or background
+/// scanner — beat us to it).
+pub async fn try_claim_promotion(
 	pool: &PgPool,
 	guild_id: &str,
 	user_id: &str,
-) -> Result<(), sqlx::Error> {
-	sqlx::query("UPDATE member_activity SET promoted = TRUE WHERE guild_id = $1 AND user_id = $2")
-		.bind(guild_id)
-		.bind(user_id)
-		.execute(pool)
-		.await?;
-	Ok(())
+) -> Result<bool, sqlx::Error> {
+	let row: Option<(String,)> = sqlx::query_as(
+		"UPDATE member_activity SET promoted = TRUE \
+         WHERE guild_id = $1 AND user_id = $2 AND promoted = FALSE \
+         RETURNING user_id",
+	)
+	.bind(guild_id)
+	.bind(user_id)
+	.fetch_optional(pool)
+	.await?;
+	Ok(row.is_some())
 }
