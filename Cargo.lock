@@ -943,7 +943,7 @@ dependencies = [
 
 [[package]]
 name = "discord-bot"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -960,6 +960,7 @@ dependencies = [
  "rmcp",
  "rust_decimal",
  "schemars",
+ "secrecy",
  "serde",
  "serde_json",
  "serenity",

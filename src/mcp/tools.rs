@@ -3,6 +3,9 @@ use rmcp::{
 	handler::server::router::tool::ToolRouter, handler::server::tool::ToolCallContext, model::*,
 	service::RequestContext, tool, tool_router, ErrorData as McpError, RoleServer, ServerHandler,
 };
+// `ExposeSecret` provides `.expose_secret() -> &S` on `secrecy::Secret`, used for
+// reading webhook tokens out of `serenity::all::Webhook::token`.
+use secrecy::ExposeSecret;
 // Disambiguate: both `rmcp::model::*` and `serenity::all::*` export a `Content` symbol.
 // We want the MCP one (a type alias for `Annotated<RawContent>`) for tool results.
 use rmcp::model::Content;
@@ -221,6 +224,78 @@ pub struct GetMessagesParams {
 	pub before: Option<String>,
 }
 
+// --- DM (Direct Message) param structs ---
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DmSendParams {
+	/// Target user snowflake. The bot opens (or reuses) a DM channel with them.
+	pub user_id: String,
+	pub content: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DmReadParams {
+	/// Target user snowflake.
+	pub user_id: String,
+	/// Number of messages to fetch, newest first (1-100, default 50)
+	#[serde(default)]
+	pub limit: Option<u8>,
+	/// Fetch messages older than this message ID (for pagination)
+	#[serde(default)]
+	pub before: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DmEditParams {
+	/// Target user snowflake (the DM partner; same as in the original send call)
+	pub user_id: String,
+	pub message_id: String,
+	pub content: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DmDeleteParams {
+	pub user_id: String,
+	pub message_id: String,
+}
+
+// --- Webhook param structs ---
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct WebhookListParams {
+	/// Guild/server ID (optional, defaults to configured guild; used to verify channel)
+	pub guild_id: Option<String>,
+	pub channel_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct WebhookCreateParams {
+	/// Guild/server ID (optional, defaults to configured guild; used to verify channel)
+	pub guild_id: Option<String>,
+	pub channel_id: String,
+	/// Webhook display name (1-80 chars). Discord rejects names containing "discord" (case-insensitive).
+	pub name: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct WebhookDeleteParams {
+	pub webhook_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct WebhookSendParams {
+	pub webhook_id: String,
+	/// Webhook token. Returned alongside `webhook_id` from `list_webhooks` and `create_webhook`.
+	pub token: String,
+	pub content: String,
+	/// Override the webhook's default username for this message
+	#[serde(default)]
+	pub username: Option<String>,
+	/// Override the webhook's default avatar for this message (URL)
+	#[serde(default)]
+	pub avatar_url: Option<String>,
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReactionParams {
 	/// Guild/server ID (optional, defaults to configured guild)
@@ -423,6 +498,15 @@ impl DiscordTools {
 			));
 		}
 		Ok(())
+	}
+
+	/// Open (or reuse) the bot's DM channel with a user and return the channel ID.
+	/// Discord's `create_private_channel` is idempotent — a second call for the same
+	/// user returns the existing DM channel without creating a duplicate.
+	async fn resolve_dm_channel(&self, user_id: UserId) -> Result<ChannelId, McpError> {
+		let body = serde_json::json!({ "recipient_id": user_id.to_string() });
+		let pc = discord_call!(self.http.create_private_channel(&body));
+		Ok(pc.id)
 	}
 }
 
@@ -1220,6 +1304,213 @@ impl DiscordTools {
 			lines.len(),
 			lines.join("\n")
 		))]))
+	}
+
+	// ===== DIRECT MESSAGES =====
+	//
+	// All four DM tools resolve a DM channel between the bot and the target
+	// user via `resolve_dm_channel`, then operate on that channel like any
+	// other text channel. There's no `verify_channel_in_guild` here because
+	// DM channels aren't in any guild — they're authorised by the bot
+	// having a `Direct Messages` intent and the user not having blocked the
+	// bot. Discord's `create_private_channel` is idempotent, so repeat
+	// calls don't proliferate channels.
+
+	#[tool(
+		description = "Send a direct message to a user. Opens (or reuses) the DM channel automatically. PRIVILEGED — recommend manual approval."
+	)]
+	async fn send_private_message(
+		&self,
+		params: Parameters<DmSendParams>,
+	) -> Result<CallToolResult, McpError> {
+		let p = params.0;
+		let user_id = UserId::new(parse_id(&p.user_id)?);
+		let channel_id = self.resolve_dm_channel(user_id).await?;
+		let map = serde_json::json!({ "content": p.content });
+		discord_call!(self.http.send_message(channel_id, vec![], &map));
+		Ok(CallToolResult::success(vec![Content::text("Message sent")]))
+	}
+
+	#[tool(
+		description = "Read recent direct messages between the bot and a user, newest first. Same shape as get_recent_messages but scoped to a DM channel."
+	)]
+	async fn read_private_messages(
+		&self,
+		params: Parameters<DmReadParams>,
+	) -> Result<CallToolResult, McpError> {
+		let p = params.0;
+		let user_id = UserId::new(parse_id(&p.user_id)?);
+		let channel_id = self.resolve_dm_channel(user_id).await?;
+		let limit = p.limit.unwrap_or(50).clamp(1, 100);
+		let mut builder = GetMessages::new().limit(limit);
+		if let Some(before) = p.before.as_deref().filter(|s| !s.is_empty()) {
+			builder = builder.before(MessageId::new(parse_id(before)?));
+		}
+		let messages = discord_call!(channel_id.messages(&*self.http, builder));
+		if messages.is_empty() {
+			return Ok(CallToolResult::success(vec![Content::text(
+				"No messages found.",
+			)]));
+		}
+		let mut lines = Vec::with_capacity(messages.len());
+		for m in &messages {
+			let attach = if m.attachments.is_empty() {
+				String::new()
+			} else {
+				format!(" [+{} attachment(s)]", m.attachments.len())
+			};
+			let embeds = if m.embeds.is_empty() {
+				String::new()
+			} else {
+				format!(" [+{} embed(s)]", m.embeds.len())
+			};
+			lines.push(format!(
+				"[{}] {} ({}) [msg_id={}]: {}{}{}",
+				m.timestamp, m.author.name, m.author.id, m.id, m.content, attach, embeds,
+			));
+		}
+		Ok(CallToolResult::success(vec![Content::text(
+			lines.join("\n"),
+		)]))
+	}
+
+	#[tool(
+		description = "Edit a previously-sent direct message (only messages the bot itself sent are editable)."
+	)]
+	async fn edit_private_message(
+		&self,
+		params: Parameters<DmEditParams>,
+	) -> Result<CallToolResult, McpError> {
+		let p = params.0;
+		let user_id = UserId::new(parse_id(&p.user_id)?);
+		let channel_id = self.resolve_dm_channel(user_id).await?;
+		let message_id = MessageId::new(parse_id(&p.message_id)?);
+		let map = serde_json::json!({ "content": p.content });
+		discord_call!(self.http.edit_message(channel_id, message_id, &map, vec![]));
+		Ok(CallToolResult::success(vec![Content::text(
+			"Message edited",
+		)]))
+	}
+
+	#[tool(description = "Delete a direct message (the bot can only delete its own DMs).")]
+	async fn delete_private_message(
+		&self,
+		params: Parameters<DmDeleteParams>,
+	) -> Result<CallToolResult, McpError> {
+		let p = params.0;
+		let user_id = UserId::new(parse_id(&p.user_id)?);
+		let channel_id = self.resolve_dm_channel(user_id).await?;
+		let message_id = MessageId::new(parse_id(&p.message_id)?);
+		discord_call!(self.http.delete_message(channel_id, message_id, None));
+		Ok(CallToolResult::success(vec![Content::text(
+			"Message deleted",
+		)]))
+	}
+
+	// ===== WEBHOOKS =====
+
+	#[tool(
+		description = "List webhooks attached to a channel. Each entry includes id, name, and (when the bot has Manage Webhooks) the token, which `send_webhook_message` requires."
+	)]
+	async fn list_webhooks(
+		&self,
+		params: Parameters<WebhookListParams>,
+	) -> Result<CallToolResult, McpError> {
+		let p = params.0;
+		let gid = self.resolve_guild(p.guild_id.as_deref())?;
+		let channel_id = ChannelId::new(parse_id(&p.channel_id)?);
+		self.verify_channel_in_guild(channel_id, gid).await?;
+		let webhooks = discord_call!(self.http.get_channel_webhooks(channel_id));
+		if webhooks.is_empty() {
+			return Ok(CallToolResult::success(vec![Content::text(
+				"No webhooks in this channel.",
+			)]));
+		}
+		let lines: Vec<String> = webhooks
+			.iter()
+			.map(|w| {
+				let name = w.name.as_deref().unwrap_or("(unnamed)");
+				// Webhook tokens are wrapped in `secrecy::Secret` so they don't
+				// leak via Debug/Display. expose_secret() unwraps the inner String.
+				let token = w
+					.token
+					.as_ref()
+					.map(|t| t.expose_secret().as_str())
+					.unwrap_or("(token not visible)");
+				format!("{} (id={}) — token={}", name, w.id, token)
+			})
+			.collect();
+		Ok(CallToolResult::success(vec![Content::text(format!(
+			"{} webhook(s):\n{}",
+			lines.len(),
+			lines.join("\n")
+		))]))
+	}
+
+	#[tool(
+		description = "Create a new webhook on a channel. Returns the webhook's id and token; capture both — the token is required for send_webhook_message."
+	)]
+	async fn create_webhook(
+		&self,
+		params: Parameters<WebhookCreateParams>,
+	) -> Result<CallToolResult, McpError> {
+		let p = params.0;
+		let gid = self.resolve_guild(p.guild_id.as_deref())?;
+		let channel_id = ChannelId::new(parse_id(&p.channel_id)?);
+		self.verify_channel_in_guild(channel_id, gid).await?;
+		let map = serde_json::json!({ "name": p.name });
+		let webhook = discord_call!(self.http.create_webhook(channel_id, &map, None));
+		let token = webhook
+			.token
+			.as_ref()
+			.map(|t| t.expose_secret().as_str())
+			.unwrap_or("(no token returned)");
+		Ok(CallToolResult::success(vec![Content::text(format!(
+			"Webhook created: id={} token={}",
+			webhook.id, token
+		))]))
+	}
+
+	#[tool(description = "Delete a webhook by ID.")]
+	async fn delete_webhook(
+		&self,
+		params: Parameters<WebhookDeleteParams>,
+	) -> Result<CallToolResult, McpError> {
+		let webhook_id = WebhookId::new(parse_id(&params.0.webhook_id)?);
+		discord_call!(self.http.delete_webhook(webhook_id, None));
+		Ok(CallToolResult::success(vec![Content::text(
+			"Webhook deleted",
+		)]))
+	}
+
+	#[tool(
+		description = "Send a message through a webhook. Optional username/avatar_url override the webhook's defaults for this message only — the standard pattern for relay/persona bots. PRIVILEGED — webhooks bypass the bot's own role permissions."
+	)]
+	async fn send_webhook_message(
+		&self,
+		params: Parameters<WebhookSendParams>,
+	) -> Result<CallToolResult, McpError> {
+		let p = params.0;
+		let webhook_id = WebhookId::new(parse_id(&p.webhook_id)?);
+		let mut payload = serde_json::Map::new();
+		payload.insert("content".to_string(), serde_json::Value::String(p.content));
+		if let Some(name) = p.username.filter(|s| !s.is_empty()) {
+			payload.insert("username".to_string(), serde_json::Value::String(name));
+		}
+		if let Some(url) = p.avatar_url.filter(|s| !s.is_empty()) {
+			payload.insert("avatar_url".to_string(), serde_json::Value::String(url));
+		}
+		discord_call!(self.http.execute_webhook(
+			webhook_id,
+			None,
+			&p.token,
+			false,
+			vec![],
+			&serde_json::Value::Object(payload),
+		));
+		Ok(CallToolResult::success(vec![Content::text(
+			"Webhook message sent",
+		)]))
 	}
 }
 

@@ -1,6 +1,6 @@
 [package]
 name = "discord-bot"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2021"
 description = "Multi-instance Discord bot framework written in Rust. AI chat, music, games, moderation, Minecraft integration, and a Model Context Protocol server."
 license = "AGPL-3.0-or-later"
@@ -43,6 +43,10 @@ schemars = "1"
 tower = { version = "0.5", features = ["limit"] }
 tower-http = { version = "0.6", features = ["cors", "limit"] }
 subtle = "2"
+# Pinned to match the version serenity 0.12 transitively pulls in. Used in
+# src/mcp/tools.rs to read webhook tokens out of `Webhook::token`, which
+# wraps them in `secrecy::Secret` to keep them out of Debug/Display output.
+secrecy = "0.8"
 futures = "0.3"
 rust_decimal = { version = "1", features = ["db-postgres", "macros"] }
 

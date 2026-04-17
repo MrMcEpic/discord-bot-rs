@@ -774,3 +774,215 @@ List active bans in the server, with each user's id/name and the moderator-suppl
 ```
 
 **Returns:** `<count> ban(s):` followed by one line per ban as `<username> (<user_id>) — <reason>`.
+
+## Direct Messages
+
+DM tools open (or reuse) a private channel between the bot and the target user, then operate on that channel like any other text channel. There's no `guild_id` parameter and no cross-guild verification — DMs aren't part of any guild. The underlying `create_private_channel` call is idempotent, so repeated calls don't proliferate channels.
+
+**Permissions / setup notes:**
+- The bot doesn't need a special Discord permission to send DMs, but the *target user* must allow DMs from server members and must share a guild with the bot. If they don't, the send returns a 403 Forbidden which surfaces here as `Discord API error`.
+- Reading DM history via `read_private_messages` uses the REST API (not the gateway), so the `DIRECT_MESSAGES` privileged intent is **not** required for these tools to work.
+- `edit_private_message` and `delete_private_message` only work on messages the bot itself sent — Discord won't let any bot edit or delete another user's DMs.
+
+### `send_private_message`
+
+Send a direct message to a user. Opens the DM channel automatically. **Privileged.**
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `user_id` | string | yes | Target user snowflake. The bot DMs them; Discord rejects with 403 if they have DMs disabled or don't share a guild. |
+| `content` | string | yes | Message body. |
+
+**Example:**
+```json
+{
+  "name": "send_private_message",
+  "arguments": {
+    "user_id": "123456789012345678",
+    "content": "Following up on your moderation question — let me know if this resolves it."
+  }
+}
+```
+
+**Returns:** `Message sent`.
+
+### `read_private_messages`
+
+Read recent DMs between the bot and a user, newest first. Same output format as `get_recent_messages` but scoped to the DM channel.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `user_id` | string | yes | Target user snowflake. |
+| `limit` | integer (1-100) | no | Number of messages to fetch. Default 50. |
+| `before` | string | no | Message snowflake; only messages older than this are returned. |
+
+**Example:**
+```json
+{
+  "name": "read_private_messages",
+  "arguments": {
+    "user_id": "123456789012345678",
+    "limit": 20
+  }
+}
+```
+
+**Returns:** Newline-separated lines, one per message, formatted as `[timestamp] author_name (author_id) [msg_id=...]: content` plus optional attachment/embed markers. `No messages found.` if the channel is empty.
+
+### `edit_private_message`
+
+Edit one of the bot's previously-sent DMs to a user.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `user_id` | string | yes | The DM partner (same as in the original send call). |
+| `message_id` | string | yes | Snowflake of the message to edit. |
+| `content` | string | yes | Replacement content. |
+
+**Example:**
+```json
+{
+  "name": "edit_private_message",
+  "arguments": {
+    "user_id": "123456789012345678",
+    "message_id": "1234567890123456790",
+    "content": "Updated: this answer was wrong; the correct procedure is …"
+  }
+}
+```
+
+**Returns:** `Message edited`.
+
+### `delete_private_message`
+
+Delete one of the bot's previously-sent DMs to a user.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `user_id` | string | yes | The DM partner. |
+| `message_id` | string | yes | Snowflake of the message to delete. |
+
+**Example:**
+```json
+{
+  "name": "delete_private_message",
+  "arguments": {
+    "user_id": "123456789012345678",
+    "message_id": "1234567890123456790"
+  }
+}
+```
+
+**Returns:** `Message deleted`.
+
+## Webhooks
+
+Webhooks let an MCP client post as arbitrary identities (custom username + avatar per message) — the standard pattern for relays, persona bots, and cross-platform bridges. The bot uses its `Manage Webhooks` permission to create / delete / list webhooks; sending through one only needs the webhook id and token.
+
+### `list_webhooks`
+
+List webhooks attached to a channel. Each entry includes id, name, and (when the bot has Manage Webhooks) the token, which `send_webhook_message` requires.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `guild_id` | string | no | Server ID. Defaults to the configured guild; used to verify the channel. |
+| `channel_id` | string | yes | Target channel snowflake. |
+
+**Example:**
+```json
+{
+  "name": "list_webhooks",
+  "arguments": {
+    "channel_id": "1234567890123456789"
+  }
+}
+```
+
+**Returns:** `<count> webhook(s):` followed by one line per webhook as `<name> (id=<id>) — token=<token>`. `No webhooks in this channel.` if empty.
+
+### `create_webhook`
+
+Create a new webhook on a channel. Returns the webhook's id and token; capture both — the token is required for `send_webhook_message` and is only returned at create time.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `guild_id` | string | no | Server ID. Defaults to the configured guild. |
+| `channel_id` | string | yes | Target channel snowflake. |
+| `name` | string | yes | Webhook display name (1-80 chars). Discord rejects names containing the substring "discord" (case-insensitive). |
+
+**Example:**
+```json
+{
+  "name": "create_webhook",
+  "arguments": {
+    "channel_id": "1234567890123456789",
+    "name": "Daily Standup Bot"
+  }
+}
+```
+
+**Returns:** `Webhook created: id=<id> token=<token>`.
+
+### `delete_webhook`
+
+Delete a webhook by ID.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `webhook_id` | string | yes | Webhook snowflake. |
+
+**Example:**
+```json
+{
+  "name": "delete_webhook",
+  "arguments": {
+    "webhook_id": "1234567890123456789"
+  }
+}
+```
+
+**Returns:** `Webhook deleted`.
+
+### `send_webhook_message`
+
+Send a message through a webhook. The optional `username` and `avatar_url` parameters override the webhook's defaults for *this message only* — useful for relay/persona patterns where one webhook delivers messages on behalf of many identities. **Privileged** — webhooks bypass the bot's role permissions.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `webhook_id` | string | yes | Webhook snowflake. |
+| `token` | string | yes | Webhook token (returned by `create_webhook` / `list_webhooks`). |
+| `content` | string | yes | Message body. |
+| `username` | string | no | Override the webhook's display name for this message. |
+| `avatar_url` | string | no | Override the webhook's avatar (URL) for this message. |
+
+**Example:**
+```json
+{
+  "name": "send_webhook_message",
+  "arguments": {
+    "webhook_id": "1234567890123456789",
+    "token": "abcdef123456...",
+    "content": "[#general → Slack] Daisy: deploy is green",
+    "username": "Daisy (via Slack)",
+    "avatar_url": "https://example.com/daisy.png"
+  }
+}
+```
+
+**Returns:** `Webhook message sent`.
