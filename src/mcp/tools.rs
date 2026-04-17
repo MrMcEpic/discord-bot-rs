@@ -222,6 +222,38 @@ pub struct GetMessagesParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct ReactionParams {
+	/// Guild/server ID (optional, defaults to configured guild)
+	pub guild_id: Option<String>,
+	pub channel_id: String,
+	pub message_id: String,
+	/// Unicode emoji (e.g. "👍"), Discord custom-emoji format ("<:name:id>" or "<a:name:id>" for animated), or a bare custom-emoji snowflake.
+	pub emoji: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SetNicknameParams {
+	/// Guild/server ID (optional, defaults to configured guild)
+	pub guild_id: Option<String>,
+	pub user_id: String,
+	/// New nickname (1-32 chars). Omit or pass an empty string to clear the nickname (member shows their global username).
+	#[serde(default)]
+	pub nickname: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetBansParams {
+	/// Guild/server ID (optional, defaults to configured guild)
+	pub guild_id: Option<String>,
+	/// Max bans to return per page (1-255, default 100). Capped by Discord's bulk endpoint; paginate with `after` for more.
+	#[serde(default)]
+	pub limit: Option<u8>,
+	/// Paginate forward — return bans whose user_id is greater than this snowflake
+	#[serde(default)]
+	pub after: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct SearchMessagesParams {
 	/// Guild/server ID (optional, defaults to configured guild)
 	pub guild_id: Option<String>,
@@ -256,6 +288,45 @@ const DISCORD_EPOCH_MS: i64 = 1_420_070_400_000;
 fn parse_id(s: &str) -> Result<u64, McpError> {
 	s.parse::<u64>()
 		.map_err(|_| McpError::invalid_params(format!("Invalid ID: {s}"), None))
+}
+
+/// Parse an emoji string into a `ReactionType`. Accepts:
+///   - Unicode emoji ("👍", "🎉")
+///   - Discord custom-emoji format ("<:name:id>" or "<a:name:id>" for animated)
+///   - A bare custom-emoji snowflake ("123456789012345678")
+fn parse_emoji(s: &str) -> Result<ReactionType, McpError> {
+	let s = s.trim();
+	if s.is_empty() {
+		return Err(McpError::invalid_params("Emoji is empty", None));
+	}
+	// Custom emoji formats: <:name:id> or <a:name:id>
+	for (prefix, animated) in [("<:", false), ("<a:", true)] {
+		if let Some(inner) = s.strip_prefix(prefix).and_then(|r| r.strip_suffix('>')) {
+			if let Some((name, id_str)) = inner.rsplit_once(':') {
+				if let Ok(id) = id_str.parse::<u64>() {
+					return Ok(ReactionType::Custom {
+						animated,
+						id: EmojiId::new(id),
+						name: Some(name.to_string()),
+					});
+				}
+			}
+			return Err(McpError::invalid_params(
+				format!("Malformed custom emoji '{s}'"),
+				None,
+			));
+		}
+	}
+	// Bare numeric snowflake
+	if let Ok(id) = s.parse::<u64>() {
+		return Ok(ReactionType::Custom {
+			animated: false,
+			id: EmojiId::new(id),
+			name: None,
+		});
+	}
+	// Default: unicode emoji
+	Ok(ReactionType::Unicode(s.to_string()))
 }
 
 /// Parse a string as either a Discord snowflake (numeric) or an ISO 8601
@@ -637,6 +708,51 @@ impl DiscordTools {
 		let mut out = vec![summary];
 		out.extend(result_lines);
 		Ok(CallToolResult::success(vec![Content::text(out.join("\n"))]))
+	}
+
+	#[tool(
+		description = "Add a reaction to a message. Emoji can be unicode (👍), Discord custom-emoji format (<:name:id> / <a:name:id>), or a bare custom-emoji snowflake."
+	)]
+	async fn add_reaction(
+		&self,
+		params: Parameters<ReactionParams>,
+	) -> Result<CallToolResult, McpError> {
+		let p = params.0;
+		let gid = self.resolve_guild(p.guild_id.as_deref())?;
+		let channel_id = ChannelId::new(parse_id(&p.channel_id)?);
+		self.verify_channel_in_guild(channel_id, gid).await?;
+		let message_id = MessageId::new(parse_id(&p.message_id)?);
+		let reaction = parse_emoji(&p.emoji)?;
+		discord_call!(self.http.create_reaction(channel_id, message_id, &reaction));
+		Ok(CallToolResult::success(vec![Content::text(format!(
+			"Reaction {} added",
+			p.emoji
+		))]))
+	}
+
+	#[tool(
+		description = "Remove the bot's own reaction from a message. Same emoji formats as add_reaction."
+	)]
+	async fn remove_reaction(
+		&self,
+		params: Parameters<ReactionParams>,
+	) -> Result<CallToolResult, McpError> {
+		let p = params.0;
+		let gid = self.resolve_guild(p.guild_id.as_deref())?;
+		let channel_id = ChannelId::new(parse_id(&p.channel_id)?);
+		self.verify_channel_in_guild(channel_id, gid).await?;
+		let message_id = MessageId::new(parse_id(&p.message_id)?);
+		let reaction = parse_emoji(&p.emoji)?;
+		// `delete_reaction_me` is serenity's wrapper for the @me variant
+		// of Discord's delete-reaction endpoint — removes only the bot's
+		// own reaction, not other users'.
+		discord_call!(self
+			.http
+			.delete_reaction_me(channel_id, message_id, &reaction));
+		Ok(CallToolResult::success(vec![Content::text(format!(
+			"Reaction {} removed",
+			p.emoji
+		))]))
 	}
 
 	// ===== CHANNELS =====
@@ -1024,6 +1140,87 @@ impl DiscordTools {
 			p.duration
 		))]))
 	}
+
+	#[tool(
+		description = "Remove an active timeout on a member, restoring their ability to communicate."
+	)]
+	async fn remove_timeout(
+		&self,
+		params: Parameters<UserIdParam>,
+	) -> Result<CallToolResult, McpError> {
+		let gid = self.resolve_guild(params.0.guild_id.as_deref())?;
+		let user_id = UserId::new(parse_id(&params.0.user_id)?);
+		// Setting `communication_disabled_until` to null clears any active
+		// timeout. Discord accepts null explicitly here; an absent field
+		// leaves the existing value in place, which would be a no-op.
+		let map = serde_json::json!({ "communication_disabled_until": null });
+		discord_call!(self.http.edit_member(gid, user_id, &map, None));
+		Ok(CallToolResult::success(vec![Content::text(
+			"Timeout removed",
+		)]))
+	}
+
+	#[tool(
+		description = "Set or clear a member's nickname (1-32 chars). Pass an empty `nickname` or omit it to clear (member shows their global username)."
+	)]
+	async fn set_nickname(
+		&self,
+		params: Parameters<SetNicknameParams>,
+	) -> Result<CallToolResult, McpError> {
+		let p = params.0;
+		let gid = self.resolve_guild(p.guild_id.as_deref())?;
+		let user_id = UserId::new(parse_id(&p.user_id)?);
+		// Discord's edit-member endpoint takes `nick`; null clears it.
+		let nick_value = match p.nickname.as_deref().filter(|s| !s.is_empty()) {
+			Some(n) => serde_json::Value::String(n.to_string()),
+			None => serde_json::Value::Null,
+		};
+		let map = serde_json::json!({ "nick": nick_value });
+		discord_call!(self.http.edit_member(gid, user_id, &map, None));
+		Ok(CallToolResult::success(vec![Content::text(
+			match p.nickname.as_deref().filter(|s| !s.is_empty()) {
+				Some(n) => format!("Nickname set to '{n}'"),
+				None => "Nickname cleared".to_string(),
+			},
+		)]))
+	}
+
+	#[tool(
+		description = "List active bans in the server. Each ban has the user's id/name and the reason (if recorded). Paginate with `after` (the snowflake of the last user_id from the previous page)."
+	)]
+	async fn get_bans(
+		&self,
+		params: Parameters<GetBansParams>,
+	) -> Result<CallToolResult, McpError> {
+		let p = params.0;
+		let gid = self.resolve_guild(p.guild_id.as_deref())?;
+		let limit = p.limit.unwrap_or(100).clamp(1, 255);
+		let target = p
+			.after
+			.as_deref()
+			.filter(|s| !s.is_empty())
+			.map(parse_id)
+			.transpose()?
+			.map(|id| UserPagination::After(UserId::new(id)));
+		let bans = discord_call!(self.http.get_bans(gid, target, Some(limit)));
+		if bans.is_empty() {
+			return Ok(CallToolResult::success(vec![Content::text(
+				"No active bans.",
+			)]));
+		}
+		let lines: Vec<String> = bans
+			.iter()
+			.map(|b| {
+				let reason = b.reason.as_deref().unwrap_or("(no reason recorded)");
+				format!("{} ({}) — {}", b.user.name, b.user.id, reason)
+			})
+			.collect();
+		Ok(CallToolResult::success(vec![Content::text(format!(
+			"{} ban(s):\n{}",
+			lines.len(),
+			lines.join("\n")
+		))]))
+	}
 }
 
 #[cfg(test)]
@@ -1130,6 +1327,63 @@ mod tests {
 	fn parse_time_or_snowflake_rejects_garbage() {
 		assert!(parse_time_or_snowflake("not-a-date").is_err());
 		assert!(parse_time_or_snowflake("").is_err());
+	}
+
+	#[test]
+	fn parse_emoji_unicode_passes_through() {
+		match parse_emoji("👍").unwrap() {
+			ReactionType::Unicode(s) => assert_eq!(s, "👍"),
+			_ => panic!("expected Unicode variant"),
+		}
+	}
+
+	#[test]
+	fn parse_emoji_custom_format() {
+		match parse_emoji("<:partyparrot:123456789012345678>").unwrap() {
+			ReactionType::Custom { animated, id, name } => {
+				assert!(!animated);
+				assert_eq!(id.get(), 123456789012345678);
+				assert_eq!(name.as_deref(), Some("partyparrot"));
+			}
+			_ => panic!("expected Custom variant"),
+		}
+	}
+
+	#[test]
+	fn parse_emoji_animated_format() {
+		match parse_emoji("<a:wave:987654321098765432>").unwrap() {
+			ReactionType::Custom { animated, id, name } => {
+				assert!(animated);
+				assert_eq!(id.get(), 987654321098765432);
+				assert_eq!(name.as_deref(), Some("wave"));
+			}
+			_ => panic!("expected animated Custom variant"),
+		}
+	}
+
+	#[test]
+	fn parse_emoji_bare_snowflake_treated_as_custom() {
+		match parse_emoji("123456789012345678").unwrap() {
+			ReactionType::Custom { animated, id, name } => {
+				assert!(!animated);
+				assert_eq!(id.get(), 123456789012345678);
+				assert!(name.is_none());
+			}
+			_ => panic!("expected Custom variant"),
+		}
+	}
+
+	#[test]
+	fn parse_emoji_empty_rejected() {
+		assert!(parse_emoji("").is_err());
+		assert!(parse_emoji("   ").is_err());
+	}
+
+	#[test]
+	fn parse_emoji_malformed_custom_rejected() {
+		assert!(parse_emoji("<:no-id-here:>").is_err());
+		assert!(parse_emoji("<:no-colon-name>").is_err());
+		assert!(parse_emoji("<:name:not-a-number>").is_err());
 	}
 
 	#[test]

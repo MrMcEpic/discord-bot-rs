@@ -8,7 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- (track new changes here until the next release)
+- **MCP message reactions**: `add_reaction` and `remove_reaction` tools accept unicode emoji, Discord custom-emoji format (`<:name:id>` / `<a:name:id>`), or a bare custom-emoji snowflake. `remove_reaction` targets the bot's own reaction only. (Closes #6)
+- **MCP moderation rounding**: `set_nickname` (set/clear member nickname), `get_bans` (list active bans with paging), `remove_timeout` (lift an active timeout). Round out the existing moderation suite. (Closes #11)
+- Brings the bot tool catalog to 29.
 
 ## [0.8.0] - 2026-04-16
 

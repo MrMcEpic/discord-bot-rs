@@ -1,7 +1,7 @@
 # MCP Server
 
 The bot embeds a Model Context Protocol (MCP) server that exposes Discord
-server-management as **24 tools** any MCP client can call. The intended
+server-management as **29 tools** any MCP client can call. The intended
 workflow is to point an AI coding assistant — Claude Code, Cursor, etc. —
 at the bot and let it manage your Discord server programmatically.
 
@@ -76,7 +76,7 @@ Code config (`~/.claude.json`):
 
 Then restart Claude Code. The next time you start a session, the
 `discord` server should appear in your tool list and you can call any
-of the 24 tools by name.
+of the 29 tools by name.
 
 If you've set `MCP_AUTH_TOKEN` (see below), add the bearer token to
 the same entry:
@@ -101,7 +101,7 @@ optionally pass a bearer token.
 
 ## Tool catalog
 
-The 24 tools are grouped into five categories. The full reference,
+The 29 tools are grouped into five categories. The full reference,
 including parameter schemas, lives in
 [Reference: MCP Tool Catalog](../reference/mcp-tool-catalog.md). The
 table below is the one-line summary.
@@ -121,6 +121,8 @@ table below is the one-line summary.
 | `delete_messages` | Bulk-delete the most recent N messages from a channel (1–100). |
 | `get_recent_messages` | Read recent messages from a channel, newest first; supports pagination via `before`. |
 | `search_messages` | Search a channel by author, content substring, and time range (ISO date or snowflake). Filters compose. |
+| `add_reaction` | Add a reaction (unicode or custom emoji) to a specific message. |
+| `remove_reaction` | Remove the bot's own reaction from a specific message. |
 
 ### Channels
 
@@ -154,8 +156,11 @@ table below is the one-line summary.
 | `unban_member` | Unban a user. |
 | `kick_member` | Kick a member. |
 | `timeout_member` | Time out a member for a duration like `1h`, `30m`, `7d`. |
+| `remove_timeout` | Lift an active timeout (inverse of `timeout_member`). |
+| `set_nickname` | Set or clear a member's server nickname (1–32 chars). |
+| `get_bans` | List active bans with id/name/reason; paginate with `after`. |
 
-That's 24 tools total: 1 + 5 + 6 + 4 + 8.
+That's 29 tools total: 1 + 7 + 6 + 4 + 11.
 
 ## Multi-guild support
 

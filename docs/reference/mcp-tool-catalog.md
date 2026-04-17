@@ -189,6 +189,53 @@ Find a phrase from a specific person:
 
 **Returns:** A summary line followed by one line per matched message. The summary names the totals scanned and called out if the search was truncated by `max_pages`. To continue a truncated search, call again with `before` set to the oldest `msg_id` returned.
 
+### `add_reaction`
+
+Add a reaction to a message. Useful for AI-driven moderation flows ("react with ✅ when handled") or lightweight feedback signals.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `guild_id` | string | no | Server ID. Defaults to the configured guild; used to verify the channel belongs to it. |
+| `channel_id` | string | yes | Channel containing the message. |
+| `message_id` | string | yes | Target message snowflake. |
+| `emoji` | string | yes | Unicode emoji (`👍`), Discord custom-emoji format (`<:name:id>` or `<a:name:id>` for animated), or a bare custom-emoji snowflake. |
+
+**Example:**
+```json
+{
+  "name": "add_reaction",
+  "arguments": {
+    "channel_id": "1234567890123456789",
+    "message_id": "1234567890123456790",
+    "emoji": "✅"
+  }
+}
+```
+
+**Returns:** `Reaction <emoji> added`.
+
+### `remove_reaction`
+
+Remove **the bot's own** reaction from a message. Cannot be used to clear other users' reactions.
+
+**Parameters:** identical to `add_reaction`.
+
+**Example:**
+```json
+{
+  "name": "remove_reaction",
+  "arguments": {
+    "channel_id": "1234567890123456789",
+    "message_id": "1234567890123456790",
+    "emoji": "✅"
+  }
+}
+```
+
+**Returns:** `Reaction <emoji> removed`.
+
 ## Channels
 
 ### `list_channels`
@@ -655,3 +702,75 @@ Apply a Discord timeout (communication disable) to a member for a given duration
 ```
 
 **Returns:** `User timed out for <duration>`.
+
+### `remove_timeout`
+
+Lift an active timeout on a member. Inverse of `timeout_member`.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `guild_id` | string | no | Server ID. Defaults to the configured guild. |
+| `user_id` | string | yes | Target user snowflake. |
+
+**Example:**
+```json
+{
+  "name": "remove_timeout",
+  "arguments": {
+    "user_id": "123456789012345678"
+  }
+}
+```
+
+**Returns:** `Timeout removed`.
+
+### `set_nickname`
+
+Set or clear a member's nickname (1–32 characters). Pass an empty `nickname` (or omit it) to clear, which makes the member display their global Discord username.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `guild_id` | string | no | Server ID. Defaults to the configured guild. |
+| `user_id` | string | yes | Target user snowflake. |
+| `nickname` | string | no | New nickname; omit or pass empty string to clear. |
+
+**Example:**
+```json
+{
+  "name": "set_nickname",
+  "arguments": {
+    "user_id": "123456789012345678",
+    "nickname": "Big Boss"
+  }
+}
+```
+
+**Returns:** `Nickname set to '<n>'` or `Nickname cleared`.
+
+### `get_bans`
+
+List active bans in the server, with each user's id/name and the moderator-supplied reason if recorded. Paginate by passing the last user_id from the previous response as `after`.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `guild_id` | string | no | Server ID. Defaults to the configured guild. |
+| `limit` | integer (1-255) | no | Max bans per page. Default 100. |
+| `after` | string | no | Paginate forward — return bans whose user_id is greater than this snowflake. |
+
+**Example:**
+```json
+{
+  "name": "get_bans",
+  "arguments": {
+    "limit": 50
+  }
+}
+```
+
+**Returns:** `<count> ban(s):` followed by one line per ban as `<username> (<user_id>) — <reason>`.
