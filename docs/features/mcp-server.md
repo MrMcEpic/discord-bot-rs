@@ -1,7 +1,7 @@
 # MCP Server
 
 The bot embeds a Model Context Protocol (MCP) server that exposes Discord
-server-management as **43 tools** any MCP client can call. The intended
+server-management as **51 tools** any MCP client can call. The intended
 workflow is to point an AI coding assistant — Claude Code, Cursor, etc. —
 at the bot and let it manage your Discord server programmatically.
 
@@ -76,7 +76,7 @@ Code config (`~/.claude.json`):
 
 Then restart Claude Code. The next time you start a session, the
 `discord` server should appear in your tool list and you can call any
-of the 43 tools by name.
+of the 51 tools by name.
 
 If you've set `MCP_AUTH_TOKEN` (see below), add the bearer token to
 the same entry:
@@ -101,7 +101,7 @@ optionally pass a bearer token.
 
 ## Tool catalog
 
-The 43 tools are grouped into five categories. The full reference,
+The 51 tools are grouped into five categories. The full reference,
 including parameter schemas, lives in
 [Reference: MCP Tool Catalog](../reference/mcp-tool-catalog.md). The
 table below is the one-line summary.
@@ -184,7 +184,25 @@ table below is the one-line summary.
 | `delete_webhook` | Delete a webhook by ID. |
 | `send_webhook_message` | Send through a webhook with optional username/avatar overrides. **Privileged.** |
 
-That's 43 tools total: 1 + 7 + 9 + 4 + 14 + 4 + 4.
+### Invites
+
+| Tool | What it does |
+|---|---|
+| `list_invites` | List active server invites (code, channel, inviter, uses). |
+| `create_invite` | Create a new invite with optional max_age, max_uses, temporary, unique. |
+| `delete_invite` | Delete an invite by code. |
+| `get_invite_details` | Look up an invite (no need for bot to be in the target guild). |
+
+### Custom Emoji
+
+| Tool | What it does |
+|---|---|
+| `list_emojis` | List custom emoji in the server. |
+| `create_emoji` | Create a custom emoji from an HTTPS image URL (bot fetches + base64). |
+| `edit_emoji` | Rename a custom emoji. |
+| `delete_emoji` | Delete a custom emoji. |
+
+That's 51 tools total: 1 + 7 + 9 + 4 + 14 + 4 + 4 + 4 + 4.
 
 ## Multi-guild support
 

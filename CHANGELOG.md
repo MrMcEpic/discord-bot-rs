@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - (track new changes here until the next release)
 
+## [0.12.0] - 2026-04-17
+
+### Added
+- **MCP invite tools** (4): `list_invites`, `create_invite` (max_age / max_uses / temporary / unique), `delete_invite`, `get_invite_details` (server name, channel, member counts, expiration). (Closes #10)
+- **MCP custom emoji tools** (4): `list_emojis`, `create_emoji` (fetches an HTTPS URL, base64-encodes, and uploads — rejects >256 KiB before the API call with a clear error), `edit_emoji` (rename), `delete_emoji`. (Closes #10)
+- Brings the bot tool catalog to 51 (1 + 7 + 9 + 4 + 14 + 4 + 4 + 4 + 4). Closes out the SaseQ tool-gap series.
+
 ## [0.11.0] - 2026-04-17
 
 ### Added

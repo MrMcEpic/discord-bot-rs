@@ -1144,3 +1144,113 @@ Send a message through a webhook. The optional `username` and `avatar_url` param
 ```
 
 **Returns:** `Webhook message sent`.
+
+## Invites
+
+### `list_invites`
+
+List active invites in the server. Each entry includes the invite code, target channel, inviter, and use count.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `guild_id` | string | no | Server ID. Defaults to the configured guild. |
+
+**Returns:** `<count> invite(s):` followed by one line per invite as `discord.gg/<code> → channel <id> (inviter: <name>, uses: N/M)` (`M` is `∞` if unlimited).
+
+### `create_invite`
+
+Create a new invite for a channel.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `guild_id` | string | no | Server ID. Defaults to the configured guild. |
+| `channel_id` | string | yes | Channel snowflake. |
+| `max_age` | integer | no | Lifetime in seconds. Default 86400 (24h); `0` = never expires. |
+| `max_uses` | integer | no | Max uses. Default `0` = unlimited. |
+| `temporary` | boolean | no | If true, members joining via this invite get kicked when they go offline. |
+| `unique` | boolean | no | If true, always create a new invite. If false (default), Discord may return an existing matching invite for this channel. |
+
+**Returns:** `Created invite discord.gg/<code> (max_age=N, max_uses=N, temporary=B)`.
+
+### `delete_invite`
+
+Delete an invite by its code.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `code` | string | yes | Invite code (the part after `discord.gg/`). |
+
+**Returns:** `Invite discord.gg/<code> deleted`.
+
+### `get_invite_details`
+
+Look up an invite (does not need bot to be in the target guild). Returns server name, channel name, member counts, and expiration.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `code` | string | yes | Invite code. |
+
+**Returns:** `discord.gg/<code>: server '<name>' channel '<name>' members <online> online / <total> total, expires <timestamp or never>`.
+
+## Custom Emoji
+
+### `list_emojis`
+
+List all custom emoji in the server.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `guild_id` | string | no | Server ID. Defaults to the configured guild. |
+
+**Returns:** `<count> emoji:` followed by one line per emoji as `:<name>: (id=<id>, animated|static)`.
+
+### `create_emoji`
+
+Create a custom emoji from a remote image URL. The bot fetches the URL, base64-encodes the bytes, and uploads.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `guild_id` | string | no | Server ID. Defaults to the configured guild. |
+| `name` | string | yes | Emoji name (2-32 chars, alphanumeric + underscore). |
+| `image_url` | string | yes | HTTPS URL to PNG/JPEG/GIF/WEBP. Discord caps at 256 KiB before base64 — bot rejects larger before upload with a clear error. |
+
+**Returns:** `Created emoji :<name>: (id=<id>)`.
+
+### `edit_emoji`
+
+Rename a custom emoji.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `guild_id` | string | no | Server ID. Defaults to the configured guild. |
+| `emoji_id` | string | yes | Emoji snowflake. |
+| `name` | string | no | New name (2-32 chars). At least one editable field required. |
+
+**Returns:** `Emoji :<name>: updated`.
+
+### `delete_emoji`
+
+Delete a custom emoji.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `guild_id` | string | no | Server ID. Defaults to the configured guild. |
+| `emoji_id` | string | yes | Emoji snowflake. |
+
+**Returns:** `Emoji deleted`.
