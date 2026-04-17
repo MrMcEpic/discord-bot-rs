@@ -224,6 +224,60 @@ pub struct GetMessagesParams {
 	pub before: Option<String>,
 }
 
+// --- Invite & Emoji param structs ---
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CreateInviteParams {
+	/// Guild/server ID (optional, defaults to configured guild; used to verify channel)
+	pub guild_id: Option<String>,
+	pub channel_id: String,
+	/// Invite lifetime in seconds (default 86400 = 24h; 0 = never expires).
+	#[serde(default)]
+	pub max_age: Option<u32>,
+	/// Max times the invite can be used (default 0 = unlimited).
+	#[serde(default)]
+	pub max_uses: Option<u32>,
+	/// If true, members joining via this invite get kicked when they go offline.
+	#[serde(default)]
+	pub temporary: Option<bool>,
+	/// If true, always create a brand-new invite. If false (default), Discord may return an existing matching invite for this channel.
+	#[serde(default)]
+	pub unique: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct InviteCodeParam {
+	/// Invite code (the part after `discord.gg/`).
+	pub code: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CreateEmojiParams {
+	/// Guild/server ID (optional, defaults to configured guild)
+	pub guild_id: Option<String>,
+	/// Emoji name (2-32 chars, alphanumeric + underscore).
+	pub name: String,
+	/// HTTPS URL to a PNG, JPEG, GIF, or WEBP image (≤256 KiB). The bot fetches the URL and base64-encodes it for Discord.
+	pub image_url: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct EditEmojiParams {
+	/// Guild/server ID (optional, defaults to configured guild)
+	pub guild_id: Option<String>,
+	pub emoji_id: String,
+	/// New emoji name (2-32 chars). Omit to leave unchanged.
+	#[serde(default)]
+	pub name: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DeleteEmojiParams {
+	/// Guild/server ID (optional, defaults to configured guild)
+	pub guild_id: Option<String>,
+	pub emoji_id: String,
+}
+
 // --- Voice & Stage channel param structs ---
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1777,6 +1831,252 @@ impl DiscordTools {
 			"Voice state updated: {}",
 			parts.join(", ")
 		))]))
+	}
+
+	// ===== INVITES =====
+
+	#[tool(
+		description = "List all active invites in the server, with code, channel, inviter, uses, and expiration."
+	)]
+	async fn list_invites(
+		&self,
+		params: Parameters<OptionalGuildParam>,
+	) -> Result<CallToolResult, McpError> {
+		let gid = self.resolve_guild(params.0.guild_id.as_deref())?;
+		let invites = discord_call!(self.http.get_guild_invites(gid));
+		if invites.is_empty() {
+			return Ok(CallToolResult::success(vec![Content::text(
+				"No active invites.",
+			)]));
+		}
+		let lines: Vec<String> = invites
+			.iter()
+			.map(|i| {
+				let inviter = i
+					.inviter
+					.as_ref()
+					.map(|u| u.name.clone())
+					.unwrap_or_else(|| "(unknown)".to_string());
+				format!(
+					"discord.gg/{} → channel {} (inviter: {}, uses: {}/{})",
+					i.code,
+					i.channel.id,
+					inviter,
+					i.uses,
+					if i.max_uses == 0 {
+						"∞".to_string()
+					} else {
+						i.max_uses.to_string()
+					}
+				)
+			})
+			.collect();
+		Ok(CallToolResult::success(vec![Content::text(format!(
+			"{} invite(s):\n{}",
+			lines.len(),
+			lines.join("\n")
+		))]))
+	}
+
+	#[tool(
+		description = "Create a new invite for a channel. max_age=0 means never expires; max_uses=0 means unlimited. unique=false (default) lets Discord return an existing matching invite."
+	)]
+	async fn create_invite(
+		&self,
+		params: Parameters<CreateInviteParams>,
+	) -> Result<CallToolResult, McpError> {
+		let p = params.0;
+		let gid = self.resolve_guild(p.guild_id.as_deref())?;
+		let channel_id = ChannelId::new(parse_id(&p.channel_id)?);
+		self.verify_channel_in_guild(channel_id, gid).await?;
+		let mut map = serde_json::Map::new();
+		if let Some(a) = p.max_age {
+			map.insert("max_age".to_string(), serde_json::json!(a));
+		}
+		if let Some(u) = p.max_uses {
+			map.insert("max_uses".to_string(), serde_json::json!(u));
+		}
+		if let Some(t) = p.temporary {
+			map.insert("temporary".to_string(), serde_json::Value::Bool(t));
+		}
+		if let Some(u) = p.unique {
+			map.insert("unique".to_string(), serde_json::Value::Bool(u));
+		}
+		let value = serde_json::Value::Object(map);
+		let invite = discord_call!(self.http.create_invite(channel_id, &value, None));
+		Ok(CallToolResult::success(vec![Content::text(format!(
+			"Created invite discord.gg/{} (max_age={}, max_uses={}, temporary={})",
+			invite.code, invite.max_age, invite.max_uses, invite.temporary,
+		))]))
+	}
+
+	#[tool(description = "Delete an invite by its code (the part after discord.gg/).")]
+	async fn delete_invite(
+		&self,
+		params: Parameters<InviteCodeParam>,
+	) -> Result<CallToolResult, McpError> {
+		let invite = discord_call!(self.http.delete_invite(&params.0.code, None));
+		Ok(CallToolResult::success(vec![Content::text(format!(
+			"Invite discord.gg/{} deleted",
+			invite.code
+		))]))
+	}
+
+	#[tool(
+		description = "Get details about an invite (server name, channel, member counts, expiration)."
+	)]
+	async fn get_invite_details(
+		&self,
+		params: Parameters<InviteCodeParam>,
+	) -> Result<CallToolResult, McpError> {
+		// member_counts=true asks Discord to return online/total guild member
+		// counts; expiration=true asks for the expiration timestamp.
+		let invite = discord_call!(self.http.get_invite(&params.0.code, true, true, None));
+		let guild_name = invite
+			.guild
+			.as_ref()
+			.map(|g| g.name.clone())
+			.unwrap_or_else(|| "(unknown)".to_string());
+		let channel_name = invite.channel.name.clone();
+		let online = invite
+			.approximate_presence_count
+			.map(|n| n.to_string())
+			.unwrap_or_else(|| "?".to_string());
+		let total = invite
+			.approximate_member_count
+			.map(|n| n.to_string())
+			.unwrap_or_else(|| "?".to_string());
+		let expires = invite
+			.expires_at
+			.map(|t| t.to_string())
+			.unwrap_or_else(|| "never".to_string());
+		Ok(CallToolResult::success(vec![Content::text(format!(
+			"discord.gg/{}: server '{}' channel '{}' members {} online / {} total, expires {}",
+			invite.code, guild_name, channel_name, online, total, expires
+		))]))
+	}
+
+	// ===== EMOJI =====
+
+	#[tool(description = "List all custom emoji in the server with name, id, and animated flag.")]
+	async fn list_emojis(
+		&self,
+		params: Parameters<OptionalGuildParam>,
+	) -> Result<CallToolResult, McpError> {
+		let gid = self.resolve_guild(params.0.guild_id.as_deref())?;
+		let emojis = discord_call!(self.http.get_emojis(gid));
+		if emojis.is_empty() {
+			return Ok(CallToolResult::success(vec![Content::text(
+				"No custom emoji.",
+			)]));
+		}
+		let lines: Vec<String> = emojis
+			.iter()
+			.map(|e| {
+				let kind = if e.animated { "animated" } else { "static" };
+				format!(":{}: (id={}, {})", e.name, e.id, kind)
+			})
+			.collect();
+		Ok(CallToolResult::success(vec![Content::text(format!(
+			"{} emoji:\n{}",
+			lines.len(),
+			lines.join("\n")
+		))]))
+	}
+
+	#[tool(
+		description = "Create a custom emoji from an HTTPS image URL. Discord limits: PNG/JPEG/GIF/WEBP, ≤256 KiB. Bot fetches the URL, base64-encodes it, and uploads."
+	)]
+	async fn create_emoji(
+		&self,
+		params: Parameters<CreateEmojiParams>,
+	) -> Result<CallToolResult, McpError> {
+		let p = params.0;
+		let gid = self.resolve_guild(p.guild_id.as_deref())?;
+		// One-off reqwest client for the image fetch. Emoji uploads are rare
+		// enough that we don't bother plumbing the bot's shared client through
+		// the DiscordTools struct.
+		let client = reqwest::Client::new();
+		let resp =
+			client.get(&p.image_url).send().await.map_err(|e| {
+				McpError::invalid_params(format!("Failed to fetch image: {e}"), None)
+			})?;
+		if !resp.status().is_success() {
+			return Err(McpError::invalid_params(
+				format!("Image fetch returned HTTP {}", resp.status()),
+				None,
+			));
+		}
+		let mime = resp
+			.headers()
+			.get("content-type")
+			.and_then(|v| v.to_str().ok())
+			.unwrap_or("image/png")
+			.to_string();
+		let bytes = resp
+			.bytes()
+			.await
+			.map_err(|e| McpError::invalid_params(format!("Image read failed: {e}"), None))?;
+		// Discord enforces 256 KiB before base64 expansion; reject early with
+		// a clearer message than Discord's "Asset exceeds maximum size".
+		if bytes.len() > 256 * 1024 {
+			return Err(McpError::invalid_params(
+				format!(
+					"Image is {} bytes; Discord caps custom emoji at 256 KiB",
+					bytes.len()
+				),
+				None,
+			));
+		}
+		use base64::Engine;
+		let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+		let data_uri = format!("data:{mime};base64,{b64}");
+		let map = serde_json::json!({ "name": p.name, "image": data_uri });
+		let emoji = discord_call!(self.http.create_emoji(gid, &map, None));
+		Ok(CallToolResult::success(vec![Content::text(format!(
+			"Created emoji :{}: (id={})",
+			emoji.name, emoji.id
+		))]))
+	}
+
+	#[tool(description = "Rename a custom emoji.")]
+	async fn edit_emoji(
+		&self,
+		params: Parameters<EditEmojiParams>,
+	) -> Result<CallToolResult, McpError> {
+		let p = params.0;
+		let gid = self.resolve_guild(p.guild_id.as_deref())?;
+		let emoji_id = EmojiId::new(parse_id(&p.emoji_id)?);
+		let mut map = serde_json::Map::new();
+		if let Some(name) = p.name {
+			map.insert("name".to_string(), serde_json::Value::String(name));
+		}
+		if map.is_empty() {
+			return Err(McpError::invalid_params(
+				"At least one field (name) required",
+				None,
+			));
+		}
+		let value = serde_json::Value::Object(map);
+		let emoji = discord_call!(self.http.edit_emoji(gid, emoji_id, &value, None));
+		Ok(CallToolResult::success(vec![Content::text(format!(
+			"Emoji :{}: updated",
+			emoji.name
+		))]))
+	}
+
+	#[tool(description = "Delete a custom emoji by ID.")]
+	async fn delete_emoji(
+		&self,
+		params: Parameters<DeleteEmojiParams>,
+	) -> Result<CallToolResult, McpError> {
+		let p = params.0;
+		let gid = self.resolve_guild(p.guild_id.as_deref())?;
+		let emoji_id = EmojiId::new(parse_id(&p.emoji_id)?);
+		discord_call!(self.http.delete_emoji(gid, emoji_id, None));
+		Ok(CallToolResult::success(vec![Content::text(
+			"Emoji deleted",
+		)]))
 	}
 }
 
