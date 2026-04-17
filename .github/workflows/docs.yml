@@ -3,8 +3,24 @@ name: Docs
 on:
   push:
     branches: [master]
+    # Only run when something that actually contributes to the rendered
+    # site changes. Code-only pushes don't need to fire mdBook + Pages.
+    paths:
+      - 'docs/**'
+      - 'book.toml'
+      - 'theme/**'
+      - 'landing/**'
+      - 'mermaid*.js'
+      - '.github/workflows/docs.yml'
   pull_request:
     branches: [master]
+    paths:
+      - 'docs/**'
+      - 'book.toml'
+      - 'theme/**'
+      - 'landing/**'
+      - 'mermaid*.js'
+      - '.github/workflows/docs.yml'
   workflow_dispatch:
 
 permissions:
