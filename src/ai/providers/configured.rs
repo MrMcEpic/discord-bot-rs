@@ -89,13 +89,9 @@ pub struct ConfiguredProvider {
 	pub supports_vision: bool,
 	pub supports_tools: bool,
 	pub is_reasoner: bool,
-	#[allow(dead_code)]
 	pub spec: ProviderSpec,
-	#[allow(dead_code)]
 	pub headers: std::collections::HashMap<String, String>,
-	#[allow(dead_code)]
 	pub auth_header: String,
-	#[allow(dead_code)]
 	pub auth_scheme: String,
 }
 
@@ -166,5 +162,17 @@ impl AiProvider for ConfiguredProvider {
 
 	fn spec(&self) -> super::ProviderSpec {
 		self.spec
+	}
+
+	fn auth_header(&self) -> &str {
+		&self.auth_header
+	}
+
+	fn auth_scheme(&self) -> &str {
+		&self.auth_scheme
+	}
+
+	fn extra_headers(&self) -> &std::collections::HashMap<String, String> {
+		&self.headers
 	}
 }
