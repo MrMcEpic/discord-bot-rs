@@ -208,6 +208,19 @@ pub struct OptionalGuildParam {
 	pub guild_id: Option<String>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetMessagesParams {
+	/// Guild/server ID (optional, defaults to configured guild)
+	pub guild_id: Option<String>,
+	pub channel_id: String,
+	/// Number of messages to fetch, newest first (1-100, default 50)
+	#[serde(default)]
+	pub limit: Option<u8>,
+	/// Fetch messages older than this message ID (for pagination)
+	#[serde(default)]
+	pub before: Option<String>,
+}
+
 // --- Helpers ---
 
 fn parse_id(s: &str) -> Result<u64, McpError> {
@@ -394,6 +407,50 @@ impl DiscordTools {
 			"Deleted {} message(s)",
 			ids.len()
 		))]))
+	}
+
+	#[tool(
+		description = "Fetch recent messages from a channel, newest first. Supports pagination via `before`."
+	)]
+	async fn get_recent_messages(
+		&self,
+		params: Parameters<GetMessagesParams>,
+	) -> Result<CallToolResult, McpError> {
+		let p = params.0;
+		let gid = self.resolve_guild(p.guild_id.as_deref())?;
+		let channel_id = ChannelId::new(parse_id(&p.channel_id)?);
+		self.verify_channel_in_guild(channel_id, gid).await?;
+		let limit = p.limit.unwrap_or(50).clamp(1, 100);
+		let mut builder = GetMessages::new().limit(limit);
+		if let Some(before) = p.before.as_deref().filter(|s| !s.is_empty()) {
+			builder = builder.before(MessageId::new(parse_id(before)?));
+		}
+		let messages = discord_call!(channel_id.messages(&*self.http, builder));
+		if messages.is_empty() {
+			return Ok(CallToolResult::success(vec![Content::text(
+				"No messages found.",
+			)]));
+		}
+		let mut lines = Vec::with_capacity(messages.len());
+		for m in &messages {
+			let attach = if m.attachments.is_empty() {
+				String::new()
+			} else {
+				format!(" [+{} attachment(s)]", m.attachments.len())
+			};
+			let embeds = if m.embeds.is_empty() {
+				String::new()
+			} else {
+				format!(" [+{} embed(s)]", m.embeds.len())
+			};
+			lines.push(format!(
+				"[{}] {} ({}) [msg_id={}]: {}{}{}",
+				m.timestamp, m.author.name, m.author.id, m.id, m.content, attach, embeds,
+			));
+		}
+		Ok(CallToolResult::success(vec![Content::text(
+			lines.join("\n"),
+		)]))
 	}
 
 	// ===== CHANNELS =====
