@@ -1,6 +1,6 @@
 [package]
 name = "discord-bot"
-version = "0.13.1"
+version = "0.13.2"
 edition = "2021"
 description = "Multi-instance Discord bot framework written in Rust. AI chat, music, games, moderation, Minecraft integration, and a Model Context Protocol server."
 license = "AGPL-3.0-or-later"
