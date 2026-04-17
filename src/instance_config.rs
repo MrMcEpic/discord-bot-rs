@@ -16,10 +16,35 @@ pub struct InstanceConfig {
 	pub personality_file: String,
 	#[serde(default)]
 	pub features: Features,
+	#[serde(default)]
+	pub ai: AiConfig,
 	pub auto_role: Option<AutoRoleConfig>,
 	pub minecraft: Option<MinecraftConfig>,
 	pub join_role: Option<JoinRoleConfig>,
 	pub welcome: Option<WelcomeConfig>,
+}
+
+/// AI-related per-instance settings. Default = empty (existing behaviour: no
+/// fallback cascade on CENSORED, snarky-message canned reply fires).
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct AiConfig {
+	#[serde(default)]
+	pub fallback: AiFallbackConfig,
+}
+
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct AiFallbackConfig {
+	/// Ordered provider names to retry through when the primary provider hits
+	/// a content-moderation refusal (DeepSeek's `"Content Exists Risk"` →
+	/// `Err("CENSORED")`). Recognised names: `"grok"`, `"gemini"`, `"deepseek"`.
+	/// First non-CENSORED success wins; if every entry also CENSORS, the bot
+	/// falls back to its existing snarky-reply canned message.
+	///
+	/// Default empty (opt-in) — strict-moderation servers want the snarky
+	/// reply behaviour preserved. Names that resolve to a missing API key or
+	/// an unknown name are skipped at startup with a warning.
+	#[serde(default)]
+	pub on_censored: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
