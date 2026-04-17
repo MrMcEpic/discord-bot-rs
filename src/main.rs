@@ -74,6 +74,11 @@ pub struct Data {
 	pub config: Config,
 	pub personality: String,
 	pub bot_name: String,
+	/// Pre-rendered command invocation prefix used by the help embed and any
+	/// other code that needs to print example commands. Equal to
+	/// `command_prefix + command_root + " "` for the default case (`"!m "`)
+	/// or just `command_prefix` when `command_root` is empty (`"!"`).
+	pub cmd_prefix: String,
 	pub auto_role_config: Option<instance_config::AutoRoleConfig>,
 	pub minecraft_config: Option<instance_config::MinecraftConfig>,
 	pub join_role_config: Option<instance_config::JoinRoleConfig>,
@@ -280,7 +285,19 @@ async fn main() {
 						}
 					}
 				}
-				vec![m_cmd]
+				// command_root configurable at runtime — see instance_config.rs.
+				// "m" (default): register the wrapper as `m` so users invoke
+				//   <prefix>m <subcommand>. Existing behaviour.
+				// custom name (e.g. "bot"): rename the wrapper so two bots in
+				//   the same guild can be reached at distinct paths.
+				// "" (empty): skip the wrapper entirely; promote each child
+				//   to the root command list so users invoke <prefix><subcommand>.
+				if instance_cfg.command_root.is_empty() {
+					m_cmd.subcommands
+				} else {
+					m_cmd.name = instance_cfg.command_root.clone();
+					vec![m_cmd]
+				}
 			},
 			event_handler: |ctx, event, framework, data| {
 				Box::pin(events::event_handler(ctx, event, framework, data))
@@ -317,6 +334,14 @@ async fn main() {
 					config,
 					personality,
 					bot_name: instance_cfg.bot_name.clone(),
+					cmd_prefix: if instance_cfg.command_root.is_empty() {
+						instance_cfg.command_prefix.clone()
+					} else {
+						format!(
+							"{}{} ",
+							instance_cfg.command_prefix, instance_cfg.command_root
+						)
+					},
 					auto_role_config,
 					minecraft_config,
 					join_role_config,

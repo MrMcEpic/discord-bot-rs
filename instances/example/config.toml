@@ -22,6 +22,13 @@ bot_name = "Example Bot"
 # (no slash commands), so this is the single prefix every user sees.
 command_prefix = "!"
 
+# Parent command name. Default "m" gives users `<prefix>m <subcommand>` (e.g.
+# `!m play`). Useful tweaks:
+#   command_root = "bot"  → `<prefix>bot play` (separates two bots in one guild)
+#   command_root = ""     → `<prefix>play` (flat: every subcommand at the root)
+# Must be a single token (no whitespace). Default if omitted: "m".
+command_root = "m"
+
 # Path to the personality file (system prompt for AI chat), relative to this
 # config file. Default: "personality.txt"
 personality_file = "personality.txt"

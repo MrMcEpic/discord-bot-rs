@@ -10,6 +10,7 @@ The file is read once at startup from `CONFIG_DIR/config.toml` (where `CONFIG_DI
 |--------------------|--------|----------|--------------------|--------------------------------------------------------|
 | `bot_name`         | string | yes      | —                  | Display name shown in help output and logs             |
 | `command_prefix`   | string | yes      | —                  | Prefix for text-based commands                         |
+| `command_root`     | string | no       | `"m"`              | Parent command name; `""` for flat commands            |
 | `personality_file` | string | no       | `"personality.txt"`| Path to the personality file, relative to `config.toml`|
 
 ### `bot_name`
@@ -19,6 +20,22 @@ The human-readable name of this instance. It is used in help output, in welcome 
 ### `command_prefix`
 
 The prefix the bot listens for on text commands. The repo ships with `"!"` in the example, but you can use anything that won't collide with normal chat. discord-bot-rs uses prefix commands only — there are no slash commands — so this setting controls how users invoke every command.
+
+### `command_root`
+
+The name of the parent command that wraps every subcommand. Default `"m"` gives users the historical form `<prefix>m <subcommand>` (e.g. `!m play`). Three modes:
+
+| Value           | Effect                                       |
+|-----------------|----------------------------------------------|
+| `"m"` (default) | `!m play`, `!m skip`, ... (current behaviour)|
+| `"bot"` etc.    | `!bot play`, `!bot skip`, ...                |
+| `""` (empty)    | `!play`, `!skip`, ... (flat — no parent)     |
+
+The renamed-parent mode is useful when you run multiple bot instances in the **same** Discord guild — give each one a distinct `command_root` so users can address them unambiguously even when they share `command_prefix`. The flat mode is useful for single-bot servers where the prefix alone is enough discriminator.
+
+Validation: must be a single token. Whitespace is rejected at startup with a clear error pointing back at this field.
+
+The bot pre-renders the full command-invocation string (`<prefix><root> ` for the rename case, `<prefix>` for the flat case) and uses it everywhere the help output prints example commands, so the help embed stays consistent across all three modes.
 
 ### `personality_file`
 

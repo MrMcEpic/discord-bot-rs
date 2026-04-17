@@ -24,6 +24,9 @@ pub async fn help(ctx: Context<'_>) -> Result<(), BotError> {
 	let is_admin = perms.contains(Permissions::ADMINISTRATOR);
 
 	let bot_name = &ctx.data().bot_name;
+	// Pre-rendered prefix from instance_config; "!m " by default, "!" for
+	// flat-command setups, "!bot " etc. for renamed parent commands.
+	let p = &ctx.data().cmd_prefix;
 
 	let mut embed = CreateEmbed::new()
         .color(0x5865f2)
@@ -33,56 +36,58 @@ pub async fn help(ctx: Context<'_>) -> Result<(), BotError> {
         );
 
 	let music_lines = [
-		"`!m play <song>` — Play a song (or add to queue)",
-		"`!m playlist <url>` — Queue an entire playlist",
-		"`!m skip` — Skip current track",
-		"`!m stop` — Stop playback and leave voice",
-		"`!m pause` / `!m resume` — Pause/resume playback",
-		"`!m queue` — Show the current queue",
-		"`!m np` — Show what's playing now",
-		"`!m loop [off|track|queue]` — Toggle loop mode",
-		"`!m shuffle` — Shuffle the queue",
-		"`!m remove <#>` — Remove a song from queue",
+		format!("`{p}play <song>` — Play a song (or add to queue)"),
+		format!("`{p}playlist <url>` — Queue an entire playlist"),
+		format!("`{p}skip` — Skip current track"),
+		format!("`{p}stop` — Stop playback and leave voice"),
+		format!("`{p}pause` / `{p}resume` — Pause/resume playback"),
+		format!("`{p}queue` — Show the current queue"),
+		format!("`{p}np` — Show what's playing now"),
+		format!("`{p}loop [off|track|queue]` — Toggle loop mode"),
+		format!("`{p}shuffle` — Shuffle the queue"),
+		format!("`{p}remove <#>` — Remove a song from queue"),
 	];
 	embed = embed.field("Music", music_lines.join("\n"), false);
 
 	let game_lines = [
-		"`!m connections` — Play today's NYT Connections",
-		"`!m connections random` — Random puzzle",
-		"`!m wordle` — Play today's Wordle",
-		"`!m wordle random` — Random Wordle",
+		format!("`{p}connections` — Play today's NYT Connections"),
+		format!("`{p}connections random` — Random puzzle"),
+		format!("`{p}wordle` — Play today's Wordle"),
+		format!("`{p}wordle random` — Random Wordle"),
 	];
 	embed = embed.field("Games", game_lines.join("\n"), false);
 
 	let stock_lines = [
-		"`!m stock buy <symbol> <qty/$amt>` — Buy shares",
-		"`!m stock sell <symbol> <qty/all>` — Sell shares",
-		"`!m stock portfolio [@user]` — View portfolio",
-		"`!m stock price <symbol>` — Check stock price",
-		"`!m stock leaderboard` — Top portfolios in server",
-		"`!m stock history` — Recent trades",
-		"`!m stock reset confirm` — Reset to $1,000",
+		format!("`{p}stock buy <symbol> <qty/$amt>` — Buy shares"),
+		format!("`{p}stock sell <symbol> <qty/all>` — Sell shares"),
+		format!("`{p}stock portfolio [@user]` — View portfolio"),
+		format!("`{p}stock price <symbol>` — Check stock price"),
+		format!("`{p}stock leaderboard` — Top portfolios in server"),
+		format!("`{p}stock history` — Recent trades"),
+		format!("`{p}stock reset confirm` — Reset to $1,000"),
 	];
 	embed = embed.field("Stocks", stock_lines.join("\n"), false);
 
 	if has_ban || has_manage {
-		let mut mod_lines = Vec::new();
+		let mut mod_lines: Vec<String> = Vec::new();
 		if has_manage {
-			mod_lines.push("`!m nuke <1-100>` — Bulk delete messages");
+			mod_lines.push(format!("`{p}nuke <1-100>` — Bulk delete messages"));
 		}
 		if has_ban {
-			mod_lines.push("`!m ban @user <duration> [reason]` — Tempban a user");
-			mod_lines.push("`!m unban @user` — Unban a user early");
-			mod_lines.push("`!m banlist` — Show active tempbans");
+			mod_lines.push(format!(
+				"`{p}ban @user <duration> [reason]` — Tempban a user"
+			));
+			mod_lines.push(format!("`{p}unban @user` — Unban a user early"));
+			mod_lines.push(format!("`{p}banlist` — Show active tempbans"));
 		}
 		embed = embed.field("Moderation", mod_lines.join("\n"), false);
 	}
 
 	if is_admin {
 		let admin_lines = [
-			"`!m setlog #channel` — Set the audit log channel",
-			"`!m djrole @role` — Set the DJ role",
-			"`!m djmode` — Toggle DJ-only mode for music commands",
+			format!("`{p}setlog #channel` — Set the audit log channel"),
+			format!("`{p}djrole @role` — Set the DJ role"),
+			format!("`{p}djmode` — Toggle DJ-only mode for music commands"),
 		];
 		embed = embed.field("Admin", admin_lines.join("\n"), false);
 	}
