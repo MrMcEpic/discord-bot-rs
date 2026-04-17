@@ -45,6 +45,13 @@ async fn main() {
 		loop {
 			tokio::time::sleep(Duration::from_secs(300)).await;
 			refresh_state.refresh_guild_map().await;
+			// Also re-fetch the tool list — without this, any new tool
+			// added to a backend bot stays invisible to clients until
+			// the gateway itself is restarted, even though the bot
+			// already serves it correctly.
+			if let Err(e) = refresh_state.refresh_tool_list().await {
+				tracing::warn!("Periodic refresh_tool_list failed: {}", e);
+			}
 		}
 	});
 

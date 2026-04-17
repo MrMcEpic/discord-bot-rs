@@ -102,6 +102,32 @@ Bulk-delete the most recent messages from a channel (1–100). Falls back to a s
 
 **Returns:** `Deleted N message(s)`.
 
+### `get_recent_messages`
+
+Fetch recent messages from a channel, newest first. Each message is returned on its own line as `[timestamp] author_name (author_id) [msg_id=...]: content` followed by `[+N attachment(s)]` and `[+N embed(s)]` markers when present. Use the `before` parameter to paginate backward — pass the oldest `msg_id` from the previous response.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `guild_id` | string | no | Server ID. Defaults to the configured guild; used to verify the channel belongs to that guild before reading. |
+| `channel_id` | string | yes | Target channel snowflake. |
+| `limit` | integer (1–100) | no | Number of messages to fetch. Defaults to 50, clamped server-side. |
+| `before` | string | no | Message snowflake. If set, only messages older than this ID are returned. |
+
+**Example:**
+```json
+{
+  "name": "get_recent_messages",
+  "arguments": {
+    "channel_id": "1234567890123456789",
+    "limit": 25
+  }
+}
+```
+
+**Returns:** Newline-separated lines, one per message, or `No messages found.` if the channel is empty in the requested window.
+
 ## Channels
 
 ### `list_channels`
