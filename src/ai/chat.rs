@@ -8,13 +8,12 @@ use std::io::Cursor;
 use std::sync::LazyLock;
 
 use super::confirmation::request_confirmation;
-use super::dsml::parse_dsml;
+use super::providers::{self, AiProvider, ApiResponse, ToolCall};
 use super::sanitize::sanitize_content;
 use super::search::web_search;
 use super::split::split_response;
 use super::tools::{
 	is_connections_tool, is_moderation_tool, is_search_tool, is_stock_tool, is_wordle_tool,
-	tool_definitions,
 };
 use crate::connections::api as conn_api;
 use crate::connections::embeds as conn_embeds;
@@ -33,18 +32,6 @@ use crate::wordle::embeds as wordle_embeds;
 use crate::wordle::game::WordleGame;
 use crate::Data;
 
-const DEEPSEEK_URL: &str = "https://api.deepseek.com/chat/completions";
-const DEEPSEEK_MODEL: &str = "deepseek-chat";
-const GEMINI_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
-const GEMINI_MODEL: &str = "gemini-3-flash-preview";
-const DEEPSEEK_REASONER_MODEL: &str = "deepseek-reasoner";
-
-#[derive(Clone)]
-struct ApiEndpoint {
-	url: &'static str,
-	model: &'static str,
-	api_key: String,
-}
 const FETCH_LIMIT: u8 = 100;
 const MAX_RELEVANT: usize = 10;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -117,19 +104,6 @@ When users mention other users, the mention appears as <@USER_ID> in the message
 	)
 }
 
-#[derive(Debug, Clone)]
-struct ToolCall {
-	id: String,
-	name: String,
-	arguments: String,
-}
-
-#[derive(Debug)]
-struct ApiResponse {
-	content: Option<String>,
-	tool_calls: Vec<ToolCall>,
-}
-
 static TOOL_RESPONSE_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
 	[
 		r"^Stopped playback",
@@ -195,115 +169,11 @@ fn is_bad_assistant_message(content: &str) -> bool {
 /// undocumented, so we substring-match. Used by `call_api` to surface a
 /// dedicated `Err("CENSORED")` sentinel that callers branch on instead of the
 /// generic `API returned <status>` error.
-fn is_censored_body(body: &str) -> bool {
+///
+/// Public so [`super::providers::openai_compat_complete`] can call it without
+/// duplicating the substring match.
+pub(crate) fn is_censored_body(body: &str) -> bool {
 	body.contains("Content Exists Risk")
-}
-
-async fn call_api(
-	client: &reqwest::Client,
-	endpoint: &ApiEndpoint,
-	messages: &[serde_json::Value],
-	use_tools: bool,
-	max_tokens: u32,
-) -> Result<ApiResponse, String> {
-	let is_reasoner = endpoint.model == DEEPSEEK_REASONER_MODEL;
-
-	// Each provider has different max_tokens limits
-	let provider_limit = if is_reasoner {
-		32768
-	} else if endpoint.url == DEEPSEEK_URL {
-		8192
-	} else {
-		// Gemini
-		16384
-	};
-	let clamped_tokens = max_tokens.min(provider_limit);
-
-	let mut body = serde_json::json!({
-		"model": endpoint.model,
-		"messages": messages,
-		"max_tokens": clamped_tokens,
-	});
-
-	if use_tools && !is_reasoner {
-		body["tools"] = serde_json::Value::Array(tool_definitions());
-	}
-
-	let timeout = if is_reasoner {
-		std::time::Duration::from_secs(300)
-	} else {
-		std::time::Duration::from_secs(30)
-	};
-
-	let response = client
-		.post(endpoint.url)
-		.header("Content-Type", "application/json")
-		.header("Authorization", format!("Bearer {}", endpoint.api_key))
-		.timeout(timeout)
-		.json(&body)
-		.send()
-		.await
-		.map_err(|e| format!("API request failed: {e}"))?;
-
-	if !response.status().is_success() {
-		let status = response.status();
-		let err_body = response.text().await.unwrap_or_default();
-		tracing::error!("{} API {status}: {err_body}", endpoint.model);
-		if is_censored_body(&err_body) {
-			return Err("CENSORED".to_string());
-		}
-		return Err(format!("API returned {status}"));
-	}
-
-	let data: serde_json::Value = response
-		.json()
-		.await
-		.map_err(|e| format!("Failed to parse API response: {e}"))?;
-
-	let choice = &data["choices"][0]["message"];
-
-	// Parse proper API tool calls
-	let mut tool_calls: Vec<ToolCall> = choice["tool_calls"]
-		.as_array()
-		.unwrap_or(&vec![])
-		.iter()
-		.filter_map(|tc| {
-			Some(ToolCall {
-				id: tc["id"].as_str()?.to_string(),
-				name: tc["function"]["name"].as_str()?.to_string(),
-				arguments: tc["function"]["arguments"].as_str()?.to_string(),
-			})
-		})
-		.collect();
-
-	// Parse DSML-embedded tool calls
-	let mut content = choice["content"].as_str().map(|s| s.trim().to_string());
-
-	if let Some(ref text) = content {
-		let (dsml_calls, cleaned) = parse_dsml(text);
-		for dsml in dsml_calls {
-			let args_json = serde_json::to_string(&dsml.arguments).unwrap_or_default();
-			tool_calls.push(ToolCall {
-				id: format!(
-					"dsml_{}_{}",
-					chrono::Utc::now().timestamp_millis(),
-					rand::random::<u32>()
-				),
-				name: dsml.name,
-				arguments: args_json,
-			});
-		}
-		content = if cleaned.is_empty() {
-			None
-		} else {
-			Some(cleaned)
-		};
-	}
-
-	Ok(ApiResponse {
-		content,
-		tool_calls,
-	})
 }
 
 /// Builds the message history for the AI. Returns the history and any image
@@ -518,7 +388,7 @@ async fn build_message_history(
 
 async fn handle_search_calls(
 	client: &reqwest::Client,
-	endpoint: &ApiEndpoint,
+	provider: &dyn AiProvider,
 	http_client: &reqwest::Client,
 	history: &mut Vec<serde_json::Value>,
 	response: &ApiResponse,
@@ -585,7 +455,7 @@ async fn handle_search_calls(
 	}
 
 	// Call API again — allow tools so it can do follow-up searches
-	call_api(client, endpoint, history, true, 32768).await
+	providers::complete(provider, client, history, true, 32768).await
 }
 
 async fn execute_music_tool(
@@ -1836,7 +1706,7 @@ async fn process_image_attachment(
 
 async fn classify_message(
 	client: &reqwest::Client,
-	endpoint: &ApiEndpoint,
+	provider: &dyn AiProvider,
 	user_text: &str,
 ) -> Result<bool, String> {
 	let messages = vec![
@@ -1850,7 +1720,7 @@ async fn classify_message(
 		}),
 	];
 
-	let response = call_api(client, endpoint, &messages, false, 10).await?;
+	let response = providers::complete(provider, client, &messages, false, 10).await?;
 	let text = response.content.unwrap_or_default().to_lowercase();
 	Ok(text.starts_with("yes"))
 }
@@ -1894,15 +1764,9 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
 	let has_reply_images = !reply_attachments.is_empty();
 	let has_images = has_images || has_reply_images;
 
-	// --- Image vision path: route to Gemini ---
+	// --- Image vision path: route to vision-capable provider ---
 	if has_images {
-		if let Some(ref gemini_key) = data.config.gemini_api_key {
-			let gemini_endpoint = ApiEndpoint {
-				url: GEMINI_URL,
-				model: GEMINI_MODEL,
-				api_key: gemini_key.clone(),
-			};
-
+		if let Some(vision_provider) = data.ai_router.vision() {
 			let mut data_uris = Vec::new();
 			// Process images from the replied-to message first
 			for attachment in &reply_attachments {
@@ -1952,10 +1816,19 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
 				history[last_idx]["content"] = serde_json::Value::Array(content_parts);
 
 				tracing::info!(
-					"Routing to Gemini 3 Flash (image vision, {} images)",
+					"Routing to {} (image vision, {} images)",
+					vision_provider.name(),
 					data_uris.len()
 				);
-				match call_api(&data.http_client, &gemini_endpoint, &history, false, 32768).await {
+				match providers::complete(
+					vision_provider,
+					&data.http_client,
+					&history,
+					false,
+					32768,
+				)
+				.await
+				{
 					Ok(resp) => {
 						typing_handle.abort();
 						if let Some(content) = &resp.content {
@@ -1971,8 +1844,8 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
 						return;
 					}
 					Err(e) => {
-						tracing::error!("Gemini vision failed: {e}");
-						// Fall through to text-only DeepSeek path (strip multimodal content back)
+						tracing::error!("Vision provider failed: {e}");
+						// Fall through to text-only chat path (strip multimodal content back)
 						history[last_idx]["content"] = serde_json::Value::String(
 							history[last_idx]["content"]
 								.as_array()
@@ -1993,61 +1866,56 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
 		}
 	}
 
-	// --- Text path: need a DeepSeek key from here ---
-	let deepseek_key = match &data.config.deepseek_api_key {
-		Some(key) => key.clone(),
+	// --- Text path: need a chat-capable provider from here ---
+	let chat_provider = match data.ai_router.chat() {
+		Some(p) => p,
 		None => {
 			typing_handle.abort();
 			return;
 		}
 	};
 
-	let deepseek_endpoint = ApiEndpoint {
-		url: DEEPSEEK_URL,
-		model: DEEPSEEK_MODEL,
-		api_key: deepseek_key,
-	};
-
-	// --- Model router: classify and possibly route to DeepSeek Reasoner ---
+	// --- Model router: classify and possibly route to the reasoner ---
 	let use_reasoner = {
 		let user_text = history
 			.last()
 			.and_then(|m| m["content"].as_str())
 			.unwrap_or("");
 
-		match classify_message(&data.http_client, &deepseek_endpoint, user_text).await {
+		match classify_message(&data.http_client, chat_provider, user_text).await {
 			Ok(v) => v,
 			Err(e) => {
-				tracing::warn!("Classification failed, defaulting to V3: {e}");
+				tracing::warn!("Classification failed, defaulting to chat provider: {e}");
 				false
 			}
 		}
 	};
 
-	let active_endpoint = if use_reasoner {
-		tracing::info!("Routing to DeepSeek Reasoner (reasoning question)");
+	let active_provider: &dyn AiProvider = if use_reasoner {
+		// Reasoner can't use tools, so use the chat provider as a research
+		// assistant first. Loop: let it search, feed results back, let it
+		// search again if needed.
+		let reasoner = data.ai_router.reasoner();
+		if let Some(reasoner) = reasoner {
+			tracing::info!("Routing to {} (reasoning question)", reasoner.name());
+		} else {
+			tracing::warn!("Reasoner requested but unavailable; falling back to chat provider");
+		}
 
-		// Reasoner can't use tools, so use V3 as a research assistant first.
-		// Loop: let V3 search, feed results back, let it search again if needed.
 		let mut pf_history = history.clone();
 		let mut all_search_context = Vec::new();
 
 		for round in 0..MAX_SEARCH_ROUNDS {
-			let pf_response = match call_api(
-				&data.http_client,
-				&deepseek_endpoint,
-				&pf_history,
-				true,
-				256,
-			)
-			.await
-			{
-				Ok(r) => r,
-				Err(e) => {
-					tracing::warn!("Reasoner pre-flight round {} failed: {e}", round + 1);
-					break;
-				}
-			};
+			let pf_response =
+				match providers::complete(chat_provider, &data.http_client, &pf_history, true, 256)
+					.await
+				{
+					Ok(r) => r,
+					Err(e) => {
+						tracing::warn!("Reasoner pre-flight round {} failed: {e}", round + 1);
+						break;
+					}
+				};
 
 			let search_calls: Vec<&ToolCall> = pf_response
 				.tool_calls
@@ -2130,18 +1998,22 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
             }));
 		}
 
-		ApiEndpoint {
-			url: DEEPSEEK_URL,
-			model: DEEPSEEK_REASONER_MODEL,
-			api_key: deepseek_endpoint.api_key.clone(),
-		}
+		// If reasoner is unconfigured, fall through to the chat provider so
+		// the request still completes (just without the reasoning model).
+		reasoner.unwrap_or(chat_provider)
 	} else {
-		tracing::info!("Routing to DeepSeek V3 (general question)");
-		deepseek_endpoint.clone()
+		tracing::info!("Routing to {} (general question)", chat_provider.name());
+		chat_provider
 	};
 
-	let mut response = match call_api(&data.http_client, &active_endpoint, &history, true, 32768)
-		.await
+	let mut response = match providers::complete(
+		active_provider,
+		&data.http_client,
+		&history,
+		true,
+		32768,
+	)
+	.await
 	{
 		Ok(r) => r,
 		Err(e) => {
@@ -2173,7 +2045,7 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
 		let _ = message.channel_id.broadcast_typing(&ctx.http).await;
 		match handle_search_calls(
 			&data.http_client,
-			&active_endpoint,
+			active_provider,
 			&data.http_client,
 			&mut history,
 			&response,
@@ -2192,7 +2064,7 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
 	// If still requesting search after MAX_SEARCH_ROUNDS rounds, force a final answer
 	if response.tool_calls.iter().any(|t| is_search_tool(&t.name)) {
 		if let Ok(final_resp) =
-			call_api(&data.http_client, &active_endpoint, &history, false, 32768).await
+			providers::complete(active_provider, &data.http_client, &history, false, 32768).await
 		{
 			response = final_resp;
 		}
@@ -2217,7 +2089,7 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
 	// If action tools but no text, get a witty quip
 	if !action_calls.is_empty() && response.content.is_none() {
 		if let Ok(quip) =
-			call_api(&data.http_client, &active_endpoint, &history, false, 32768).await
+			providers::complete(active_provider, &data.http_client, &history, false, 32768).await
 		{
 			if let Some(content) = &quip.content {
 				send_reply(ctx, message, content).await;
