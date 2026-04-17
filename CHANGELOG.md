@@ -10,6 +10,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - (track new changes here until the next release)
 
+## [0.14.0] - 2026-04-17
+
+### Added
+- **CENSORED cascade through alternate providers** (#13). When the primary AI provider returns its content-moderation refusal sentinel (DeepSeek's `"Content Exists Risk"` → `Err("CENSORED")`), the bot can now replay the same conversation through one or more alternate providers in order. First non-CENSORED success wins; if every entry also CENSORS, the existing snarky-reply canned message fires (preserves the refusal-as-feature behaviour for strict-moderation servers). Cascade is per-instance opt-in via a new `[ai.fallback] on_censored = ["grok", "gemini"]` field in `config.toml`. Default empty (no cascade).
+- **Grok provider (xAI)**. New `GROK_API_KEY` env var (optional) and `Grok` provider in `src/ai/providers/grok.rs`. OpenAI-compatible endpoint, used as the obvious less-restrictive cascade target when DeepSeek refuses. Recognised by `[ai.fallback] on_censored` under the name `"grok"`. Not used as a primary provider.
+- **`Data::ai_fallback_on_censored`** — the configured cascade name list, copied from `instance_config.ai.fallback.on_censored` at startup. Resolution against the router runs once at startup so unknown / unconfigured names log a warning during boot, not on every CENSORED.
+
+### Changed
+- **`handle_search_calls` and the three CENSORED detection sites in `src/ai/chat.rs`** route through the new `providers::complete_with_cascade` helper instead of `providers::complete` directly. When `[ai.fallback]` is unset (default), behaviour is identical to 0.13.2 — the helper short-circuits to the same single-provider call. When set, primary CENSORED → cascade through the resolved alts → first success returns, all CENSORED preserves the snarky-reply behaviour.
+- Non-content errors from the primary (rate limits, network, 5xx) do **not** trigger the cascade — they're treated as transient and surfaced directly, since a different provider is unlikely to fix a transient issue. Cascade member errors (any error) cause the dispatcher to skip to the next alt.
+
+### Tests
+- 6 new unit tests for `ProviderRouter::named` and `cascade_for` (resolution behaviour, ordering, skipping unconfigured / unknown names, preserving duplicates). Total inline unit-test count: 147 → 153.
+
+### Docs
+- `docs/configuration/environment-variables.md` documents `GROK_API_KEY` and clarifies the role each AI key plays (DeepSeek primary chat, Gemini vision, Grok cascade-only).
+- `instances/example/config.toml` includes a commented `[ai.fallback]` example.
+- `instances/example/.env.example` includes `GROK_API_KEY=`.
+
 ## [0.13.2] - 2026-04-17
 
 ### Changed
