@@ -105,7 +105,7 @@ impl GatewayState {
 		}
 	}
 
-	async fn refresh_tool_list(&self) -> Result<(), String> {
+	pub async fn refresh_tool_list(&self) -> Result<(), String> {
 		let backends = self.backends.read().await;
 		let client = backends.values().next().ok_or("No backends configured")?;
 
