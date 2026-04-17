@@ -1,7 +1,7 @@
 # MCP Server
 
 The bot embeds a Model Context Protocol (MCP) server that exposes Discord
-server-management as **29 tools** any MCP client can call. The intended
+server-management as **37 tools** any MCP client can call. The intended
 workflow is to point an AI coding assistant — Claude Code, Cursor, etc. —
 at the bot and let it manage your Discord server programmatically.
 
@@ -76,7 +76,7 @@ Code config (`~/.claude.json`):
 
 Then restart Claude Code. The next time you start a session, the
 `discord` server should appear in your tool list and you can call any
-of the 29 tools by name.
+of the 37 tools by name.
 
 If you've set `MCP_AUTH_TOKEN` (see below), add the bearer token to
 the same entry:
@@ -101,7 +101,7 @@ optionally pass a bearer token.
 
 ## Tool catalog
 
-The 29 tools are grouped into five categories. The full reference,
+The 37 tools are grouped into five categories. The full reference,
 including parameter schemas, lives in
 [Reference: MCP Tool Catalog](../reference/mcp-tool-catalog.md). The
 table below is the one-line summary.
@@ -160,7 +160,25 @@ table below is the one-line summary.
 | `set_nickname` | Set or clear a member's server nickname (1–32 chars). |
 | `get_bans` | List active bans with id/name/reason; paginate with `after`. |
 
-That's 29 tools total: 1 + 7 + 6 + 4 + 11.
+### Direct Messages
+
+| Tool | What it does |
+|---|---|
+| `send_private_message` | DM a user. Opens the DM channel automatically. **Privileged.** |
+| `read_private_messages` | Read recent DMs between the bot and a user, newest first. |
+| `edit_private_message` | Edit one of the bot's previously-sent DMs. |
+| `delete_private_message` | Delete one of the bot's previously-sent DMs. |
+
+### Webhooks
+
+| Tool | What it does |
+|---|---|
+| `list_webhooks` | List webhooks on a channel (id, name, token). |
+| `create_webhook` | Create a webhook on a channel; returns id + token. |
+| `delete_webhook` | Delete a webhook by ID. |
+| `send_webhook_message` | Send through a webhook with optional username/avatar overrides. **Privileged.** |
+
+That's 37 tools total: 1 + 7 + 6 + 4 + 11 + 4 + 4.
 
 ## Multi-guild support
 

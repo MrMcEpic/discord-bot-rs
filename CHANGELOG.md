@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - (track new changes here until the next release)
 
+## [0.10.0] - 2026-04-17
+
+### Added
+- **MCP direct-message tools**: `send_private_message`, `read_private_messages`, `edit_private_message`, `delete_private_message`. Open (or reuse) a DM channel automatically; reads use REST so no `DIRECT_MESSAGES` privileged intent is required. Edits/deletes only work on messages the bot itself sent. (Closes #7)
+- **MCP webhook tools**: `list_webhooks`, `create_webhook`, `delete_webhook`, `send_webhook_message`. The send tool supports per-message `username` / `avatar_url` overrides — the standard pattern for relay / persona / cross-platform-bridge bots. (Closes #9)
+- Brings the bot tool catalog to 37.
+
+### Changed
+- Added `secrecy` as a direct dep (was already transitively pulled in by serenity 0.12). Used in `src/mcp/tools.rs` to read webhook tokens out of `Webhook::token`, which serenity wraps in `secrecy::Secret`.
+
 ## [0.9.0] - 2026-04-17
 
 ### Added
