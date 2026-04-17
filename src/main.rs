@@ -263,11 +263,19 @@ async fn main() {
 		None
 	};
 
-	if welcome_config.is_some()
-		&& config.deepseek_api_key.is_none()
-		&& config.gemini_api_key.is_none()
-	{
-		tracing::warn!("Welcome feature enabled but no AI API key (DEEPSEEK_API_KEY or GEMINI_API_KEY) configured");
+	let has_welcome_capable_ai_key = std::env::var("DEEPSEEK_API_KEY")
+		.ok()
+		.filter(|s| !s.is_empty())
+		.is_some()
+		|| std::env::var("GEMINI_API_KEY")
+			.ok()
+			.filter(|s| !s.is_empty())
+			.is_some();
+
+	if welcome_config.is_some() && !has_welcome_capable_ai_key {
+		tracing::warn!(
+			"Welcome feature enabled but no AI API key (DEEPSEEK_API_KEY or GEMINI_API_KEY) configured"
+		);
 	}
 
 	let token = config.token.clone();
@@ -329,7 +337,8 @@ async fn main() {
 			Box::pin(async move {
 				let mc_verify_url = config.mc_verify_url.clone();
 				let mc_verify_secret = config.mc_verify_secret.clone();
-				let ai_router = ai::providers::ProviderRouter::from_config(&config);
+				let ai_router =
+					ai::providers::ProviderRouter::from_defaults(|k| std::env::var(k).ok());
 				let ai_fallback_on_censored = instance_cfg.ai.fallback.on_censored.clone();
 				// Resolve once at startup so unknown / unconfigured names log a
 				// warning here, not on every CENSORED-cascade attempt.

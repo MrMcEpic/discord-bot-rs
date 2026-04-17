@@ -2,9 +2,6 @@ use serenity::all::*;
 
 use crate::Data;
 
-const DEEPSEEK_URL: &str = "https://api.deepseek.com/chat/completions";
-const GEMINI_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
-
 pub async fn handle_member_join(ctx: &Context, member: &Member, data: &Data) {
 	let guild_id = member.guild_id;
 
@@ -58,22 +55,16 @@ pub async fn handle_member_join(ctx: &Context, member: &Member, data: &Data) {
 			}
 		};
 
-		let api_key = data
-			.config
-			.deepseek_api_key
-			.as_ref()
-			.or(data.config.gemini_api_key.as_ref());
+		let provider = data.ai_router.chat().or_else(|| data.ai_router.vision());
 
-		let Some(key) = api_key else {
-			tracing::warn!("Welcome message enabled but no AI API key available");
+		let Some(provider) = provider else {
+			tracing::warn!("Welcome message enabled but no AI provider available");
 			return;
 		};
 
-		let (url, model) = if data.config.deepseek_api_key.is_some() {
-			(DEEPSEEK_URL, "deepseek-chat")
-		} else {
-			(GEMINI_URL, "gemini-3-flash-preview")
-		};
+		let key = provider.api_key().to_string();
+		let url = provider.url().to_string();
+		let model = provider.model().to_string();
 
 		let system_prompt = format!(
 			"{}\n\n## Welcome Message Instructions\n{}",
