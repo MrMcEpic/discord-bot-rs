@@ -39,6 +39,23 @@ pub struct ProviderDef {
 	pub is_reasoner: bool,
 	#[serde(default)]
 	pub spec: ProviderSpec,
+	/// Extra HTTP headers attached to every chat-completions request. Used for
+	/// Anthropic's required `anthropic-version: 2023-06-01` header; extensible
+	/// to any future provider that requires custom headers. Keys must be
+	/// non-empty; values must contain only printable ASCII. Validated at
+	/// startup — see `validate_provider_def_headers_and_auth`.
+	#[serde(default)]
+	pub headers: std::collections::HashMap<String, String>,
+	/// Name of the auth header. Default `"Authorization"` works for every
+	/// OpenAI-compatible endpoint (Bearer-token auth). Anthropic uses
+	/// `"x-api-key"`. Must be non-empty after trim.
+	#[serde(default = "default_auth_header")]
+	pub auth_header: String,
+	/// Prefix prepended to the API key in the auth header value. Default
+	/// `"Bearer "` (note trailing space). Anthropic uses `""` (empty — the
+	/// API key is the full header value).
+	#[serde(default = "default_auth_scheme")]
+	pub auth_scheme: String,
 }
 
 fn default_timeout_secs() -> u64 {
@@ -47,6 +64,14 @@ fn default_timeout_secs() -> u64 {
 
 fn default_supports_tools() -> bool {
 	true
+}
+
+fn default_auth_header() -> String {
+	"Authorization".to_string()
+}
+
+fn default_auth_scheme() -> String {
+	"Bearer ".to_string()
 }
 
 /// Concrete provider — owned strings (name + url + model can come from user
@@ -64,9 +89,14 @@ pub struct ConfiguredProvider {
 	pub supports_vision: bool,
 	pub supports_tools: bool,
 	pub is_reasoner: bool,
-	/// Phase-2 forward-compat — read during `from_def` but not yet dispatched on.
 	#[allow(dead_code)]
 	pub spec: ProviderSpec,
+	#[allow(dead_code)]
+	pub headers: std::collections::HashMap<String, String>,
+	#[allow(dead_code)]
+	pub auth_header: String,
+	#[allow(dead_code)]
+	pub auth_scheme: String,
 }
 
 impl ConfiguredProvider {
@@ -98,6 +128,9 @@ impl ConfiguredProvider {
 			supports_tools: def.supports_tools,
 			is_reasoner: def.is_reasoner,
 			spec: def.spec,
+			headers: def.headers,
+			auth_header: def.auth_header,
+			auth_scheme: def.auth_scheme,
 		})
 	}
 }
@@ -129,5 +162,9 @@ impl AiProvider for ConfiguredProvider {
 	}
 	fn timeout(&self) -> Duration {
 		self.timeout
+	}
+
+	fn spec(&self) -> super::ProviderSpec {
+		self.spec
 	}
 }

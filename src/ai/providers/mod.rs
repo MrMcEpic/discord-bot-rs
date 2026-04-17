@@ -46,6 +46,9 @@ pub fn default_provider_registry() -> Vec<(&'static str, ProviderDef)> {
 				supports_tools: true,
 				is_reasoner: false,
 				spec: ProviderSpec::OpenAi,
+				headers: std::collections::HashMap::new(),
+				auth_header: "Authorization".to_string(),
+				auth_scheme: "Bearer ".to_string(),
 			},
 		),
 		(
@@ -60,6 +63,9 @@ pub fn default_provider_registry() -> Vec<(&'static str, ProviderDef)> {
 				supports_tools: false,
 				is_reasoner: true,
 				spec: ProviderSpec::OpenAi,
+				headers: std::collections::HashMap::new(),
+				auth_header: "Authorization".to_string(),
+				auth_scheme: "Bearer ".to_string(),
 			},
 		),
 		(
@@ -75,6 +81,9 @@ pub fn default_provider_registry() -> Vec<(&'static str, ProviderDef)> {
 				supports_tools: true,
 				is_reasoner: false,
 				spec: ProviderSpec::OpenAi,
+				headers: std::collections::HashMap::new(),
+				auth_header: "Authorization".to_string(),
+				auth_scheme: "Bearer ".to_string(),
 			},
 		),
 		(
@@ -89,6 +98,9 @@ pub fn default_provider_registry() -> Vec<(&'static str, ProviderDef)> {
 				supports_tools: true,
 				is_reasoner: false,
 				spec: ProviderSpec::OpenAi,
+				headers: std::collections::HashMap::new(),
+				auth_header: "Authorization".to_string(),
+				auth_scheme: "Bearer ".to_string(),
 			},
 		),
 	]
@@ -150,6 +162,15 @@ pub trait AiProvider: Send + Sync + std::fmt::Debug {
 	/// Per-provider HTTP request timeout.
 	fn timeout(&self) -> Duration {
 		Duration::from_secs(30)
+	}
+
+	/// Which API spec this provider speaks. Determines the dispatcher path in
+	/// `chat.rs`: `ProviderSpec::OpenAi` → `complete()`,
+	/// `ProviderSpec::Anthropic` → `complete_anthropic()`. Default is
+	/// `OpenAi` for trait objects that don't override — every provider
+	/// shipped today is OpenAI-compatible.
+	fn spec(&self) -> crate::ai::providers::ProviderSpec {
+		crate::ai::providers::ProviderSpec::OpenAi
 	}
 }
 
@@ -390,6 +411,11 @@ impl ProviderRouter {
 			merged.insert(name.clone(), def.clone());
 		}
 
+		// Validate headers + auth fields on every (user + default) provider.
+		for (name, def) in &merged {
+			validate_provider_def_headers_and_auth(name, def);
+		}
+
 		// Phase-1 spec gate: any non-OpenAi provider definition is a
 		// configuration error today.
 		for (name, def) in &merged {
@@ -550,6 +576,30 @@ impl ProviderRouter {
 			}
 		}
 		out
+	}
+}
+
+fn validate_provider_def_headers_and_auth(name: &str, def: &ProviderDef) {
+	if def.auth_header.trim().is_empty() {
+		panic!(
+			"Provider '{name}' has auth_header = \"{}\" (empty or whitespace). \
+			 auth_header must be a non-empty header name like \"Authorization\" or \"x-api-key\".",
+			def.auth_header
+		);
+	}
+	for (key, value) in &def.headers {
+		if key.trim().is_empty() {
+			panic!(
+				"Provider '{name}' has an empty header key in its headers map. \
+				 HTTP header names must be non-empty."
+			);
+		}
+		if value.chars().any(|c| c.is_ascii_control() || !c.is_ascii()) {
+			panic!(
+				"Provider '{name}' header '{key}' has a value containing non-printable \
+				 or non-ASCII characters. HTTP header values must be printable ASCII."
+			);
+		}
 	}
 }
 
@@ -1002,6 +1052,9 @@ mod tests {
 			supports_tools: true,
 			is_reasoner: false,
 			spec: ProviderSpec::OpenAi,
+			headers: std::collections::HashMap::new(),
+			auth_header: "Authorization".to_string(),
+			auth_scheme: "Bearer ".to_string(),
 		}
 	}
 
@@ -1176,5 +1229,43 @@ mod tests {
 		def.spec = ProviderSpec::Anthropic;
 		let cfg = ai_cfg(vec![("claude", def)], None);
 		ProviderRouter::from_instance_config_strict(&cfg, env_with(&[("K", "k")]));
+	}
+
+	#[test]
+	#[should_panic(expected = "auth_header")]
+	fn validation_panics_on_empty_auth_header() {
+		let mut def = def_for("https://example.invalid/v1/chat", "KEY");
+		def.auth_header = "".to_string();
+		let cfg = ai_cfg(vec![("bad", def)], None);
+		ProviderRouter::from_instance_config_strict(&cfg, env_with(&[("KEY", "k")]));
+	}
+
+	#[test]
+	#[should_panic(expected = "auth_header")]
+	fn validation_panics_on_whitespace_only_auth_header() {
+		let mut def = def_for("https://example.invalid/v1/chat", "KEY");
+		def.auth_header = "   ".to_string();
+		let cfg = ai_cfg(vec![("bad", def)], None);
+		ProviderRouter::from_instance_config_strict(&cfg, env_with(&[("KEY", "k")]));
+	}
+
+	#[test]
+	#[should_panic(expected = "empty header key")]
+	fn validation_panics_on_empty_header_key() {
+		let mut def = def_for("https://example.invalid/v1/chat", "KEY");
+		def.headers.insert("".to_string(), "value".to_string());
+		let cfg = ai_cfg(vec![("bad", def)], None);
+		ProviderRouter::from_instance_config_strict(&cfg, env_with(&[("KEY", "k")]));
+	}
+
+	#[test]
+	#[should_panic(expected = "non-printable")]
+	fn validation_panics_on_non_printable_header_value() {
+		let mut def = def_for("https://example.invalid/v1/chat", "KEY");
+		// Control character (null byte) in header value.
+		def.headers
+			.insert("x-bad".to_string(), "\0invalid".to_string());
+		let cfg = ai_cfg(vec![("bad", def)], None);
+		ProviderRouter::from_instance_config_strict(&cfg, env_with(&[("KEY", "k")]));
 	}
 }
