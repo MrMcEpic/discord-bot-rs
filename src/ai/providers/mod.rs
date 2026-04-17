@@ -447,18 +447,6 @@ impl ProviderRouter {
 			validate_provider_def_headers_and_auth(name, def);
 		}
 
-		// Phase-1 spec gate: any non-OpenAi provider definition is a
-		// configuration error today.
-		for (name, def) in &merged {
-			if def.spec != ProviderSpec::OpenAi {
-				panic!(
-					"Provider '{name}' has spec={:?} but only spec=\"openai\" is supported \
-					 in this release. Anthropic-spec dispatcher is phase 2 of issue #28.",
-					def.spec
-				);
-			}
-		}
-
 		// Resolve routing roles + validate they reference known names.
 		let (chat_role, vision_role, reasoner_role) = match &ai_cfg.routing {
 			Some(r) => {
@@ -906,6 +894,26 @@ pub async fn complete_anthropic(
 	parse_anthropic_response(&data)
 }
 
+/// Dispatch to the right spec-specific completion function based on
+/// `provider.spec()`. This is the function every call site in `chat.rs`
+/// should use (directly or via `complete_with_cascade`), so that swapping
+/// an OpenAI-spec provider for an Anthropic-spec one at routing time is a
+/// single-line config change with no chat.rs code change required.
+pub async fn complete_dispatch(
+	provider: &dyn AiProvider,
+	client: &reqwest::Client,
+	messages: &[serde_json::Value],
+	use_tools: bool,
+	max_tokens: u32,
+) -> Result<ApiResponse, String> {
+	match provider.spec() {
+		ProviderSpec::OpenAi => complete(provider, client, messages, use_tools, max_tokens).await,
+		ProviderSpec::Anthropic => {
+			complete_anthropic(provider, client, messages, use_tools, max_tokens).await
+		}
+	}
+}
+
 fn validate_provider_def_headers_and_auth(name: &str, def: &ProviderDef) {
 	if def.auth_header.trim().is_empty() {
 		panic!(
@@ -981,7 +989,7 @@ pub async fn complete_with_cascade(
 	use_tools: bool,
 	max_tokens: u32,
 ) -> Result<(ApiResponse, String), String> {
-	match complete(primary, client, messages, use_tools, max_tokens).await {
+	match complete_dispatch(primary, client, messages, use_tools, max_tokens).await {
 		Ok(r) => return Ok((r, primary.name().to_string())),
 		Err(e) if e != "CENSORED" => return Err(e),
 		Err(_) => {
@@ -997,7 +1005,7 @@ pub async fn complete_with_cascade(
 	}
 
 	for alt in cascade {
-		match complete(*alt, client, messages, use_tools, max_tokens).await {
+		match complete_dispatch(*alt, client, messages, use_tools, max_tokens).await {
 			Ok(r) => {
 				tracing::info!("Cascade succeeded via {}", alt.name());
 				return Ok((r, alt.name().to_string()));
@@ -1567,18 +1575,6 @@ mod tests {
 	}
 
 	#[test]
-	#[should_panic(expected = "phase 2")]
-	fn validation_panics_on_anthropic_spec() {
-		// Phase 1 only handles spec="openai". Anthropic dispatcher is phase 2.
-		// A user setting spec="anthropic" at this point would fail at request
-		// time with a confusing error — better to surface it at startup.
-		let mut def = def_for("u", "K");
-		def.spec = ProviderSpec::Anthropic;
-		let cfg = ai_cfg(vec![("claude", def)], None);
-		ProviderRouter::from_instance_config_strict(&cfg, env_with(&[("K", "k")]));
-	}
-
-	#[test]
 	#[should_panic(expected = "auth_header")]
 	fn validation_panics_on_empty_auth_header() {
 		let mut def = def_for("https://example.invalid/v1/chat", "KEY");
@@ -1902,5 +1898,71 @@ mod tests {
 			p.extra_headers().get("x-req-id").map(String::as_str),
 			Some("abc")
 		);
+	}
+
+	// --- Dispatch --------------------------------------------------------
+
+	#[test]
+	fn provider_spec_trait_default_is_openai() {
+		#[derive(Debug)]
+		struct StubOpenAi;
+		impl AiProvider for StubOpenAi {
+			fn name(&self) -> &str {
+				"stub"
+			}
+			fn url(&self) -> &str {
+				"https://example.invalid"
+			}
+			fn model(&self) -> &str {
+				"m"
+			}
+			fn api_key(&self) -> &str {
+				"k"
+			}
+			fn supports_vision(&self) -> bool {
+				false
+			}
+			fn max_tokens_limit(&self) -> u32 {
+				100
+			}
+			// Don't override spec() — verify default.
+		}
+		let s = StubOpenAi;
+		assert_eq!(s.spec(), ProviderSpec::OpenAi);
+	}
+
+	#[test]
+	fn configured_provider_spec_reflects_stored_value() {
+		let mut def = def_for("https://example.invalid/v1/chat", "KEY");
+		def.spec = ProviderSpec::Anthropic;
+		let cfg = ai_cfg(vec![("claude", def)], None);
+		// This call would previously panic under phase-1's gate; Commit 3
+		// removes that gate, but this test is dispatched-first so we need
+		// from_instance_config (non-strict) for now.
+		let r = ProviderRouter::from_instance_config(&cfg, env_with(&[("KEY", "k")]));
+		let p = r.named("claude").unwrap();
+		assert_eq!(p.spec(), ProviderSpec::Anthropic);
+	}
+
+	#[test]
+	fn anthropic_spec_no_longer_panics_after_phase2() {
+		// The phase-1 startup gate that rejected spec = "anthropic" is gone.
+		// from_instance_config_strict should successfully build a router
+		// containing an anthropic-spec provider.
+		let mut def = def_for("https://api.anthropic.com/v1/messages", "ANTHROPIC_API_KEY");
+		def.spec = ProviderSpec::Anthropic;
+		def.auth_header = "x-api-key".to_string();
+		def.auth_scheme = "".to_string();
+		def.headers
+			.insert("anthropic-version".to_string(), "2023-06-01".to_string());
+		let cfg = ai_cfg(vec![("claude", def)], None);
+		let r = ProviderRouter::from_instance_config_strict(
+			&cfg,
+			env_with(&[("ANTHROPIC_API_KEY", "k")]),
+		);
+		let p = r.named("claude").unwrap();
+		assert_eq!(p.spec(), ProviderSpec::Anthropic);
+		assert_eq!(p.auth_header(), "x-api-key");
+		assert_eq!(p.auth_scheme(), "");
 	}
 }
