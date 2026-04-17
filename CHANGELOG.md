@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - (track new changes here until the next release)
 
+## [0.11.0] - 2026-04-17
+
+### Added
+- **MCP voice & stage tools** (6): `create_voice_channel` / `create_stage_channel` (voice-specialised companions to `create_channel` with bitrate, user_limit, etc.), `edit_voice_channel` (bitrate / user_limit / RTC region updates), and three voice-state tools — `move_voice_member` (drag user to a voice channel), `disconnect_voice_member` (kick from voice), `modify_voice_state` (server-mute / server-deafen). Pairs naturally with the existing music feature: ops can move the bot's voice channel via MCP without restarting the container. (Closes #8)
+- Brings the bot tool catalog to 43 (1 + 7 + 9 + 4 + 14 + 4 + 4).
+
 ## [0.10.0] - 2026-04-17
 
 ### Added

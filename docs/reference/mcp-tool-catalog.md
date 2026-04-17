@@ -366,6 +366,90 @@ Move a channel to a new position (and optionally a new parent category).
 
 **Returns:** `Channel moved to position N`.
 
+### `create_voice_channel`
+
+Voice-specialised companion to `create_channel`. Creates a Discord voice channel with optional bitrate and user_limit.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `guild_id` | string | no | Server ID. Defaults to the configured guild. |
+| `name` | string | yes | Channel name. |
+| `category_id` | string | no | Snowflake of the parent category to nest under. |
+| `bitrate` | integer | no | Voice bitrate in bps. Default 64000; range 8000-96000 by default, up to 128000/256000/384000 on tier-1/2/3 boosted guilds. |
+| `user_limit` | integer (0-99) | no | Max simultaneous users. 0 = unlimited (default). |
+
+**Example:**
+```json
+{
+  "name": "create_voice_channel",
+  "arguments": {
+    "name": "Standup Room",
+    "user_limit": 10,
+    "bitrate": 96000
+  }
+}
+```
+
+**Returns:** `Created voice channel '<name>' (ID: <snowflake>)`.
+
+### `create_stage_channel`
+
+Create a Discord stage channel — a voice channel with explicit speaker/audience separation, used for presentations and AMAs.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `guild_id` | string | no | Server ID. Defaults to the configured guild. |
+| `name` | string | yes | Channel name. |
+| `category_id` | string | no | Snowflake of the parent category to nest under. |
+
+**Example:**
+```json
+{
+  "name": "create_stage_channel",
+  "arguments": {
+    "name": "Q&A Session"
+  }
+}
+```
+
+**Returns:** `Created stage channel '<name>' (ID: <snowflake>)`.
+
+### `edit_voice_channel`
+
+Voice-specialised companion to `edit_channel`. Edit the bitrate, user_limit, RTC region, name, or parent category of a voice channel.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `guild_id` | string | no | Server ID. Defaults to the configured guild. |
+| `channel_id` | string | yes | Voice channel snowflake. |
+| `name` | string | no | New channel name. |
+| `bitrate` | integer | no | New bitrate in bps. |
+| `user_limit` | integer (0-99) | no | New max simultaneous users (0 = unlimited). |
+| `category_id` | string | no | Snowflake of a category to move the channel under. |
+| `rtc_region` | string | no | RTC region override (e.g. `us-west`, `europe`). Pass empty string to clear and let Discord auto-pick. |
+
+At least one of name/bitrate/user_limit/category_id/rtc_region must be supplied.
+
+**Example:**
+```json
+{
+  "name": "edit_voice_channel",
+  "arguments": {
+    "channel_id": "1234567890123456789",
+    "bitrate": 128000,
+    "user_limit": 25
+  }
+}
+```
+
+**Returns:** `Voice channel '<name>' updated`.
+
 ### `set_channel_permissions`
 
 Apply a permission overwrite (for a role or a member) on a single channel.
@@ -774,6 +858,80 @@ List active bans in the server, with each user's id/name and the moderator-suppl
 ```
 
 **Returns:** `<count> ban(s):` followed by one line per ban as `<username> (<user_id>) — <reason>`.
+
+### `move_voice_member`
+
+Move a member to a different voice channel. The member must currently be in a voice channel in this guild — Discord rejects with 400 if they aren't connected to voice.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `guild_id` | string | no | Server ID. Defaults to the configured guild. |
+| `user_id` | string | yes | Target user snowflake. |
+| `channel_id` | string | yes | Voice channel to drop them into. |
+
+**Example:**
+```json
+{
+  "name": "move_voice_member",
+  "arguments": {
+    "user_id": "123456789012345678",
+    "channel_id": "1234567890123456790"
+  }
+}
+```
+
+**Returns:** `Moved user to voice channel <id>`.
+
+### `disconnect_voice_member`
+
+Disconnect a member from voice. The member must currently be in a voice channel in this guild for the disconnect to take effect.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `guild_id` | string | no | Server ID. Defaults to the configured guild. |
+| `user_id` | string | yes | Target user snowflake. |
+
+**Example:**
+```json
+{
+  "name": "disconnect_voice_member",
+  "arguments": {
+    "user_id": "123456789012345678"
+  }
+}
+```
+
+**Returns:** `User disconnected from voice`.
+
+### `modify_voice_state`
+
+Server-mute or server-deafen a member when they're in voice. Pass `mute` and/or `deafen` explicitly; omitted fields are left unchanged. At least one of the two must be provided.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `guild_id` | string | no | Server ID. Defaults to the configured guild. |
+| `user_id` | string | yes | Target user snowflake. |
+| `mute` | boolean | no | Server-mute (true) or unmute (false) when in voice. Omit to leave unchanged. |
+| `deafen` | boolean | no | Server-deafen (true) or undeafen (false) when in voice. Omit to leave unchanged. |
+
+**Example:**
+```json
+{
+  "name": "modify_voice_state",
+  "arguments": {
+    "user_id": "123456789012345678",
+    "mute": true
+  }
+}
+```
+
+**Returns:** `Voice state updated: <fields>`.
 
 ## Direct Messages
 

@@ -224,6 +224,84 @@ pub struct GetMessagesParams {
 	pub before: Option<String>,
 }
 
+// --- Voice & Stage channel param structs ---
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CreateVoiceChannelParams {
+	/// Guild/server ID (optional, defaults to configured guild)
+	pub guild_id: Option<String>,
+	pub name: String,
+	/// Snowflake of the parent category to nest under
+	#[serde(default)]
+	pub category_id: Option<String>,
+	/// Voice bitrate in bps (8000-96000 by default; up to 128000/256000/384000 on tier-1/2/3 boosted guilds)
+	#[serde(default)]
+	pub bitrate: Option<u32>,
+	/// Max simultaneous users (0-99). 0 means unlimited.
+	#[serde(default)]
+	pub user_limit: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CreateStageChannelParams {
+	/// Guild/server ID (optional, defaults to configured guild)
+	pub guild_id: Option<String>,
+	pub name: String,
+	/// Snowflake of the parent category to nest under
+	#[serde(default)]
+	pub category_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct EditVoiceChannelParams {
+	/// Guild/server ID (optional, defaults to configured guild)
+	pub guild_id: Option<String>,
+	pub channel_id: String,
+	#[serde(default)]
+	pub name: Option<String>,
+	/// Bitrate in bps (8000-96000 by default; higher on boosted guilds)
+	#[serde(default)]
+	pub bitrate: Option<u32>,
+	/// Max simultaneous users (0-99, 0 = unlimited)
+	#[serde(default)]
+	pub user_limit: Option<u32>,
+	/// Move the channel under a different parent category
+	#[serde(default)]
+	pub category_id: Option<String>,
+	/// RTC region override (e.g. "us-west", "europe"). Pass empty string to clear and let Discord auto-pick.
+	#[serde(default)]
+	pub rtc_region: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct MoveVoiceMemberParams {
+	/// Guild/server ID (optional, defaults to configured guild)
+	pub guild_id: Option<String>,
+	pub user_id: String,
+	/// Voice channel to drop them into. Member must currently be in a voice channel in this guild for the move to take effect.
+	pub channel_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DisconnectVoiceMemberParams {
+	/// Guild/server ID (optional, defaults to configured guild)
+	pub guild_id: Option<String>,
+	pub user_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ModifyVoiceStateParams {
+	/// Guild/server ID (optional, defaults to configured guild)
+	pub guild_id: Option<String>,
+	pub user_id: String,
+	/// Server-mute the member when in voice. Pass null/omit to leave unchanged.
+	#[serde(default)]
+	pub mute: Option<bool>,
+	/// Server-deafen the member when in voice. Pass null/omit to leave unchanged.
+	#[serde(default)]
+	pub deafen: Option<bool>,
+}
+
 // --- DM (Direct Message) param structs ---
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1511,6 +1589,194 @@ impl DiscordTools {
 		Ok(CallToolResult::success(vec![Content::text(
 			"Webhook message sent",
 		)]))
+	}
+
+	// ===== VOICE & STAGE =====
+	//
+	// Three channel-creation/edit tools (create_voice_channel,
+	// create_stage_channel, edit_voice_channel) extend the existing
+	// create_channel/edit_channel surface with voice-specific params
+	// (bitrate, user_limit, rtc_region) that don't apply to text channels.
+	//
+	// Three voice-state tools (move_voice_member, disconnect_voice_member,
+	// modify_voice_state) all hit Discord's `PATCH guilds/<g>/members/<u>`
+	// endpoint with different field combinations. Move/disconnect require
+	// the member be in a voice channel in this guild at the time; Discord
+	// returns 400 if they're not.
+
+	#[tool(
+		description = "Create a voice channel with optional bitrate (bps) and user_limit (0-99, 0=unlimited). Voice-specialised companion to create_channel."
+	)]
+	async fn create_voice_channel(
+		&self,
+		params: Parameters<CreateVoiceChannelParams>,
+	) -> Result<CallToolResult, McpError> {
+		let p = params.0;
+		let gid = self.resolve_guild(p.guild_id.as_deref())?;
+		// Discord channel type 2 = guild voice channel.
+		let mut map = serde_json::json!({ "name": p.name, "type": 2u8 });
+		if let Some(ref cat_id) = p.category_id {
+			map["parent_id"] = serde_json::Value::String(cat_id.clone());
+		}
+		if let Some(b) = p.bitrate {
+			map["bitrate"] = serde_json::json!(b);
+		}
+		if let Some(u) = p.user_limit {
+			map["user_limit"] = serde_json::json!(u.min(99));
+		}
+		let ch = discord_call!(self.http.create_channel(gid, &map, None));
+		Ok(CallToolResult::success(vec![Content::text(format!(
+			"Created voice channel '{}' (ID: {})",
+			ch.name, ch.id
+		))]))
+	}
+
+	#[tool(
+		description = "Create a stage channel. Stage channels are voice channels with explicit speaker/audience separation, used for presentations and AMAs."
+	)]
+	async fn create_stage_channel(
+		&self,
+		params: Parameters<CreateStageChannelParams>,
+	) -> Result<CallToolResult, McpError> {
+		let p = params.0;
+		let gid = self.resolve_guild(p.guild_id.as_deref())?;
+		// Discord channel type 13 = stage voice channel.
+		let mut map = serde_json::json!({ "name": p.name, "type": 13u8 });
+		if let Some(ref cat_id) = p.category_id {
+			map["parent_id"] = serde_json::Value::String(cat_id.clone());
+		}
+		let ch = discord_call!(self.http.create_channel(gid, &map, None));
+		Ok(CallToolResult::success(vec![Content::text(format!(
+			"Created stage channel '{}' (ID: {})",
+			ch.name, ch.id
+		))]))
+	}
+
+	#[tool(
+		description = "Edit a voice channel's bitrate, user_limit, RTC region, name, or parent category. Voice-specialised companion to edit_channel."
+	)]
+	async fn edit_voice_channel(
+		&self,
+		params: Parameters<EditVoiceChannelParams>,
+	) -> Result<CallToolResult, McpError> {
+		let p = params.0;
+		let gid = self.resolve_guild(p.guild_id.as_deref())?;
+		let channel_id = ChannelId::new(parse_id(&p.channel_id)?);
+		self.verify_channel_in_guild(channel_id, gid).await?;
+		let mut map = serde_json::Map::new();
+		if let Some(name) = p.name {
+			map.insert("name".to_string(), serde_json::Value::String(name));
+		}
+		if let Some(b) = p.bitrate {
+			map.insert("bitrate".to_string(), serde_json::json!(b));
+		}
+		if let Some(u) = p.user_limit {
+			map.insert("user_limit".to_string(), serde_json::json!(u.min(99)));
+		}
+		if let Some(cat) = p.category_id {
+			map.insert("parent_id".to_string(), serde_json::Value::String(cat));
+		}
+		// Empty string clears the region (lets Discord auto-pick); a non-empty
+		// value pins it. Don't touch the field at all if `rtc_region` was omitted.
+		if let Some(region) = p.rtc_region {
+			map.insert(
+				"rtc_region".to_string(),
+				if region.is_empty() {
+					serde_json::Value::Null
+				} else {
+					serde_json::Value::String(region)
+				},
+			);
+		}
+		if map.is_empty() {
+			return Err(McpError::invalid_params(
+				"At least one of name/bitrate/user_limit/category_id/rtc_region required",
+				None,
+			));
+		}
+		let value = serde_json::Value::Object(map);
+		let ch = discord_call!(self.http.edit_channel(channel_id, &value, None));
+		Ok(CallToolResult::success(vec![Content::text(format!(
+			"Voice channel '{}' updated",
+			ch.name
+		))]))
+	}
+
+	#[tool(
+		description = "Move a member to a different voice channel. The member must currently be in a voice channel in this guild — Discord rejects with 400 if they aren't connected to voice."
+	)]
+	async fn move_voice_member(
+		&self,
+		params: Parameters<MoveVoiceMemberParams>,
+	) -> Result<CallToolResult, McpError> {
+		let p = params.0;
+		let gid = self.resolve_guild(p.guild_id.as_deref())?;
+		let user_id = UserId::new(parse_id(&p.user_id)?);
+		let channel_id = ChannelId::new(parse_id(&p.channel_id)?);
+		self.verify_channel_in_guild(channel_id, gid).await?;
+		let map = serde_json::json!({ "channel_id": channel_id.to_string() });
+		discord_call!(self.http.edit_member(gid, user_id, &map, None));
+		Ok(CallToolResult::success(vec![Content::text(format!(
+			"Moved user to voice channel {channel_id}"
+		))]))
+	}
+
+	#[tool(
+		description = "Disconnect a member from voice. The member must currently be in a voice channel in this guild for the disconnect to take effect."
+	)]
+	async fn disconnect_voice_member(
+		&self,
+		params: Parameters<DisconnectVoiceMemberParams>,
+	) -> Result<CallToolResult, McpError> {
+		let p = params.0;
+		let gid = self.resolve_guild(p.guild_id.as_deref())?;
+		let user_id = UserId::new(parse_id(&p.user_id)?);
+		// Discord's contract: setting channel_id to null on a member who's
+		// currently in voice disconnects them.
+		let map = serde_json::json!({ "channel_id": null });
+		discord_call!(self.http.edit_member(gid, user_id, &map, None));
+		Ok(CallToolResult::success(vec![Content::text(
+			"User disconnected from voice",
+		)]))
+	}
+
+	#[tool(
+		description = "Server-mute or server-deafen a member when they're in voice. Pass mute and/or deafen explicitly; omitted fields are left unchanged. At least one of mute/deafen must be provided."
+	)]
+	async fn modify_voice_state(
+		&self,
+		params: Parameters<ModifyVoiceStateParams>,
+	) -> Result<CallToolResult, McpError> {
+		let p = params.0;
+		let gid = self.resolve_guild(p.guild_id.as_deref())?;
+		let user_id = UserId::new(parse_id(&p.user_id)?);
+		if p.mute.is_none() && p.deafen.is_none() {
+			return Err(McpError::invalid_params(
+				"At least one of mute/deafen must be provided",
+				None,
+			));
+		}
+		let mut map = serde_json::Map::new();
+		if let Some(m) = p.mute {
+			map.insert("mute".to_string(), serde_json::Value::Bool(m));
+		}
+		if let Some(d) = p.deafen {
+			// Discord field name is `deaf` (not `deafen`).
+			map.insert("deaf".to_string(), serde_json::Value::Bool(d));
+		}
+		let value = serde_json::Value::Object(map);
+		discord_call!(self.http.edit_member(gid, user_id, &value, None));
+		let parts: Vec<String> = [
+			p.mute.map(|m| format!("mute={m}")),
+			p.deafen.map(|d| format!("deaf={d}")),
+		]
+		.iter()
+		.filter_map(|x| x.clone())
+		.collect();
+		Ok(CallToolResult::success(vec![Content::text(format!(
+			"Voice state updated: {}",
+			parts.join(", ")
+		))]))
 	}
 }
 
