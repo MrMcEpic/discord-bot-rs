@@ -1,7 +1,7 @@
 # MCP Server
 
 The bot embeds a Model Context Protocol (MCP) server that exposes Discord
-server-management as **37 tools** any MCP client can call. The intended
+server-management as **43 tools** any MCP client can call. The intended
 workflow is to point an AI coding assistant — Claude Code, Cursor, etc. —
 at the bot and let it manage your Discord server programmatically.
 
@@ -76,7 +76,7 @@ Code config (`~/.claude.json`):
 
 Then restart Claude Code. The next time you start a session, the
 `discord` server should appear in your tool list and you can call any
-of the 37 tools by name.
+of the 43 tools by name.
 
 If you've set `MCP_AUTH_TOKEN` (see below), add the bearer token to
 the same entry:
@@ -101,7 +101,7 @@ optionally pass a bearer token.
 
 ## Tool catalog
 
-The 37 tools are grouped into five categories. The full reference,
+The 43 tools are grouped into five categories. The full reference,
 including parameter schemas, lives in
 [Reference: MCP Tool Catalog](../reference/mcp-tool-catalog.md). The
 table below is the one-line summary.
@@ -134,6 +134,9 @@ table below is the one-line summary.
 | `edit_channel` | Edit name, topic, NSFW flag, slowmode, parent category. |
 | `move_channel` | Move a channel to a new position or category. |
 | `set_channel_permissions` | Apply permission overrides for a role or member. |
+| `create_voice_channel` | Create a voice channel with optional bitrate / user_limit. |
+| `create_stage_channel` | Create a stage channel (speaker/audience-separated voice). |
+| `edit_voice_channel` | Edit voice-specific channel fields (bitrate, user_limit, region). |
 
 ### Roles
 
@@ -159,6 +162,9 @@ table below is the one-line summary.
 | `remove_timeout` | Lift an active timeout (inverse of `timeout_member`). |
 | `set_nickname` | Set or clear a member's server nickname (1–32 chars). |
 | `get_bans` | List active bans with id/name/reason; paginate with `after`. |
+| `move_voice_member` | Move a member to a different voice channel. |
+| `disconnect_voice_member` | Disconnect a member from voice. |
+| `modify_voice_state` | Server-mute / server-deafen a member when in voice. |
 
 ### Direct Messages
 
@@ -178,7 +184,7 @@ table below is the one-line summary.
 | `delete_webhook` | Delete a webhook by ID. |
 | `send_webhook_message` | Send through a webhook with optional username/avatar overrides. **Privileged.** |
 
-That's 37 tools total: 1 + 7 + 6 + 4 + 11 + 4 + 4.
+That's 43 tools total: 1 + 7 + 9 + 4 + 14 + 4 + 4.
 
 ## Multi-guild support
 
