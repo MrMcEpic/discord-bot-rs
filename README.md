@@ -48,7 +48,7 @@ Link Discord accounts to Minecraft accounts via `!m verify`. Optional donator ro
 
 ### MCP server for Claude Code
 
-An embedded Model Context Protocol server exposes 22 Discord management tools. Plug Claude Code into `http://localhost:9090/mcp` and manage guilds, channels, roles, and members from an AI assistant. A companion mcp-gateway service routes tool calls across multiple bot instances when you run more than one.
+An embedded Model Context Protocol server exposes 51 Discord management tools — guilds, channels, roles, members, messages, reactions, voice, invites, custom emoji, webhooks, DMs. Plug Claude Code into `http://localhost:9090/mcp` and manage your server from an AI assistant. A companion mcp-gateway service routes tool calls across multiple bot instances when you run more than one. The full catalog lives at [docs/reference/mcp-tool-catalog.md](https://mrmcepic.github.io/discord-bot-rs/book/reference/mcp-tool-catalog.html).
 
 ## Quick Start
 
@@ -68,14 +68,14 @@ The full ten-minute walkthrough is in [docs/getting-started/quickstart.md](https
 ```mermaid
 graph TB
     subgraph "Bot Process"
-        Gateway[Discord Gateway<br/>serenity]
-        Handler[Event Handler<br/>poise]
-        Commands[Commands<br/>src/commands/]
-        AI[AI Pipeline<br/>src/ai/]
-        Music[Music Player<br/>src/music/]
-        Games[Games<br/>wordle / connections / stocks]
-        DB[(PostgreSQL<br/>sqlx, schema-per-instance)]
-        MCP[MCP Server<br/>src/mcp/ + axum]
+        Gateway[Discord Gateway<br>serenity]
+        Handler[Event Handler<br>poise]
+        Commands[Commands<br>src/commands/]
+        AI[AI Pipeline<br>src/ai/]
+        Music[Music Player<br>src/music/]
+        Games[Games<br>wordle / connections / stocks]
+        DB[(PostgreSQL<br>sqlx, schema-per-instance)]
+        MCP[MCP Server<br>src/mcp/ + axum]
     end
     Discord[Discord API] <--> Gateway
     Gateway --> Handler
