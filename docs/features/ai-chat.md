@@ -49,6 +49,8 @@ features still work.
 
 ## Configuration
 
+**Provider configuration:** as of 0.15.0, the providers DeepSeek + Gemini + Grok the bot ships with can be replaced or extended by your own definitions in `config.toml`. See [AI Providers](../configuration/ai-providers.md) for the schema and examples (single-model setup, custom routing, overriding defaults).
+
 There are exactly three things to configure:
 
 1. **`DEEPSEEK_API_KEY`** in `.env`. Optional in the strict sense, but

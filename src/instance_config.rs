@@ -28,17 +28,43 @@ pub struct InstanceConfig {
 /// fallback cascade on CENSORED, snarky-message canned reply fires).
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct AiConfig {
+	/// User-defined providers, keyed by name. Merged with the baked default
+	/// registry at startup — user names win on collision.
+	#[serde(default)]
+	pub providers: std::collections::HashMap<String, crate::ai::providers::ProviderDef>,
+
+	/// Optional role overrides. When the entire section is absent, the
+	/// router uses defaults (chat = "deepseek_chat", vision = "gemini_flash",
+	/// reasoner = "deepseek_reasoner"). When present, only the keys you set
+	/// take effect — omitted vision/reasoner means "graceful degrade".
+	pub routing: Option<RoutingConfig>,
+
 	#[serde(default)]
 	pub fallback: AiFallbackConfig,
+}
+
+/// User overrides for which configured provider plays which role.
+#[derive(Debug, Deserialize, Clone)]
+pub struct RoutingConfig {
+	/// Logically required when the section is present — the bot panics at
+	/// startup if this is `None` (validated by `from_instance_config_strict`).
+	/// Typed as `Option<String>` so TOML can express the absent case, which
+	/// validation then rejects with a clear message rather than a parse error.
+	pub chat: Option<String>,
+	pub vision: Option<String>,
+	pub reasoner: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct AiFallbackConfig {
 	/// Ordered provider names to retry through when the primary provider hits
 	/// a content-moderation refusal (DeepSeek's `"Content Exists Risk"` →
-	/// `Err("CENSORED")`). Recognised names: `"grok"`, `"gemini"`, `"deepseek"`.
-	/// First non-CENSORED success wins; if every entry also CENSORS, the bot
-	/// falls back to its existing snarky-reply canned message.
+	/// `Err("CENSORED")`). Recognised canonical names: `"grok"`, `"gemini_flash"`,
+	/// `"deepseek_chat"`. For backward compat with 0.14.0 instance configs, the
+	/// short aliases `"gemini"`, `"deepseek"`, and `"deepseek-chat"` also resolve
+	/// here at request time. See `docs/configuration/ai-providers.md` for the full
+	/// alias table. First non-CENSORED success wins; if every entry also CENSORS,
+	/// the bot falls back to its existing snarky-reply canned message.
 	///
 	/// Default empty (opt-in) — strict-moderation servers want the snarky
 	/// reply behaviour preserved. Names that resolve to a missing API key or
@@ -198,7 +224,7 @@ impl InstanceConfig {
 
 #[cfg(test)]
 mod tests {
-	use super::validate_command_root;
+	use super::{validate_command_root, AiConfig, InstanceConfig};
 
 	#[test]
 	fn validate_command_root_accepts_default() {
@@ -223,5 +249,135 @@ mod tests {
 		assert!(validate_command_root("bot ").is_err());
 		assert!(validate_command_root(" bot").is_err());
 		assert!(validate_command_root("a\tb").is_err());
+	}
+
+	// --- AI provider schema parsing -------------------------------------
+
+	fn parse_ai_config(toml_str: &str) -> AiConfig {
+		// Parse a complete InstanceConfig with the given [ai] section to
+		// avoid having to fabricate top-level required fields.
+		let full = format!(
+			r#"
+bot_name = "Test Bot"
+command_prefix = "!"
+
+{toml_str}
+"#
+		);
+		let cfg: InstanceConfig = toml::from_str(&full).expect("toml must parse");
+		cfg.ai
+	}
+
+	#[test]
+	fn ai_section_absent_yields_empty_default() {
+		let ai = parse_ai_config("");
+		assert!(ai.providers.is_empty());
+		assert!(ai.routing.is_none());
+		assert!(ai.fallback.on_censored.is_empty());
+	}
+
+	#[test]
+	fn ai_providers_minimal_user_definition_parses() {
+		let ai = parse_ai_config(
+			r#"
+[ai.providers.my_local]
+url = "http://localhost:11434/v1/chat/completions"
+model = "llama3.1:70b"
+api_key_env = "LOCAL_LLM_KEY"
+max_tokens = 8192
+"#,
+		);
+		assert_eq!(ai.providers.len(), 1);
+		let def = &ai.providers["my_local"];
+		assert_eq!(def.url, "http://localhost:11434/v1/chat/completions");
+		assert_eq!(def.model, "llama3.1:70b");
+		assert_eq!(def.api_key_env, "LOCAL_LLM_KEY");
+		assert_eq!(def.max_tokens, 8192);
+		// Optional fields default correctly.
+		assert_eq!(def.timeout_secs, 30);
+		assert!(!def.supports_vision);
+		assert!(def.supports_tools);
+		assert!(!def.is_reasoner);
+	}
+
+	#[test]
+	fn ai_providers_optional_fields_parse() {
+		let ai = parse_ai_config(
+			r#"
+[ai.providers.fancy]
+url = "https://example.com/v1/chat/completions"
+model = "fancy-model"
+api_key_env = "FANCY_KEY"
+max_tokens = 32000
+timeout_secs = 120
+supports_vision = true
+supports_tools = false
+is_reasoner = true
+spec = "openai"
+"#,
+		);
+		let def = &ai.providers["fancy"];
+		assert_eq!(def.timeout_secs, 120);
+		assert!(def.supports_vision);
+		assert!(!def.supports_tools);
+		assert!(def.is_reasoner);
+	}
+
+	#[test]
+	fn ai_routing_section_with_chat_only_parses() {
+		let ai = parse_ai_config(
+			r#"
+[ai.routing]
+chat = "my_local"
+"#,
+		);
+		let routing = ai.routing.expect("routing section present");
+		assert_eq!(routing.chat.as_deref(), Some("my_local"));
+		assert!(routing.vision.is_none());
+		assert!(routing.reasoner.is_none());
+	}
+
+	#[test]
+	fn ai_routing_section_full_parses() {
+		let ai = parse_ai_config(
+			r#"
+[ai.routing]
+chat = "x"
+vision = "y"
+reasoner = "z"
+"#,
+		);
+		let routing = ai.routing.expect("routing section present");
+		assert_eq!(routing.chat.as_deref(), Some("x"));
+		assert_eq!(routing.vision.as_deref(), Some("y"));
+		assert_eq!(routing.reasoner.as_deref(), Some("z"));
+	}
+
+	#[test]
+	fn ai_fallback_unchanged_from_v0_14_0() {
+		let ai = parse_ai_config(
+			r#"
+[ai.fallback]
+on_censored = ["grok", "gemini_flash"]
+"#,
+		);
+		assert_eq!(ai.fallback.on_censored, vec!["grok", "gemini_flash"]);
+	}
+
+	#[test]
+	fn ai_unknown_fields_in_provider_def_tolerated() {
+		// No deny_unknown_fields — extra keys in a provider def parse cleanly.
+		// Forward-compat for phase 2 (e.g. `headers = { ... }`).
+		let ai = parse_ai_config(
+			r#"
+[ai.providers.x]
+url = "u"
+model = "m"
+api_key_env = "K"
+max_tokens = 1000
+some_phase_2_field = "ignored"
+"#,
+		);
+		assert!(ai.providers.contains_key("x"));
 	}
 }

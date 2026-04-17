@@ -1736,10 +1736,8 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
 			.starts_with("image/")
 	});
 
-	// If no DeepSeek key and no images (or no Gemini key), we can't do anything
-	if data.config.deepseek_api_key.is_none()
-		&& !(has_images && data.config.gemini_api_key.is_some())
-	{
+	// If no chat provider and no images (or no vision provider), we can't do anything
+	if data.ai_router.chat().is_none() && !(has_images && data.ai_router.vision().is_some()) {
 		return;
 	}
 

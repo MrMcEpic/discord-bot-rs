@@ -62,6 +62,8 @@ The Postgres schema name this instance owns. The default is `public`, but for an
 
 All three are independently optional. If `DEEPSEEK_API_KEY` and `GEMINI_API_KEY` are both unset the AI chat feature is disabled — mention the bot and you'll get nothing back. If only one is set it is used. If both are set the bot uses DeepSeek as primary text and Gemini for image vision. `GROK_API_KEY` is only used when an instance opts into the CENSORED cascade via `[ai.fallback]` in its `config.toml`. Empty strings (`DEEPSEEK_API_KEY=`) are normalized to "unset."
 
+**Custom providers may name any env var.** The `api_key_env` field of an `[ai.providers.<name>]` block in instance `config.toml` names the env var the bot will read for that provider's bearer token. The default-registry providers' `api_key_env` values map to the env vars listed above. See [AI Providers](ai-providers.md) for the schema and worked examples (custom env-var names, multiple providers, etc.).
+
 ### `DEEPSEEK_API_KEY`
 
 Get one at [platform.deepseek.com](https://platform.deepseek.com/). DeepSeek's chat models are the cheapest of the supported providers and are recommended as the primary. See the [AI Chat](../features/ai-chat.md) feature page for model selection details.
