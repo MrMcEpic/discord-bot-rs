@@ -37,7 +37,7 @@ jobs:
             org.opencontainers.image.description=Multi-instance Discord bot framework written in Rust
             org.opencontainers.image.licenses=AGPL-3.0-or-later
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64
@@ -74,7 +74,7 @@ jobs:
             org.opencontainers.image.description=MCP gateway for routing MCP requests across discord-bot-rs instances
             org.opencontainers.image.licenses=AGPL-3.0-or-later
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ./mcp-gateway
           platforms: linux/amd64
