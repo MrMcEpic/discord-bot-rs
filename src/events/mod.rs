@@ -23,7 +23,7 @@ pub async fn event_handler(
 ) -> Result<(), BotError> {
 	match event {
 		poise::serenity_prelude::FullEvent::Ready { data_about_bot, .. } => {
-			ready::handle_ready(ctx, data_about_bot).await;
+			ready::handle_ready(ctx, data_about_bot, &data.cmd_prefix).await;
 
 			// Start MCP server (only once, guard against reconnect re-fires)
 			if !data
