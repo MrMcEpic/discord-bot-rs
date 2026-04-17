@@ -1008,7 +1008,9 @@ mod tests {
 	#[test]
 	fn from_instance_config_no_user_input_matches_from_defaults() {
 		// AiConfig empty + only DEEPSEEK_API_KEY set → behaves like
-		// from_defaults: chat available, vision/reasoner unavailable.
+		// from_defaults: chat and reasoner available, vision unavailable
+		// (both deepseek_chat and deepseek_reasoner share DEEPSEEK_API_KEY;
+		// gemini_flash needs GEMINI_API_KEY which is not set here).
 		let r = ProviderRouter::from_instance_config(
 			&AiConfig::default(),
 			env_with(&[("DEEPSEEK_API_KEY", "k")]),

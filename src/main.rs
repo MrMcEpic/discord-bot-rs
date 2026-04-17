@@ -263,21 +263,6 @@ async fn main() {
 		None
 	};
 
-	let has_welcome_capable_ai_key = std::env::var("DEEPSEEK_API_KEY")
-		.ok()
-		.filter(|s| !s.is_empty())
-		.is_some()
-		|| std::env::var("GEMINI_API_KEY")
-			.ok()
-			.filter(|s| !s.is_empty())
-			.is_some();
-
-	if welcome_config.is_some() && !has_welcome_capable_ai_key {
-		tracing::warn!(
-			"Welcome feature enabled but no AI API key (DEEPSEEK_API_KEY or GEMINI_API_KEY) configured"
-		);
-	}
-
 	let token = config.token.clone();
 	let guild_id_for_tasks = config.guild_id.clone();
 	let mc_verify_url_for_tasks = config.mc_verify_url.clone();
@@ -345,6 +330,21 @@ async fn main() {
 				// Resolve once at startup so unknown / unconfigured names log a
 				// warning here, not on every CENSORED-cascade attempt.
 				let _ = ai_router.cascade_for(&ai_fallback_on_censored);
+				// Welcome pre-flight: warn if the welcome feature is configured but no
+				// provider is available that member_join.rs can route to (it uses
+				// ai_router.chat().or_else(|| ai_router.vision())). With config-driven
+				// providers, "available" means any provider — default registry or user
+				// definition — whose api_key_env resolved to a non-empty value AND that
+				// is wired to either the chat or vision role.
+				if welcome_config.is_some()
+					&& ai_router.chat().is_none()
+					&& ai_router.vision().is_none()
+				{
+					tracing::warn!(
+						"Welcome feature enabled but no AI provider is available for the \
+						 chat or vision role; member-join welcomes will be skipped"
+					);
+				}
 				Ok(Data {
 					db,
 					http_client,

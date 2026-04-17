@@ -46,7 +46,10 @@ pub struct AiConfig {
 /// User overrides for which configured provider plays which role.
 #[derive(Debug, Deserialize, Clone)]
 pub struct RoutingConfig {
-	/// Required when the section is present. Panic at startup if missing.
+	/// Logically required when the section is present — the bot panics at
+	/// startup if this is `None` (validated by `from_instance_config_strict`).
+	/// Typed as `Option<String>` so TOML can express the absent case, which
+	/// validation then rejects with a clear message rather than a parse error.
 	pub chat: Option<String>,
 	pub vision: Option<String>,
 	pub reasoner: Option<String>,
@@ -56,9 +59,12 @@ pub struct RoutingConfig {
 pub struct AiFallbackConfig {
 	/// Ordered provider names to retry through when the primary provider hits
 	/// a content-moderation refusal (DeepSeek's `"Content Exists Risk"` →
-	/// `Err("CENSORED")`). Recognised names: `"grok"`, `"gemini"`, `"deepseek"`.
-	/// First non-CENSORED success wins; if every entry also CENSORS, the bot
-	/// falls back to its existing snarky-reply canned message.
+	/// `Err("CENSORED")`). Recognised canonical names: `"grok"`, `"gemini_flash"`,
+	/// `"deepseek_chat"`. For backward compat with 0.14.0 instance configs, the
+	/// short aliases `"gemini"`, `"deepseek"`, and `"deepseek-chat"` also resolve
+	/// here at request time. See `docs/configuration/ai-providers.md` for the full
+	/// alias table. First non-CENSORED success wins; if every entry also CENSORS,
+	/// the bot falls back to its existing snarky-reply canned message.
 	///
 	/// Default empty (opt-in) — strict-moderation servers want the snarky
 	/// reply behaviour preserved. Names that resolve to a missing API key or

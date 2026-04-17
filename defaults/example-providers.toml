@@ -1,0 +1,85 @@
+# discord-bot-rs — example AI provider definitions
+#
+# This file is a copy-paste reference, NOT loaded by the bot at runtime. The
+# four default-registry providers (deepseek_chat, deepseek_reasoner,
+# gemini_flash, grok) live in src/ai/providers/mod.rs as `default_provider_registry()`.
+#
+# To use any of the entries below, copy the relevant block into your
+# instances/<your-bot>/config.toml and set the corresponding env var in
+# instances/<your-bot>/.env.
+#
+# Schema reference: docs/configuration/ai-providers.md
+
+
+# ----- Mistral ------------------------------------------------------------
+# Mistral's API is OpenAI-compatible. Free tier available at console.mistral.ai.
+
+# [ai.providers.mistral]
+# url = "https://api.mistral.ai/v1/chat/completions"
+# model = "mistral-large-latest"
+# api_key_env = "MISTRAL_API_KEY"
+# max_tokens = 16384
+# timeout_secs = 30
+# supports_tools = true
+
+
+# ----- OpenAI -------------------------------------------------------------
+# Reference OpenAI endpoint. Use any GPT model name.
+
+# [ai.providers.openai_gpt4]
+# url = "https://api.openai.com/v1/chat/completions"
+# model = "gpt-4o"
+# api_key_env = "OPENAI_API_KEY"
+# max_tokens = 16384
+# supports_vision = true
+# supports_tools = true
+
+
+# ----- OpenRouter ---------------------------------------------------------
+# Aggregator that fronts dozens of models behind one OpenAI-compatible API.
+# `model` is the OpenRouter model slug, e.g. "anthropic/claude-3.5-sonnet"
+# (note: that's accessed via OpenRouter's OpenAI-compat proxy, not the
+# native Anthropic API — phase 2 will add native Anthropic support).
+
+# [ai.providers.openrouter]
+# url = "https://openrouter.ai/api/v1/chat/completions"
+# model = "meta-llama/llama-3.1-70b-instruct"
+# api_key_env = "OPENROUTER_API_KEY"
+# max_tokens = 8192
+# supports_tools = true
+
+
+# ----- Local Ollama -------------------------------------------------------
+# Self-hosted, no internet required. Ollama serves an OpenAI-compatible
+# endpoint by default. The `api_key_env` value matters only for the env-var
+# name — Ollama itself accepts any non-empty bearer token.
+
+# [ai.providers.ollama_localhost]
+# url = "http://localhost:11434/v1/chat/completions"
+# model = "llama3.1:70b"
+# api_key_env = "OLLAMA_API_KEY"
+# max_tokens = 8192
+# timeout_secs = 60        # local CPU inference can be slow
+# supports_tools = true    # depends on the model — set false for non-tool-trained models
+
+
+# ----- Together AI --------------------------------------------------------
+# Hosted inference for popular open-weight models.
+
+# [ai.providers.together]
+# url = "https://api.together.xyz/v1/chat/completions"
+# model = "meta-llama/Llama-3.1-70B-Instruct-Turbo"
+# api_key_env = "TOGETHER_API_KEY"
+# max_tokens = 8192
+# supports_tools = true
+
+
+# ----- Groq ----------------------------------------------------------------
+# Very fast inference on a smaller catalogue.
+
+# [ai.providers.groq]
+# url = "https://api.groq.com/openai/v1/chat/completions"
+# model = "llama-3.1-70b-versatile"
+# api_key_env = "GROQ_API_KEY"
+# max_tokens = 8000
+# supports_tools = true

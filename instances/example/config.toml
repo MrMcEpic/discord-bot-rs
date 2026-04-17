@@ -46,6 +46,39 @@ join_role = false     # Assign a role to new members on join
 welcome = false       # AI-generated welcome message on join
 
 
+# ----- AI Provider Definitions (CONFIG-DRIVEN, OPTIONAL) -------------------
+#
+# Define your own AI providers. Default registry (deepseek_chat,
+# deepseek_reasoner, gemini_flash, grok) is preserved when this section is
+# absent — see docs/configuration/ai-providers.md for the field reference
+# and defaults/example-providers.toml for copy-paste examples (Mistral,
+# OpenAI, OpenRouter, Ollama localhost, etc.).
+
+# [ai.providers.my_local]
+# url = "http://localhost:11434/v1/chat/completions"
+# model = "llama3.1:70b"
+# api_key_env = "LOCAL_LLM_KEY"
+# max_tokens = 8192
+# # Optional fields with defaults shown:
+# # timeout_secs = 30
+# # supports_vision = false
+# # supports_tools = true
+# # is_reasoner = false
+
+
+# ----- AI Routing (OPTIONAL) -----------------------------------------------
+#
+# Override which configured provider plays which role. Section absent =
+# default matrix (chat=deepseek_chat / vision=gemini_flash /
+# reasoner=deepseek_reasoner). Section present = only the keys you write
+# take effect — omitted vision/reasoner means "graceful degrade".
+#
+# Single-model setup example (just `chat`, vision/reasoner omitted):
+
+# [ai.routing]
+# chat = "my_local"
+
+
 # ----- AI Fallback (CENSORED cascade) ---------------------------------------
 #
 # Optional. When the primary AI provider returns its content-moderation

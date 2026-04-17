@@ -163,6 +163,12 @@ At startup the loader inspects each enabled feature flag and tries to find its s
 
 Validation strategy is "loud warnings, soft fail": misconfiguration of optional features doesn't crash the bot, but it does show up clearly in the logs. Run with `RUST_LOG=info,discord_bot=info` (or similar) to see the per-module enable/disable lines on startup.
 
+## AI Provider Configuration (`[ai.providers]` and `[ai.routing]`)
+
+Define custom AI providers and override role routing per-instance. Both sections are optional — when absent, the bot uses a baked-in default registry equivalent to all releases prior to 0.15.0.
+
+See **[AI Providers](ai-providers.md)** for the full schema reference, default registry contents, validation rules, and worked examples (one-model setup, three-provider setup with cascade, overriding a default).
+
 ## Complete annotated example
 
 The example instance ships with this `config.toml` (also at `instances/example/config.toml` in the repo):

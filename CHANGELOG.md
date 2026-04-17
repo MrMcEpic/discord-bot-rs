@@ -10,6 +10,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - (track new changes here until the next release)
 
+## [0.15.0] - 2026-04-17
+
+### Added
+- **Config-driven AI providers** (#28, phase 1). Instance `config.toml` can now define custom providers (`[ai.providers.<name>]`) and override role routing (`[ai.routing]`). The four shipped providers (DeepSeek chat / DeepSeek Reasoner / Gemini / Grok) become a baked-in default registry — instances with no `[ai.*]` section behave bit-for-bit identically to 0.14.0.
+- **Single-model setups supported.** Define one provider and route only `chat` to it; `vision` and `reasoner` gracefully degrade (image messages fall through to chat with a warning, classifier step is skipped). See `docs/configuration/ai-providers.md` for the worked example.
+- **`defaults/example-providers.toml`** — copy-paste catalogue with annotated examples for Mistral, OpenAI, OpenRouter, Ollama localhost, Together AI, and Groq. Not loaded by the bot at runtime; pure discoverability.
+- **`docs/configuration/ai-providers.md`** — full schema reference, default registry contents, validation rules table, worked examples.
+
+### Changed
+- **`AiProvider` trait `name`/`url`/`model` return `&str`** instead of `&'static str`. Required so `ConfiguredProvider` (the only impl now) can hand out references to its owned String fields. All callers pass these directly to `format!` / `tracing!` macros — unaffected.
+- **`Config` no longer holds `deepseek_api_key` / `gemini_api_key` / `grok_api_key`** typed fields. The env vars are resolved by the new `ConfiguredProvider::from_def` via each provider's `api_key_env` field (default registry uses the same env var names — `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `GROK_API_KEY`). No env-var name change.
+- **Three per-provider files deleted:** `src/ai/providers/{deepseek,gemini,grok}.rs`. Replaced by `configured.rs` + `default_provider_registry()` in `mod.rs`.
+
+### Fixed
+- (none — strictly additive feature release)
+
+### Tests
+- Default-registry snapshot tests pin every field of every default provider against today's hardcoded values. Future drift fails the test.
+- Schema parsing tests for `[ai.providers]` / `[ai.routing]` (empty, minimal user definition, optional fields, routing variants, fallback unchanged, unknown-field tolerance for phase 2 forward-compat).
+- Validation tests covering all panic cases (typo in any role, routing without chat, whitespace in name, Anthropic spec) and graceful-degrade cases (unavailable referenced provider doesn't panic).
+- Total inline unit-test count: 153 → 179 (+26 new across snapshot, parsing, merge, routing, and validation).
+
+### Phase 2 (separate follow-up)
+- Sub-issue filed for native Anthropic-spec dispatcher (`complete_anthropic`) + Claude provider. The `spec` field on every provider definition defaults to `"openai"` and is the dispatcher hook for phase 2; in 0.15.0 the bot panics at startup if any provider is configured with `spec = "anthropic"` so misconfigurations surface immediately.
+
 ## [0.14.0] - 2026-04-17
 
 ### Added
