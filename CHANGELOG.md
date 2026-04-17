@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- (track new changes here until the next release)
+
+## [0.7.0] - 2026-04-16
+
+### Added
 - **`get_recent_messages` MCP tool** — read recent channel messages, newest first, with `limit` (1-100) and `before` for pagination. Brings the bot tool catalog to 23.
 
 ### Fixed
