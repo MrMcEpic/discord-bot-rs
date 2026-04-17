@@ -189,6 +189,16 @@ fn is_bad_assistant_message(content: &str) -> bool {
 		|| BAD_ASSISTANT_PATTERNS.iter().any(|p| p.is_match(content))
 }
 
+/// Detect a DeepSeek content-moderation refusal in an HTTP error body.
+/// DeepSeek returns a 4xx with `"Content Exists Risk"` somewhere in the JSON
+/// body when the request hits its moderation block. The exact body shape is
+/// undocumented, so we substring-match. Used by `call_api` to surface a
+/// dedicated `Err("CENSORED")` sentinel that callers branch on instead of the
+/// generic `API returned <status>` error.
+fn is_censored_body(body: &str) -> bool {
+	body.contains("Content Exists Risk")
+}
+
 async fn call_api(
 	client: &reqwest::Client,
 	endpoint: &ApiEndpoint,
@@ -239,7 +249,7 @@ async fn call_api(
 		let status = response.status();
 		let err_body = response.text().await.unwrap_or_default();
 		tracing::error!("{} API {status}: {err_body}", endpoint.model);
-		if err_body.contains("Content Exists Risk") {
+		if is_censored_body(&err_body) {
 			return Err("CENSORED".to_string());
 		}
 		return Err(format!("API returned {status}"));
@@ -2250,5 +2260,140 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
 		} else {
 			execute_music_tool(ctx, message, data, &tool.name, &args).await;
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	// --- get_system_prompt -----------------------------------------------
+
+	#[test]
+	fn system_prompt_includes_personality_verbatim() {
+		let p = "You are a helpful assistant who loves dad jokes.";
+		let got = get_system_prompt(p);
+		assert!(got.starts_with(p), "personality must lead the prompt");
+	}
+
+	#[test]
+	fn system_prompt_includes_current_date_and_version() {
+		let got = get_system_prompt("p");
+		// Today's year — the prompt embeds the live wall-clock, so this drifts
+		// over time but always contains a 4-digit year.
+		let year = chrono::Utc::now().format("%Y").to_string();
+		assert!(got.contains(&year), "date string missing year: {got}");
+		assert!(
+			got.contains(&format!("v{}", env!("CARGO_PKG_VERSION"))),
+			"version line missing"
+		);
+	}
+
+	#[test]
+	fn system_prompt_includes_security_section() {
+		let got = get_system_prompt("p");
+		// Guard against accidental deletion of the prompt-injection defenses.
+		assert!(got.contains("Security"), "missing Security section");
+		assert!(
+			got.contains("ignore previous instructions"),
+			"missing override-attempt callout"
+		);
+	}
+
+	#[test]
+	fn system_prompt_advertises_search_round_budget() {
+		let got = get_system_prompt("p");
+		assert!(
+			got.contains(&format!("{MAX_SEARCH_ROUNDS} times")),
+			"search round budget not surfaced to the model"
+		);
+	}
+
+	// --- is_bad_assistant_message ---------------------------------------
+
+	#[test]
+	fn bad_assistant_filter_catches_tool_response_strings() {
+		// These are templated strings emitted by the bot's own command
+		// handlers; if they show up as assistant content, the model is
+		// echoing prior tool output back as text and we want to drop them.
+		assert!(is_bad_assistant_message("Stopped playback."));
+		assert!(is_bad_assistant_message("Skipped **Cool Track**."));
+		assert!(is_bad_assistant_message("Paused."));
+		assert!(is_bad_assistant_message("Resumed."));
+		assert!(is_bad_assistant_message("🔀 Shuffled the queue."));
+		assert!(is_bad_assistant_message("⏭️ Skipped to next."));
+	}
+
+	#[test]
+	fn bad_assistant_filter_catches_identity_leaks() {
+		// Off-brand identity claims — the bot is whatever the personality says
+		// it is, never Claude (regardless of underlying model).
+		assert!(is_bad_assistant_message("I'm Claude, an AI assistant."));
+		assert!(is_bad_assistant_message("I am Claude, made by Anthropic."));
+		assert!(is_bad_assistant_message(
+			"I was created by Anthropic to be helpful."
+		));
+	}
+
+	#[test]
+	fn bad_assistant_filter_catches_no_memory_disclaimers() {
+		// The system prompt explicitly tells the model that history IS memory.
+		// If it still emits these disclaimers, drop them rather than show them.
+		assert!(is_bad_assistant_message(
+			"I don't have the ability to remember past conversations."
+		));
+		assert!(is_bad_assistant_message(
+			"I don't have access to our previous chats."
+		));
+		assert!(is_bad_assistant_message(
+			"You haven't actually asked me any questions yet today."
+		));
+	}
+
+	#[test]
+	fn bad_assistant_filter_catches_censored_canned_reply() {
+		// The hardcoded "overlords at DeepSeek" reply that fires on CENSORED;
+		// we don't want it re-injected into history as if it were thoughtful
+		// assistant output.
+		assert!(is_bad_assistant_message(
+			"My overlords at DeepSeek won't let me talk about that."
+		));
+	}
+
+	#[test]
+	fn bad_assistant_filter_passes_normal_content() {
+		assert!(!is_bad_assistant_message("Sure, here's a joke for you."));
+		assert!(!is_bad_assistant_message("The capital of France is Paris."));
+		assert!(!is_bad_assistant_message(
+			"I'd recommend trying it with a bit more salt."
+		));
+	}
+
+	// --- is_censored_body -----------------------------------------------
+
+	#[test]
+	fn censored_body_detected_in_typical_deepseek_4xx_payload() {
+		// Real-world body shape (paraphrased): a JSON envelope with the
+		// sentinel string somewhere in `error.message`.
+		let body = r#"{"error":{"message":"Content Exists Risk","type":"content_filter","code":"censored"}}"#;
+		assert!(is_censored_body(body));
+	}
+
+	#[test]
+	fn censored_body_passes_unrelated_errors() {
+		assert!(!is_censored_body(
+			r#"{"error":{"message":"rate_limit_exceeded"}}"#
+		));
+		assert!(!is_censored_body(
+			r#"{"error":{"message":"invalid_api_key"}}"#
+		));
+		assert!(!is_censored_body(""));
+	}
+
+	#[test]
+	fn censored_body_substring_match_is_case_sensitive() {
+		// The DeepSeek sentinel ships with this exact casing; a lowercase
+		// variant would mean the API contract changed and we should notice.
+		assert!(!is_censored_body("content exists risk"));
 	}
 }
