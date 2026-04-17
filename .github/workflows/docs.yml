@@ -13,8 +13,12 @@ permissions:
   id-token: write
 
 concurrency:
-  group: "pages"
-  cancel-in-progress: false
+  # Per-ref group cancels older runs when a newer push lands on the same
+  # branch / PR. Saves CI minutes when several pushes arrive in quick
+  # succession (e.g. a batch of dependabot merges). The deploy job has its
+  # own narrower group below to serialize Pages deploys safely.
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -63,6 +67,12 @@ jobs:
     needs: build
     if: github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
+    # GitHub Pages permits one in-flight deploy per repo. Queue (don't
+    # cancel) to avoid killing a deploy mid-upload, which can leave the
+    # site in an inconsistent state.
+    concurrency:
+      group: "pages"
+      cancel-in-progress: false
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
