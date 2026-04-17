@@ -35,7 +35,9 @@ The renamed-parent mode is useful when you run multiple bot instances in the **s
 
 Validation: must be a single token. Whitespace is rejected at startup with a clear error pointing back at this field.
 
-The bot pre-renders the full command-invocation string (`<prefix><root> ` for the rename case, `<prefix>` for the flat case) and uses it everywhere the help output prints example commands, so the help embed stays consistent across all three modes.
+The bot pre-renders the full command-invocation string (`<prefix><root> ` for the rename case, `<prefix>` for the flat case) and uses it everywhere the help output prints example commands, so the help embed and the bot's Discord activity status (`Playing <prefix>help or @ me`) both stay consistent across all three modes.
+
+> **Note:** the rest of these docs (and the README) use `!m play` / `!m skip` / etc. as their command examples, since `!` is the default `command_prefix` and `m` is the default `command_root`. If you've customized either field, mentally substitute your values when reading them — `!m play` → `<your-prefix><your-root> play`. The bot itself always shows the right form at runtime, so this only affects reading the docs.
 
 ### `personality_file`
 
