@@ -54,12 +54,13 @@ The Postgres schema name this instance owns. The default is `public`, but for an
 
 ## AI providers (optional)
 
-| Name               | Required | Default | Description                                |
-|--------------------|----------|---------|--------------------------------------------|
-| `DEEPSEEK_API_KEY` | no       | unset   | API key for DeepSeek chat completions      |
-| `GEMINI_API_KEY`   | no       | unset   | API key for Google Gemini chat completions |
+| Name               | Required | Default | Description                                            |
+|--------------------|----------|---------|--------------------------------------------------------|
+| `DEEPSEEK_API_KEY` | no       | unset   | API key for DeepSeek chat completions                  |
+| `GEMINI_API_KEY`   | no       | unset   | API key for Google Gemini chat completions             |
+| `GROK_API_KEY`     | no       | unset   | API key for xAI Grok (used as a CENSORED-cascade alt)  |
 
-Both are independently optional. If both are unset the AI chat feature is disabled — mention the bot and you'll get nothing back. If only one is set it is used. If both are set the bot uses DeepSeek as primary and falls back to Gemini on error. Empty strings (`DEEPSEEK_API_KEY=`) are normalized to "unset."
+All three are independently optional. If `DEEPSEEK_API_KEY` and `GEMINI_API_KEY` are both unset the AI chat feature is disabled — mention the bot and you'll get nothing back. If only one is set it is used. If both are set the bot uses DeepSeek as primary text and Gemini for image vision. `GROK_API_KEY` is only used when an instance opts into the CENSORED cascade via `[ai.fallback]` in its `config.toml`. Empty strings (`DEEPSEEK_API_KEY=`) are normalized to "unset."
 
 ### `DEEPSEEK_API_KEY`
 
@@ -67,7 +68,11 @@ Get one at [platform.deepseek.com](https://platform.deepseek.com/). DeepSeek's c
 
 ### `GEMINI_API_KEY`
 
-Get one in Google AI Studio. Used as a fallback when DeepSeek is set, or as the only provider when DeepSeek is not.
+Get one in Google AI Studio. Used as the vision provider when image attachments are present in the prompt or replied-to message. Also valid as a CENSORED-cascade fallback if listed in `[ai.fallback]`.
+
+### `GROK_API_KEY`
+
+Get one at [console.x.ai](https://console.x.ai/). Optional; needed only if an instance lists `"grok"` in its `[ai.fallback] on_censored` config. Grok is a less-restrictive alternative the bot can replay a refused conversation through when DeepSeek hits its content-moderation block. See the [AI Chat](../features/ai-chat.md) feature page for the cascade story.
 
 ## Finnhub (optional)
 
