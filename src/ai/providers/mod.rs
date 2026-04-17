@@ -309,7 +309,8 @@ impl ProviderRouter {
 	/// Validation (panic on typos, warn on unavailable, capability sanity)
 	/// is added separately in Commit 3; this constructor just builds the
 	/// state.
-	pub fn from_instance_config(
+	#[allow(dead_code)] // test-only; called from mod tests — not reachable from bin
+	pub(crate) fn from_instance_config(
 		ai_cfg: &crate::instance_config::AiConfig,
 		env_lookup: impl Fn(&str) -> Option<String>,
 	) -> Self {
@@ -353,6 +354,133 @@ impl ProviderRouter {
 				Some(DEFAULT_REASONER_ROLE.to_string()),
 			),
 		};
+
+		Self {
+			providers,
+			chat_role,
+			vision_role,
+			reasoner_role,
+		}
+	}
+
+	/// Same as [`Self::from_instance_config`] but with startup validation:
+	/// panics on unknown provider names referenced by `[ai.routing]`, on
+	/// `[ai.routing]` without `chat`, on whitespace-bearing provider names,
+	/// and on phase-2 spec values. Warns (non-fatal) on unavailable
+	/// providers referenced by routing or fallback, and on capability
+	/// mismatches (vision role pointing at `supports_vision = false`, etc.).
+	///
+	/// This is the production constructor — `from_instance_config` exists
+	/// only so tests can build a router without exercising validation.
+	pub fn from_instance_config_strict(
+		ai_cfg: &crate::instance_config::AiConfig,
+		env_lookup: impl Fn(&str) -> Option<String>,
+	) -> Self {
+		// Validate provider names before building anything.
+		for name in ai_cfg.providers.keys() {
+			validate_provider_name(name);
+		}
+		// Build the merged definition map (defaults + user, user wins).
+		let mut merged: std::collections::HashMap<String, ProviderDef> =
+			std::collections::HashMap::new();
+		for (name, def) in default_provider_registry() {
+			merged.insert(name.to_string(), def);
+		}
+		for (name, def) in &ai_cfg.providers {
+			merged.insert(name.clone(), def.clone());
+		}
+
+		// Phase-1 spec gate: any non-OpenAi provider definition is a
+		// configuration error today.
+		for (name, def) in &merged {
+			if def.spec != ProviderSpec::OpenAi {
+				panic!(
+					"Provider '{name}' has spec={:?} but only spec=\"openai\" is supported \
+					 in this release. Anthropic-spec dispatcher is phase 2 of issue #28.",
+					def.spec
+				);
+			}
+		}
+
+		// Resolve routing roles + validate they reference known names.
+		let (chat_role, vision_role, reasoner_role) = match &ai_cfg.routing {
+			Some(r) => {
+				let chat = r.chat.clone().unwrap_or_else(|| {
+					panic!(
+						"[ai.routing] requires 'chat' to be set. Either set it (e.g. \
+						 chat = \"deepseek_chat\") or remove the [ai.routing] section \
+						 entirely to use defaults."
+					)
+				});
+				validate_role_target("chat", &chat, &merged);
+				if let Some(v) = &r.vision {
+					validate_role_target("vision", v, &merged);
+				}
+				if let Some(rs) = &r.reasoner {
+					validate_role_target("reasoner", rs, &merged);
+				}
+				(chat, r.vision.clone(), r.reasoner.clone())
+			}
+			None => (
+				DEFAULT_CHAT_ROLE.to_string(),
+				Some(DEFAULT_VISION_ROLE.to_string()),
+				Some(DEFAULT_REASONER_ROLE.to_string()),
+			),
+		};
+
+		// Resolve definitions into available providers; warn for any
+		// referenced-but-unavailable name.
+		let mut providers = std::collections::HashMap::new();
+		let mut unavailable: Vec<String> = Vec::new();
+		for (name, def) in merged.iter() {
+			match ConfiguredProvider::from_def(name.clone(), def.clone(), &env_lookup) {
+				Some(p) => {
+					providers.insert(name.clone(), p);
+				}
+				None => unavailable.push(name.clone()),
+			}
+		}
+
+		// Warn on unavailable providers REFERENCED by routing or fallback.
+		let referenced: std::collections::HashSet<String> = std::iter::once(chat_role.clone())
+			.chain(vision_role.clone())
+			.chain(reasoner_role.clone())
+			.chain(ai_cfg.fallback.on_censored.iter().cloned())
+			.collect();
+		for name in &unavailable {
+			if referenced.contains(name) {
+				let env_var = merged
+					.get(name)
+					.map(|d| d.api_key_env.as_str())
+					.unwrap_or("?");
+				tracing::warn!(
+					"AI provider '{name}' is referenced by routing or fallback but its \
+					 API key env var '{env_var}' is unset; provider unavailable"
+				);
+			}
+		}
+
+		// Capability sanity warnings (non-fatal).
+		if let Some(v) = &vision_role {
+			if let Some(p) = providers.get(v) {
+				if !p.supports_vision {
+					tracing::warn!(
+						"[ai.routing] vision = '{v}' but provider has supports_vision=false; \
+						 image messages may not be handled correctly"
+					);
+				}
+			}
+		}
+		if let Some(rs) = &reasoner_role {
+			if let Some(p) = providers.get(rs) {
+				if !p.is_reasoner {
+					tracing::warn!(
+						"[ai.routing] reasoner = '{rs}' but provider has is_reasoner=false; \
+						 the slow-thinking model routing may not behave as intended"
+					);
+				}
+			}
+		}
 
 		Self {
 			providers,
@@ -422,6 +550,35 @@ impl ProviderRouter {
 			}
 		}
 		out
+	}
+}
+
+fn validate_provider_name(name: &str) {
+	let trimmed = name.trim();
+	if trimmed.is_empty() {
+		panic!("Provider name must not be empty (after trim)");
+	}
+	if name.chars().any(|c| c.is_whitespace()) {
+		panic!(
+			"Provider name '{name}' contains whitespace. Use underscores or \
+			 hyphens for separators (e.g. 'my_local' or 'my-local')"
+		);
+	}
+}
+
+fn validate_role_target(
+	role: &str,
+	target_name: &str,
+	merged: &std::collections::HashMap<String, ProviderDef>,
+) {
+	if !merged.contains_key(target_name) {
+		let mut known: Vec<&str> = merged.keys().map(|s| s.as_str()).collect();
+		known.sort_unstable();
+		panic!(
+			"[ai.routing] {role} = '{target_name}' is an unknown provider name. \
+			 Configured names: {known:?}. Add a [ai.providers.{target_name}] section \
+			 or fix the typo."
+		);
 	}
 }
 
@@ -911,5 +1068,111 @@ mod tests {
 		assert_eq!(r.chat().unwrap().name(), "deepseek_chat");
 		assert_eq!(r.vision().unwrap().name(), "gemini_flash");
 		assert_eq!(r.reasoner().unwrap().name(), "deepseek_reasoner");
+	}
+
+	// --- Validation tests -----------------------------------------------
+
+	#[test]
+	#[should_panic(expected = "unknown provider")]
+	fn validation_panics_on_unknown_chat_role() {
+		let cfg = ai_cfg(
+			vec![],
+			Some(RoutingConfig {
+				chat: Some("nonexistent_provider".to_string()),
+				vision: None,
+				reasoner: None,
+			}),
+		);
+		ProviderRouter::from_instance_config_strict(&cfg, env_with(&[("DEEPSEEK_API_KEY", "k")]));
+	}
+
+	#[test]
+	#[should_panic(expected = "unknown provider")]
+	fn validation_panics_on_unknown_vision_role() {
+		let cfg = ai_cfg(
+			vec![],
+			Some(RoutingConfig {
+				chat: Some("deepseek_chat".to_string()),
+				vision: Some("typo_provider".to_string()),
+				reasoner: None,
+			}),
+		);
+		ProviderRouter::from_instance_config_strict(&cfg, env_with(&[("DEEPSEEK_API_KEY", "k")]));
+	}
+
+	#[test]
+	#[should_panic(expected = "unknown provider")]
+	fn validation_panics_on_unknown_reasoner_role() {
+		let cfg = ai_cfg(
+			vec![],
+			Some(RoutingConfig {
+				chat: Some("deepseek_chat".to_string()),
+				vision: None,
+				reasoner: Some("typo_reasoner".to_string()),
+			}),
+		);
+		ProviderRouter::from_instance_config_strict(&cfg, env_with(&[("DEEPSEEK_API_KEY", "k")]));
+	}
+
+	#[test]
+	#[should_panic(expected = "[ai.routing] requires 'chat'")]
+	fn validation_panics_on_routing_section_without_chat() {
+		let cfg = ai_cfg(
+			vec![],
+			Some(RoutingConfig {
+				chat: None,
+				vision: Some("gemini_flash".to_string()),
+				reasoner: None,
+			}),
+		);
+		ProviderRouter::from_instance_config_strict(&cfg, env_with(&[("GEMINI_API_KEY", "k")]));
+	}
+
+	#[test]
+	fn validation_no_panic_on_unavailable_default_routing() {
+		// No env keys set at all → all default providers unavailable.
+		// Today's silent-disable behaviour is preserved: no panic, just
+		// warns. chat() etc return None.
+		let r = ProviderRouter::from_instance_config_strict(&AiConfig::default(), empty_env());
+		assert!(r.chat().is_none());
+		assert!(r.vision().is_none());
+		assert!(r.reasoner().is_none());
+	}
+
+	#[test]
+	fn validation_no_panic_on_unavailable_explicit_routing() {
+		// User explicitly routes chat to deepseek_chat but no env key.
+		// Per corrected spec: warn, don't panic. chat() returns None.
+		let cfg = ai_cfg(
+			vec![],
+			Some(RoutingConfig {
+				chat: Some("deepseek_chat".to_string()),
+				vision: None,
+				reasoner: None,
+			}),
+		);
+		let r = ProviderRouter::from_instance_config_strict(&cfg, empty_env());
+		assert!(r.chat().is_none(), "chat unavailable, returns None");
+	}
+
+	#[test]
+	#[should_panic(expected = "whitespace")]
+	fn validation_panics_on_provider_name_with_whitespace() {
+		// Defined via toml so the user clearly intended this name.
+		let bad_def = def_for("u", "K");
+		let cfg = ai_cfg(vec![("bad name", bad_def)], None);
+		ProviderRouter::from_instance_config_strict(&cfg, env_with(&[("K", "k")]));
+	}
+
+	#[test]
+	#[should_panic(expected = "phase 2")]
+	fn validation_panics_on_anthropic_spec() {
+		// Phase 1 only handles spec="openai". Anthropic dispatcher is phase 2.
+		// A user setting spec="anthropic" at this point would fail at request
+		// time with a confusing error — better to surface it at startup.
+		let mut def = def_for("u", "K");
+		def.spec = ProviderSpec::Anthropic;
+		let cfg = ai_cfg(vec![("claude", def)], None);
+		ProviderRouter::from_instance_config_strict(&cfg, env_with(&[("K", "k")]));
 	}
 }
