@@ -338,7 +338,9 @@ async fn main() {
 				let mc_verify_url = config.mc_verify_url.clone();
 				let mc_verify_secret = config.mc_verify_secret.clone();
 				let ai_router =
-					ai::providers::ProviderRouter::from_defaults(|k| std::env::var(k).ok());
+					ai::providers::ProviderRouter::from_instance_config(&instance_cfg.ai, |k| {
+						std::env::var(k).ok()
+					});
 				let ai_fallback_on_censored = instance_cfg.ai.fallback.on_censored.clone();
 				// Resolve once at startup so unknown / unconfigured names log a
 				// warning here, not on every CENSORED-cascade attempt.

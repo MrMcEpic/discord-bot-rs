@@ -299,6 +299,69 @@ impl ProviderRouter {
 		}
 	}
 
+	/// Build the router from instance config + env. Merges the baked default
+	/// registry with user `[ai.providers]` (user wins on name collision),
+	/// resolves each definition into a [`ConfiguredProvider`] via env lookup,
+	/// then resolves routing roles per Layer 2 rules from the spec
+	/// (section absent → default matrix; section present → only user-set
+	/// keys take effect, omitted vision/reasoner mean "graceful degrade").
+	///
+	/// Validation (panic on typos, warn on unavailable, capability sanity)
+	/// is added separately in Commit 3; this constructor just builds the
+	/// state.
+	pub fn from_instance_config(
+		ai_cfg: &crate::instance_config::AiConfig,
+		env_lookup: impl Fn(&str) -> Option<String>,
+	) -> Self {
+		// Build the merged registry: defaults first, then user definitions
+		// override on name collision.
+		let mut merged: std::collections::HashMap<String, ProviderDef> =
+			std::collections::HashMap::new();
+		for (name, def) in default_provider_registry() {
+			merged.insert(name.to_string(), def);
+		}
+		for (name, def) in &ai_cfg.providers {
+			merged.insert(name.clone(), def.clone());
+		}
+
+		// Resolve each definition; only the available ones make it into the
+		// providers HashMap.
+		let mut providers = std::collections::HashMap::new();
+		for (name, def) in merged {
+			if let Some(p) = ConfiguredProvider::from_def(name.clone(), def, &env_lookup) {
+				providers.insert(name, p);
+			}
+		}
+
+		// Resolve routing roles per the spec's Layer 1 / Layer 2 rules.
+		let (chat_role, vision_role, reasoner_role) = match &ai_cfg.routing {
+			Some(r) => {
+				// Layer 2: section present, only user-set keys take effect.
+				// `chat` is required at this layer (validated in Commit 3).
+				// For now, fall back to the default if missing so the build
+				// is well-defined.
+				let chat = r
+					.chat
+					.clone()
+					.unwrap_or_else(|| DEFAULT_CHAT_ROLE.to_string());
+				(chat, r.vision.clone(), r.reasoner.clone())
+			}
+			None => (
+				// Layer 1: section absent, full default matrix.
+				DEFAULT_CHAT_ROLE.to_string(),
+				Some(DEFAULT_VISION_ROLE.to_string()),
+				Some(DEFAULT_REASONER_ROLE.to_string()),
+			),
+		};
+
+		Self {
+			providers,
+			chat_role,
+			vision_role,
+			reasoner_role,
+		}
+	}
+
 	/// Pick a vision-capable provider (None if no vision role configured OR
 	/// configured provider is unavailable).
 	pub fn vision(&self) -> Option<&dyn AiProvider> {
@@ -715,14 +778,24 @@ mod tests {
 	}
 
 	#[test]
-	#[ignore]
-	// TODO: enable after Commit 2 lands from_instance_config on ProviderRouter.
 	fn router_named_aliases_dont_apply_to_user_definitions() {
 		// Aliases ONLY map "gemini" → "gemini_flash" etc. for the default
 		// registry. A user with a provider literally named "deepseek" is found
 		// directly; the alias path doesn't fire and isn't needed.
 		//
-		// Requires ProviderRouter::from_instance_config which is added in Commit 2.
+		// Build a router with a user-defined provider literally named "deepseek"
+		// (distinct from the alias target "deepseek_chat"). Direct lookup wins.
+		let user_def = def_for("https://user-deepseek.example/v1/chat", "USER_DEEPSEEK_KEY");
+		let cfg = ai_cfg(vec![("deepseek", user_def)], None);
+		let r = ProviderRouter::from_instance_config(
+			&cfg,
+			env_with(&[("USER_DEEPSEEK_KEY", "secret")]),
+		);
+		// Direct match for "deepseek" returns the USER's provider URL, not the
+		// alias-routed deepseek_chat.
+		let p = r.named("deepseek").unwrap();
+		assert_eq!(p.url(), "https://user-deepseek.example/v1/chat");
+		assert_eq!(p.name(), "deepseek");
 	}
 
 	#[test]
@@ -744,5 +817,99 @@ mod tests {
 		assert_eq!(resolved[0].name(), "grok");
 		assert_eq!(resolved[1].name(), "gemini_flash");
 		assert_eq!(resolved[2].name(), "grok");
+	}
+
+	// --- from_instance_config merge + routing ---------------------------
+
+	use crate::instance_config::{AiConfig, AiFallbackConfig, RoutingConfig};
+
+	fn ai_cfg(providers: Vec<(&str, ProviderDef)>, routing: Option<RoutingConfig>) -> AiConfig {
+		AiConfig {
+			providers: providers
+				.into_iter()
+				.map(|(n, d)| (n.to_string(), d))
+				.collect(),
+			routing,
+			fallback: AiFallbackConfig::default(),
+		}
+	}
+
+	fn def_for(url: &str, key_env: &str) -> ProviderDef {
+		ProviderDef {
+			url: url.to_string(),
+			model: "test-model".to_string(),
+			api_key_env: key_env.to_string(),
+			max_tokens: 4096,
+			timeout_secs: 30,
+			supports_vision: false,
+			supports_tools: true,
+			is_reasoner: false,
+			spec: ProviderSpec::OpenAi,
+		}
+	}
+
+	#[test]
+	fn from_instance_config_no_user_input_matches_from_defaults() {
+		// AiConfig empty + only DEEPSEEK_API_KEY set → behaves like
+		// from_defaults: chat available, vision/reasoner unavailable.
+		let r = ProviderRouter::from_instance_config(
+			&AiConfig::default(),
+			env_with(&[("DEEPSEEK_API_KEY", "k")]),
+		);
+		assert!(r.chat().is_some());
+		assert!(r.vision().is_none());
+		assert!(r.reasoner().is_some());
+	}
+
+	#[test]
+	fn from_instance_config_user_provider_overrides_default_name() {
+		// User redefines gemini_flash with a different URL — user wins.
+		let user_def = def_for(
+			"https://my-fork-of-gemini.example/v1/chat",
+			"GEMINI_API_KEY",
+		);
+		let cfg = ai_cfg(vec![("gemini_flash", user_def)], None);
+		let r = ProviderRouter::from_instance_config(&cfg, env_with(&[("GEMINI_API_KEY", "k")]));
+		let gemini = r.named("gemini_flash").unwrap();
+		assert_eq!(gemini.url(), "https://my-fork-of-gemini.example/v1/chat");
+	}
+
+	#[test]
+	fn from_instance_config_routing_chat_only_is_one_model_setup() {
+		// Single user-defined provider, only chat routed — vision/reasoner
+		// gracefully degrade.
+		let user_def = def_for(
+			"http://localhost:11434/v1/chat/completions",
+			"LOCAL_LLM_KEY",
+		);
+		let cfg = ai_cfg(
+			vec![("my_local", user_def)],
+			Some(RoutingConfig {
+				chat: Some("my_local".to_string()),
+				vision: None,
+				reasoner: None,
+			}),
+		);
+		let r = ProviderRouter::from_instance_config(
+			&cfg,
+			env_with(&[("LOCAL_LLM_KEY", "anything-non-empty")]),
+		);
+		assert!(r.chat().is_some());
+		assert_eq!(r.chat().unwrap().name(), "my_local");
+		assert!(r.vision().is_none(), "vision opted out");
+		assert!(r.reasoner().is_none(), "reasoner opted out");
+	}
+
+	#[test]
+	fn from_instance_config_section_absent_uses_default_routing() {
+		// AiConfig::default has routing = None → router routes per the
+		// hardcoded default matrix.
+		let r = ProviderRouter::from_instance_config(
+			&AiConfig::default(),
+			env_with(&[("DEEPSEEK_API_KEY", "d"), ("GEMINI_API_KEY", "g")]),
+		);
+		assert_eq!(r.chat().unwrap().name(), "deepseek_chat");
+		assert_eq!(r.vision().unwrap().name(), "gemini_flash");
+		assert_eq!(r.reasoner().unwrap().name(), "deepseek_reasoner");
 	}
 }
