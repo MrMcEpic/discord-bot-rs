@@ -10,7 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - (track new changes here until the next release)
 
-## [0.7.0] - 2026-04-16
+## [0.8.0] - 2026-04-16
+
+### Added
+- **`search_messages` MCP tool** — composable channel-message search. Filters: `author_id`, `author_name` (case-insensitive substring), `content` (case-insensitive substring), `after` and `before` (each accepts ISO 8601 dates like `2026-07-03` or numeric snowflakes). Pages backward from `before` (or now) until `limit` matches are found, the `after` boundary is reached, or the `max_pages` safety cap is hit. Returns matching messages plus a summary line stating how many were scanned and whether the search was truncated. Brings the bot tool catalog to 24.
 
 ### Added
 - **`get_recent_messages` MCP tool** — read recent channel messages, newest first, with `limit` (1-100) and `before` for pagination. Brings the bot tool catalog to 23.

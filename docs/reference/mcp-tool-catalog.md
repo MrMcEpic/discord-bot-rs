@@ -128,6 +128,67 @@ Fetch recent messages from a channel, newest first. Each message is returned on 
 
 **Returns:** Newline-separated lines, one per message, or `No messages found.` if the channel is empty in the requested window.
 
+### `search_messages`
+
+Search a channel for messages matching one or more filters. All filters compose: pass an `author_id` plus a date range to find what someone said in July, or `content` plus `author_name` for a substring match scoped to one user. The implementation pages backward from `before` (or "now") in batches of 100, applying the filters client-side, and stops when `limit` matches are collected, the `after` boundary is reached, or `max_pages` (the safety cap on Discord API calls) is hit. The first line of the response is a summary stating how many messages were scanned and whether the search was truncated; subsequent lines are the matched messages in the same format as `get_recent_messages`.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `guild_id` | string | no | Server ID. Defaults to the configured guild; used to verify the channel belongs to that guild. |
+| `channel_id` | string | yes | Target channel snowflake. |
+| `author_id` | string | no | Filter to messages from this user snowflake. |
+| `author_name` | string | no | Filter by case-insensitive substring of the author's username. |
+| `content` | string | no | Filter by case-insensitive substring of the message body. |
+| `after` | string | no | Lower time bound. ISO 8601 date (`2026-07-03` or `2026-07-03T12:00:00Z`) or a Discord snowflake. Older messages are not returned. |
+| `before` | string | no | Upper time bound. Same format as `after`. Newer messages are not returned. |
+| `limit` | integer (1-1000) | no | Max matching messages to return. Default 100, clamped server-side. |
+| `max_pages` | integer (1-100) | no | Max API pages of 100 messages each to scan. Default 20 (= 2000 messages of search depth). Raise it for deep searches; the response says when the cap was hit. |
+
+**Examples:**
+
+All messages in a single day:
+```json
+{
+  "name": "search_messages",
+  "arguments": {
+    "channel_id": "1234567890123456789",
+    "after": "2026-07-03",
+    "before": "2026-07-04",
+    "limit": 1000,
+    "max_pages": 50
+  }
+}
+```
+
+All messages from one user in a window:
+```json
+{
+  "name": "search_messages",
+  "arguments": {
+    "channel_id": "1234567890123456789",
+    "author_id": "9876543210987654321",
+    "after": "2026-07-01",
+    "before": "2026-08-01"
+  }
+}
+```
+
+Find a phrase from a specific person:
+```json
+{
+  "name": "search_messages",
+  "arguments": {
+    "channel_id": "1234567890123456789",
+    "author_name": "epic",
+    "content": "deployment"
+  }
+}
+```
+
+**Returns:** A summary line followed by one line per matched message. The summary names the totals scanned and called out if the search was truncated by `max_pages`. To continue a truncated search, call again with `before` set to the oldest `msg_id` returned.
+
 ## Channels
 
 ### `list_channels`

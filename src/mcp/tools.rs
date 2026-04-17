@@ -221,11 +221,73 @@ pub struct GetMessagesParams {
 	pub before: Option<String>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SearchMessagesParams {
+	/// Guild/server ID (optional, defaults to configured guild)
+	pub guild_id: Option<String>,
+	pub channel_id: String,
+	/// Filter to messages from this user ID (snowflake)
+	#[serde(default)]
+	pub author_id: Option<String>,
+	/// Filter by case-insensitive substring of the author's username
+	#[serde(default)]
+	pub author_name: Option<String>,
+	/// Filter by case-insensitive substring of the message body
+	#[serde(default)]
+	pub content: Option<String>,
+	/// Lower time bound. Accepts ISO 8601 (e.g. "2026-07-03" or "2026-07-03T12:00:00Z") or a Discord snowflake. Only messages newer than this are searched.
+	#[serde(default)]
+	pub after: Option<String>,
+	/// Upper time bound. Same format as `after`. Only messages older than this are searched.
+	#[serde(default)]
+	pub before: Option<String>,
+	/// Max matching messages to return (1-1000, default 100)
+	#[serde(default)]
+	pub limit: Option<u32>,
+	/// Max API pages of 100 to scan as a safety cap (1-100, default 20 = 2000 messages scanned)
+	#[serde(default)]
+	pub max_pages: Option<u32>,
+}
+
 // --- Helpers ---
+
+const DISCORD_EPOCH_MS: i64 = 1_420_070_400_000;
 
 fn parse_id(s: &str) -> Result<u64, McpError> {
 	s.parse::<u64>()
 		.map_err(|_| McpError::invalid_params(format!("Invalid ID: {s}"), None))
+}
+
+/// Parse a string as either a Discord snowflake (numeric) or an ISO 8601
+/// date / datetime, returning the equivalent message snowflake. Used as
+/// `after` / `before` boundaries in `search_messages` so callers can pass
+/// natural dates without having to compute snowflakes themselves.
+fn parse_time_or_snowflake(s: &str) -> Result<MessageId, McpError> {
+	let s = s.trim();
+	if let Ok(n) = s.parse::<u64>() {
+		return Ok(MessageId::new(n));
+	}
+	let ms_since_epoch = if let Ok(d) = chrono::DateTime::parse_from_rfc3339(s) {
+		d.timestamp_millis()
+	} else if let Ok(d) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+		d.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp_millis()
+	} else {
+		return Err(McpError::invalid_params(
+			format!("Invalid time/snowflake '{s}'. Expected ISO 8601 date (e.g. 2026-07-03) or numeric snowflake."),
+			None,
+		));
+	};
+	if ms_since_epoch < DISCORD_EPOCH_MS {
+		return Err(McpError::invalid_params(
+			format!("Date '{s}' is older than the Discord epoch (2015-01-01)."),
+			None,
+		));
+	}
+	let snowflake = ((ms_since_epoch - DISCORD_EPOCH_MS) as u64) << 22;
+	// MessageId requires NonZero; snowflake 0 only happens for an exact
+	// Discord-epoch input, which has no real-world meaning. Promote to 1
+	// so the boundary is still valid.
+	Ok(MessageId::new(snowflake.max(1)))
 }
 
 fn channel_type_num(s: &str) -> u8 {
@@ -451,6 +513,130 @@ impl DiscordTools {
 		Ok(CallToolResult::success(vec![Content::text(
 			lines.join("\n"),
 		)]))
+	}
+
+	#[tool(
+		description = "Search messages in a channel with composable filters: author_id, author_name (substring), content (substring), and time range via `before`/`after` (which accept ISO 8601 dates or snowflakes). Pages backward from `before` (or now) until `limit` matches are found, the `after` boundary is reached, or `max_pages` is hit."
+	)]
+	async fn search_messages(
+		&self,
+		params: Parameters<SearchMessagesParams>,
+	) -> Result<CallToolResult, McpError> {
+		let p = params.0;
+		let gid = self.resolve_guild(p.guild_id.as_deref())?;
+		let channel_id = ChannelId::new(parse_id(&p.channel_id)?);
+		self.verify_channel_in_guild(channel_id, gid).await?;
+
+		let limit = p.limit.unwrap_or(100).clamp(1, 1000) as usize;
+		let max_pages = p.max_pages.unwrap_or(20).clamp(1, 100);
+
+		let after_id = p
+			.after
+			.as_deref()
+			.filter(|s| !s.is_empty())
+			.map(parse_time_or_snowflake)
+			.transpose()?;
+		let before_id = p
+			.before
+			.as_deref()
+			.filter(|s| !s.is_empty())
+			.map(parse_time_or_snowflake)
+			.transpose()?;
+		let author_id = p
+			.author_id
+			.as_deref()
+			.filter(|s| !s.is_empty())
+			.map(parse_id)
+			.transpose()?
+			.map(UserId::new);
+		let author_name = p
+			.author_name
+			.as_deref()
+			.filter(|s| !s.is_empty())
+			.map(|s| s.to_lowercase());
+		let content_needle = p
+			.content
+			.as_deref()
+			.filter(|s| !s.is_empty())
+			.map(|s| s.to_lowercase());
+
+		let mut result_lines: Vec<String> = Vec::new();
+		let mut cursor: Option<MessageId> = before_id;
+		let mut pages_scanned: u32 = 0;
+		let mut total_scanned: u32 = 0;
+		let mut hit_after_boundary = false;
+
+		'outer: for _ in 0..max_pages {
+			pages_scanned += 1;
+			let mut builder = GetMessages::new().limit(100);
+			if let Some(c) = cursor {
+				builder = builder.before(c);
+			}
+			let batch = discord_call!(channel_id.messages(&*self.http, builder));
+			if batch.is_empty() {
+				break;
+			}
+			let oldest_id = batch.last().map(|m| m.id);
+			total_scanned += batch.len() as u32;
+			for m in &batch {
+				if let Some(a) = after_id {
+					if m.id <= a {
+						hit_after_boundary = true;
+						break 'outer;
+					}
+				}
+				if let Some(aid) = author_id {
+					if m.author.id != aid {
+						continue;
+					}
+				}
+				if let Some(ref name) = author_name {
+					if !m.author.name.to_lowercase().contains(name) {
+						continue;
+					}
+				}
+				if let Some(ref needle) = content_needle {
+					if !m.content.to_lowercase().contains(needle) {
+						continue;
+					}
+				}
+				let attach = if m.attachments.is_empty() {
+					String::new()
+				} else {
+					format!(" [+{} attachment(s)]", m.attachments.len())
+				};
+				let embeds = if m.embeds.is_empty() {
+					String::new()
+				} else {
+					format!(" [+{} embed(s)]", m.embeds.len())
+				};
+				result_lines.push(format!(
+					"[{}] {} ({}) [msg_id={}]: {}{}{}",
+					m.timestamp, m.author.name, m.author.id, m.id, m.content, attach, embeds,
+				));
+				if result_lines.len() >= limit {
+					break 'outer;
+				}
+			}
+			cursor = oldest_id;
+		}
+
+		let truncated = pages_scanned >= max_pages
+			&& !hit_after_boundary
+			&& result_lines.len() < limit
+			&& cursor.is_some();
+		let summary = format!(
+			"Scanned {total_scanned} message(s) across {pages_scanned} page(s), found {} match(es).{}",
+			result_lines.len(),
+			if truncated {
+				" Hit max_pages limit; older messages not searched. Increase max_pages or call again with `before` set to the oldest msg_id below."
+			} else {
+				""
+			}
+		);
+		let mut out = vec![summary];
+		out.extend(result_lines);
+		Ok(CallToolResult::success(vec![Content::text(out.join("\n"))]))
 	}
 
 	// ===== CHANNELS =====
@@ -908,6 +1094,42 @@ mod tests {
 		assert!(parse_id("").is_err());
 		// Snowflake-sized.
 		assert_eq!(parse_id("123456789012345678").unwrap(), 123456789012345678);
+	}
+
+	#[test]
+	fn parse_time_or_snowflake_accepts_snowflake() {
+		let s = parse_time_or_snowflake("123456789012345678").unwrap();
+		assert_eq!(s.get(), 123456789012345678);
+	}
+
+	#[test]
+	fn parse_time_or_snowflake_accepts_iso_date() {
+		// 2015-01-01 00:00:00 UTC = Discord epoch — snowflake bumped to 1
+		// so MessageId stays NonZero (helper covers this edge case).
+		let epoch = parse_time_or_snowflake("2015-01-01").unwrap();
+		assert_eq!(epoch.get(), 1);
+		// One full day later = (86_400_000 ms) << 22
+		let day_later = parse_time_or_snowflake("2015-01-02").unwrap();
+		assert_eq!(day_later.get(), 86_400_000u64 << 22);
+	}
+
+	#[test]
+	fn parse_time_or_snowflake_accepts_rfc3339() {
+		// Same instant in two formats → same snowflake
+		let a = parse_time_or_snowflake("2026-07-03T00:00:00Z").unwrap();
+		let b = parse_time_or_snowflake("2026-07-03").unwrap();
+		assert_eq!(a.get(), b.get());
+	}
+
+	#[test]
+	fn parse_time_or_snowflake_rejects_pre_epoch() {
+		assert!(parse_time_or_snowflake("2014-12-31").is_err());
+	}
+
+	#[test]
+	fn parse_time_or_snowflake_rejects_garbage() {
+		assert!(parse_time_or_snowflake("not-a-date").is_err());
+		assert!(parse_time_or_snowflake("").is_err());
 	}
 
 	#[test]
