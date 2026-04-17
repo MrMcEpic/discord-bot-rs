@@ -154,11 +154,19 @@ exactly like a first-try success.
 
 On top of the on-demand recovery, a background task spawned in
 [`mcp-gateway/src/main.rs`](https://github.com/MrMcEpic/discord-bot-rs/blob/master/mcp-gateway/src/main.rs)
-calls `refresh_guild_map` every 5 minutes. That method health-checks
-every backend, re-initialises any unhealthy ones, and re-fetches each
-backend's guild list to update the router's guild map. Guild
-memberships can change — a bot joins a new server, leaves an old one —
-and the 5-minute refresh keeps the map current without client action.
+runs every 5 minutes and does two things:
+
+1. `refresh_guild_map` — health-checks every backend, re-initialises
+   any unhealthy ones, and re-fetches each backend's guild list to
+   update the router's guild map. Guild memberships change — a bot
+   joins a new server, leaves an old one — and the 5-minute refresh
+   keeps the map current without client action.
+2. `refresh_tool_list` — re-fetches the tool catalog from a backend
+   and rebuilds the cached `tools/list` response. Without this, a
+   new tool added to a backend bot stays invisible to clients until
+   the gateway itself is restarted, even though the bot already
+   serves it correctly. The cached list is the same surface clients
+   query, so freshness here matters as much as for the guild map.
 
 ## Tool catalog
 
@@ -214,6 +222,15 @@ require a token of their own. One secret both sides share — the
 gateway verifies it inbound and forwards it outbound — keeps the
 configuration to one value and matches what the backend's
 constant-time comparison expects.
+
+One implementation detail worth knowing about: the gateway sends an
+explicit `Host: localhost:9090` header on every outgoing request,
+overriding the Docker service name reqwest would otherwise use. The
+backend's `rmcp::StreamableHttpService` enforces an allowlist on the
+incoming `Host` header as DNS-rebinding protection; the default
+allowlist contains only loopback names. Without the override, the
+backend would reject every gateway request with `403 Forbidden:
+Host header is not allowed`.
 
 Claude Code's current MCP client prefers OAuth 2.1 over bearer tokens
 for remote servers, so running the gateway as a Claude Code

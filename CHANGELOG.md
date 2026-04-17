@@ -8,7 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- (track new changes here until the next release)
+- **`get_recent_messages` MCP tool** — read recent channel messages, newest first, with `limit` (1-100) and `before` for pagination. Brings the bot tool catalog to 23.
+
+### Fixed
+- **`mcp-gateway`: outgoing `Host` header override.** The bundled Compose deploy could never proxy MCP requests because rmcp's `StreamableHttpService` rejects non-loopback `Host` headers (DNS-rebinding protection); the gateway was sending `Host: <service-name>:9090` and getting back `403 Forbidden`. Gateway now sends `Host: localhost:9090` on every outgoing POST.
+- **`mcp-gateway`: periodic tool list refresh.** The 5-minute background refresh only re-synced guild maps; the cached tool list was filled once at startup and never updated, so adding a new tool to a backend bot left it invisible to clients until the gateway itself was restarted. Now both `refresh_guild_map` and `refresh_tool_list` run on the periodic loop.
 
 ## [0.6.1] - 2026-04-16
 
