@@ -116,6 +116,10 @@ impl BackendClient {
 			.post(format!("{}/mcp", self.base_url))
 			.header("Content-Type", "application/json")
 			.header("Accept", "application/json, text/event-stream")
+			// Override Host header so rmcp's DNS-rebinding allowlist accepts us.
+			// The bot rejects requests whose Host is the Docker service name (e.g.
+			// `bot:9090`); its allowlist only includes `localhost` / `127.0.0.1`.
+			.header("Host", "localhost:9090")
 			.json(&req);
 		if let Some(ref token) = self.auth_token {
 			init_req = init_req.header("Authorization", format!("Bearer {}", token));
@@ -187,6 +191,7 @@ impl BackendClient {
 			.header("Content-Type", "application/json")
 			.header("Accept", "application/json, text/event-stream")
 			.header("Mcp-Session-Id", &session_id)
+			.header("Host", "localhost:9090")
 			.json(&JsonRpcRequest {
 				jsonrpc: "2.0",
 				id: None,
@@ -223,6 +228,7 @@ impl BackendClient {
 			.header("Content-Type", "application/json")
 			.header("Accept", "application/json, text/event-stream")
 			.header("Mcp-Session-Id", session_id)
+			.header("Host", "localhost:9090")
 			.json(&req);
 		if let Some(ref token) = self.auth_token {
 			call_req = call_req.header("Authorization", format!("Bearer {}", token));
