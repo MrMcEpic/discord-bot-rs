@@ -1,18 +1,22 @@
 //! AI provider abstraction.
 //!
-//! Each LLM endpoint we talk to (DeepSeek chat, DeepSeek Reasoner, Gemini) is
-//! wrapped in an [`AiProvider`] impl that exposes its metadata + capabilities.
-//! The shared [`openai_compat_complete`] helper does the actual HTTP work for
-//! providers whose API matches OpenAI's `/chat/completions` shape (which is
-//! all of them today). A future Anthropic provider would override the default
-//! `complete` impl since Anthropic isn't OpenAI-compatible.
+//! Each LLM endpoint we talk to (DeepSeek chat, DeepSeek Reasoner, Gemini,
+//! Grok) is wrapped in an [`AiProvider`] impl that exposes its metadata +
+//! capabilities. The free function [`complete`] does the HTTP work for any
+//! `&dyn AiProvider` whose API matches OpenAI's `/chat/completions` shape
+//! (which is all of them today). A future non-OpenAI-compatible provider
+//! (e.g. native Anthropic) gets its own `complete_anthropic` function
+//! alongside [`complete`] — the trait stays metadata-only.
 //!
 //! Routing decisions live in [`ProviderRouter`]: pick by capability flag
 //! (vision-capable / reasoner / default chat) rather than by model-name string
-//! comparisons sprinkled across the orchestration layer.
+//! comparisons sprinkled across the orchestration layer. The
+//! [`complete_with_cascade`] helper layers on top of [`complete`] to retry
+//! through alt providers when the primary returns the `CENSORED` sentinel.
 
 pub mod deepseek;
 pub mod gemini;
+pub mod grok;
 
 use std::time::Duration;
 
@@ -24,6 +28,7 @@ use crate::config::Config;
 
 pub use deepseek::{DeepSeekChat, DeepSeekReasoner};
 pub use gemini::Gemini;
+pub use grok::Grok;
 
 /// A single message returned by the model — text content plus any tool calls.
 #[derive(Debug, Default)]
@@ -194,6 +199,7 @@ pub struct ProviderRouter {
 	pub deepseek_chat: Option<DeepSeekChat>,
 	pub deepseek_reasoner: Option<DeepSeekReasoner>,
 	pub gemini: Option<Gemini>,
+	pub grok: Option<Grok>,
 }
 
 impl ProviderRouter {
@@ -211,6 +217,7 @@ impl ProviderRouter {
 				.gemini_api_key
 				.as_ref()
 				.map(|k| Gemini::new(k.clone())),
+			grok: config.grok_api_key.as_ref().map(|k| Grok::new(k.clone())),
 		}
 	}
 
@@ -230,6 +237,98 @@ impl ProviderRouter {
 			.as_ref()
 			.map(|p| p as &dyn AiProvider)
 	}
+
+	/// Look up a provider by its short name as it appears in instance config
+	/// (e.g. `[ai.fallback] on_censored = ["grok", "gemini"]`).
+	///
+	/// Returns `None` if the provider isn't configured (missing API key) or
+	/// the name isn't recognised. Callers (the cascade resolver below) skip
+	/// `None` entries with a warning at startup.
+	pub fn named(&self, name: &str) -> Option<&dyn AiProvider> {
+		match name {
+			"grok" => self.grok.as_ref().map(|p| p as &dyn AiProvider),
+			"gemini" => self.gemini.as_ref().map(|p| p as &dyn AiProvider),
+			"deepseek" | "deepseek-chat" => self.chat(),
+			_ => None,
+		}
+	}
+
+	/// Resolve an ordered list of provider names into an ordered list of
+	/// configured providers, skipping any that aren't set up.
+	///
+	/// Used by the CENSORED-cascade dispatcher: the instance config's
+	/// `[ai.fallback] on_censored` field lists provider names by string;
+	/// this resolves them once at startup so the request-path doesn't
+	/// repeat the lookup.
+	pub fn cascade_for(&self, names: &[String]) -> Vec<&dyn AiProvider> {
+		let mut out = Vec::with_capacity(names.len());
+		for n in names {
+			match self.named(n) {
+				Some(p) => out.push(p),
+				None => tracing::warn!(
+					"ai.fallback.on_censored: provider '{n}' is not configured (missing API key or unknown name); skipping"
+				),
+			}
+		}
+		out
+	}
+}
+
+/// Try `primary.complete(...)`. If it returns the `CENSORED` sentinel, replay
+/// the same `messages` through each provider in `cascade` in order. Returns
+/// the first non-CENSORED success along with the provider name that produced
+/// it (useful for log lines and optional debug footers).
+///
+/// Non-CENSORED errors from the primary short-circuit (per the issue brief:
+/// "Don't cascade on non-content errors — they're transient and a different
+/// provider may have the same problem"). Errors from cascade members are
+/// treated as best-effort — we try the next one rather than bail, since the
+/// fallback path is meant to maximise the chance of *some* answer.
+///
+/// Returns `Err("CENSORED")` if every provider in `[primary, ...cascade]` was
+/// CENSORED — callers fall back to the existing snarky-message behaviour in
+/// that case.
+pub async fn complete_with_cascade(
+	primary: &dyn AiProvider,
+	cascade: &[&dyn AiProvider],
+	client: &reqwest::Client,
+	messages: &[Value],
+	use_tools: bool,
+	max_tokens: u32,
+) -> Result<(ApiResponse, &'static str), String> {
+	match complete(primary, client, messages, use_tools, max_tokens).await {
+		Ok(r) => return Ok((r, primary.name())),
+		Err(e) if e != "CENSORED" => return Err(e),
+		Err(_) => {
+			if cascade.is_empty() {
+				return Err("CENSORED".to_string());
+			}
+			tracing::info!(
+				"Primary provider {} returned CENSORED; cascading through {} alt(s)",
+				primary.name(),
+				cascade.len()
+			);
+		}
+	}
+
+	for alt in cascade {
+		match complete(*alt, client, messages, use_tools, max_tokens).await {
+			Ok(r) => {
+				tracing::info!("Cascade succeeded via {}", alt.name());
+				return Ok((r, alt.name()));
+			}
+			Err(e) if e == "CENSORED" => {
+				tracing::info!("Cascade member {} also CENSORED; trying next", alt.name());
+				continue;
+			}
+			Err(e) => {
+				tracing::warn!("Cascade member {} errored ({e}); trying next", alt.name());
+				continue;
+			}
+		}
+	}
+
+	Err("CENSORED".to_string())
 }
 
 #[cfg(test)]
@@ -238,12 +337,17 @@ mod tests {
 	use crate::config::Config;
 
 	fn config(deepseek: Option<&str>, gemini: Option<&str>) -> Config {
+		config_full(deepseek, gemini, None)
+	}
+
+	fn config_full(deepseek: Option<&str>, gemini: Option<&str>, grok: Option<&str>) -> Config {
 		Config {
 			token: "t".to_string(),
 			client_id: "c".to_string(),
 			guild_id: "g".to_string(),
 			deepseek_api_key: deepseek.map(String::from),
 			gemini_api_key: gemini.map(String::from),
+			grok_api_key: grok.map(String::from),
 			finnhub_api_key: None,
 			mc_verify_url: None,
 			mc_verify_secret: None,
@@ -329,5 +433,65 @@ mod tests {
 			32768
 		);
 		assert_eq!(Gemini::new("k".to_string()).max_tokens_limit(), 16384);
+		assert_eq!(Grok::new("k".to_string()).max_tokens_limit(), 16384);
+	}
+
+	#[test]
+	fn router_named_resolves_configured_provider_strings() {
+		let r = ProviderRouter::from_config(&config_full(Some("d"), Some("g"), Some("x")));
+		assert!(r.named("grok").is_some());
+		assert!(r.named("gemini").is_some());
+		assert!(r.named("deepseek").is_some());
+		assert!(r.named("deepseek-chat").is_some());
+		// Unknown name → None, not a panic.
+		assert!(r.named("anthropic").is_none());
+		assert!(r.named("").is_none());
+	}
+
+	#[test]
+	fn router_named_returns_none_when_provider_unconfigured() {
+		// "grok" is a recognised name but the router has no Grok key — must
+		// return None so cascade_for can skip it cleanly.
+		let r = ProviderRouter::from_config(&config_full(Some("d"), None, None));
+		assert!(r.named("grok").is_none());
+		assert!(r.named("gemini").is_none());
+	}
+
+	#[test]
+	fn cascade_for_preserves_order_and_skips_unconfigured() {
+		// Only Grok configured; Gemini listed in cascade should be silently
+		// dropped, Grok kept. Order from input list must be preserved.
+		let r = ProviderRouter::from_config(&config_full(Some("d"), None, Some("x")));
+		let names = vec!["gemini".to_string(), "grok".to_string()];
+		let resolved = r.cascade_for(&names);
+		assert_eq!(resolved.len(), 1, "gemini drops out, grok stays");
+		assert_eq!(resolved[0].name(), "grok");
+	}
+
+	#[test]
+	fn cascade_for_empty_names_returns_empty_vec() {
+		let r = ProviderRouter::from_config(&config_full(Some("d"), Some("g"), Some("x")));
+		assert!(r.cascade_for(&[]).is_empty());
+	}
+
+	#[test]
+	fn cascade_for_unknown_names_returns_empty_vec() {
+		let r = ProviderRouter::from_config(&config_full(Some("d"), Some("g"), Some("x")));
+		let names = vec!["claude".to_string(), "llama".to_string()];
+		// All names unknown — cascade is empty (caller falls back to canned reply).
+		assert!(r.cascade_for(&names).is_empty());
+	}
+
+	#[test]
+	fn cascade_for_keeps_duplicates_in_input_order() {
+		// Caller bug? Maybe. But we don't dedupe — pinning current behaviour
+		// so a future change is intentional, not accidental.
+		let r = ProviderRouter::from_config(&config_full(Some("d"), Some("g"), Some("x")));
+		let names = vec!["grok".to_string(), "gemini".to_string(), "grok".to_string()];
+		let resolved = r.cascade_for(&names);
+		assert_eq!(resolved.len(), 3);
+		assert_eq!(resolved[0].name(), "grok");
+		assert_eq!(resolved[1].name(), "gemini");
+		assert_eq!(resolved[2].name(), "grok");
 	}
 }

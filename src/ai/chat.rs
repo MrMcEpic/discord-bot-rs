@@ -389,6 +389,7 @@ async fn build_message_history(
 async fn handle_search_calls(
 	client: &reqwest::Client,
 	provider: &dyn AiProvider,
+	cascade: &[&dyn AiProvider],
 	http_client: &reqwest::Client,
 	history: &mut Vec<serde_json::Value>,
 	response: &ApiResponse,
@@ -455,7 +456,9 @@ async fn handle_search_calls(
 	}
 
 	// Call API again — allow tools so it can do follow-up searches
-	providers::complete(provider, client, history, true, 32768).await
+	providers::complete_with_cascade(provider, cascade, client, history, true, 32768)
+		.await
+		.map(|(resp, _name)| resp)
 }
 
 async fn execute_music_tool(
@@ -2006,8 +2009,15 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
 		chat_provider
 	};
 
-	let mut response = match providers::complete(
+	// Resolve the per-instance CENSORED-cascade once for this request. Empty
+	// vec when `[ai.fallback] on_censored` isn't set in instance config —
+	// `complete_with_cascade` treats that as "no fallback, surface CENSORED
+	// directly" so the existing snarky-reply behaviour is preserved.
+	let cascade = data.ai_router.cascade_for(&data.ai_fallback_on_censored);
+
+	let mut response = match providers::complete_with_cascade(
 		active_provider,
+		&cascade,
 		&data.http_client,
 		&history,
 		true,
@@ -2015,7 +2025,7 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
 	)
 	.await
 	{
-		Ok(r) => r,
+		Ok((r, _provider_name)) => r,
 		Err(e) => {
 			typing_handle.abort();
 			if e == "CENSORED" {
@@ -2046,6 +2056,7 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
 		match handle_search_calls(
 			&data.http_client,
 			active_provider,
+			&cascade,
 			&data.http_client,
 			&mut history,
 			&response,
@@ -2063,8 +2074,15 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
 	}
 	// If still requesting search after MAX_SEARCH_ROUNDS rounds, force a final answer
 	if response.tool_calls.iter().any(|t| is_search_tool(&t.name)) {
-		if let Ok(final_resp) =
-			providers::complete(active_provider, &data.http_client, &history, false, 32768).await
+		if let Ok((final_resp, _)) = providers::complete_with_cascade(
+			active_provider,
+			&cascade,
+			&data.http_client,
+			&history,
+			false,
+			32768,
+		)
+		.await
 		{
 			response = final_resp;
 		}
@@ -2088,8 +2106,15 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
 
 	// If action tools but no text, get a witty quip
 	if !action_calls.is_empty() && response.content.is_none() {
-		if let Ok(quip) =
-			providers::complete(active_provider, &data.http_client, &history, false, 32768).await
+		if let Ok((quip, _)) = providers::complete_with_cascade(
+			active_provider,
+			&cascade,
+			&data.http_client,
+			&history,
+			false,
+			32768,
+		)
+		.await
 		{
 			if let Some(content) = &quip.content {
 				send_reply(ctx, message, content).await;

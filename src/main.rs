@@ -76,6 +76,10 @@ pub struct Data {
 	/// Replaces the old inline `ApiEndpoint { url, model, api_key }` literals
 	/// scattered through `ai/chat.rs`. See `src/ai/providers/mod.rs`.
 	pub ai_router: ai::providers::ProviderRouter,
+	/// Ordered provider names to try when the primary provider returns the
+	/// `CENSORED` sentinel. Resolved from `instance_config.ai.fallback.on_censored`
+	/// at startup. Empty = no cascade (snarky-reply canned behaviour preserved).
+	pub ai_fallback_on_censored: Vec<String>,
 	pub personality: String,
 	pub bot_name: String,
 	/// Pre-rendered command invocation prefix used by the help embed and any
@@ -326,6 +330,10 @@ async fn main() {
 				let mc_verify_url = config.mc_verify_url.clone();
 				let mc_verify_secret = config.mc_verify_secret.clone();
 				let ai_router = ai::providers::ProviderRouter::from_config(&config);
+				let ai_fallback_on_censored = instance_cfg.ai.fallback.on_censored.clone();
+				// Resolve once at startup so unknown / unconfigured names log a
+				// warning here, not on every CENSORED-cascade attempt.
+				let _ = ai_router.cascade_for(&ai_fallback_on_censored);
 				Ok(Data {
 					db,
 					http_client,
@@ -338,6 +346,7 @@ async fn main() {
 					wordle_games: Arc::new(DashMap::new()),
 					config,
 					ai_router,
+					ai_fallback_on_censored,
 					personality,
 					bot_name: instance_cfg.bot_name.clone(),
 					cmd_prefix: if instance_cfg.command_root.is_empty() {

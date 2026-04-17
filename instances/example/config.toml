@@ -46,6 +46,26 @@ join_role = false     # Assign a role to new members on join
 welcome = false       # AI-generated welcome message on join
 
 
+# ----- AI Fallback (CENSORED cascade) ---------------------------------------
+#
+# Optional. When the primary AI provider returns its content-moderation
+# refusal sentinel (DeepSeek's "Content Exists Risk" → CENSORED), retry the
+# same conversation through these providers in order. First non-CENSORED
+# success wins; if every entry also CENSORS, the bot falls back to its
+# existing snarky-reply canned message.
+#
+# Recognised names: "grok" (xAI, requires GROK_API_KEY), "gemini" (requires
+# GEMINI_API_KEY), "deepseek" (typically pointless as a fallback for
+# DeepSeek censorship, but available for completeness). Unknown names and
+# names whose API key isn't set are skipped at startup with a warning.
+#
+# Default: empty (no cascade — strict-moderation servers keep the snarky
+# refusal behaviour).
+
+# [ai.fallback]
+# on_censored = ["grok", "gemini"]
+
+
 # ----- Auto-Role Promotion --------------------------------------------------
 #
 # Required when features.auto_role = true.
