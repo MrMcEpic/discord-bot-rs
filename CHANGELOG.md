@@ -10,7 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - (track new changes here until the next release)
 
-## [0.12.0] - 2026-04-17
+## [0.13.0] - 2026-04-17
+
+### Added
+- **Configurable `command_root`** — new optional field in `instance config.toml` that controls the parent command name. Defaults to `"m"` (existing behaviour: `<prefix>m <subcommand>`); set to e.g. `"bot"` to differentiate two bots running in the same guild (`<prefix>m play` vs `<prefix>bot play`); set to `""` (empty) to skip the parent entirely and register every subcommand at the root (`<prefix>play`, `<prefix>skip`, ...). Validated at startup — must be a single token (whitespace rejected). The bot's pre-rendered command prefix is exposed as `Data::cmd_prefix` so the help command's example lines stay consistent across all three modes. (Closes #15)
 
 ### Added
 - **MCP invite tools** (4): `list_invites`, `create_invite` (max_age / max_uses / temporary / unique), `delete_invite`, `get_invite_details` (server name, channel, member counts, expiration). (Closes #10)
