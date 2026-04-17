@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - (track new changes here until the next release)
 
+## [0.13.2] - 2026-04-17
+
+### Changed
+- **AI providers behind an `AiProvider` trait** (#12). The orchestration in `src/ai/chat.rs` (renamed from `deepseek.rs` — the file was never DeepSeek-specific) used to build `ApiEndpoint { url, model, api_key }` literals at three call sites and route between them with model-name string compares inside `call_api`. Adding a non-OpenAI-compatible provider would have required a multi-site rewrite. New module `src/ai/providers/` exposes a metadata-only `AiProvider` trait (name / url / model / api_key / capability flags / max_tokens_limit / timeout) plus a free `complete()` function that does the OpenAI-compatible HTTP work against any `&dyn AiProvider`. `ProviderRouter` (built once at startup and held on `Data`) picks `vision()` / `chat()` / `reasoner()` based on capability flags. Behaviour is identical: same routing decisions, same per-provider caps, same reasoner pre-flight loop, same CENSORED handling. Future Anthropic support becomes a new file in `src/ai/providers/` plus a dedicated `complete_anthropic()` function — no churn at the call sites. Unblocks #13.
+
+### Tests
+- 7 new unit tests for `ProviderRouter` (key permutations) and the per-provider capability matrix + caps + timeout ordering. Total inline unit-test count: 140 → 147.
+
 ## [0.13.1] - 2026-04-17
 
 ### Fixed

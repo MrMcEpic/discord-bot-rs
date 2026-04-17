@@ -4,7 +4,7 @@ pub mod voice_state;
 
 use serenity::all::*;
 
-use crate::ai::deepseek::handle_mention;
+use crate::ai::chat::handle_mention;
 use crate::connections::embeds as conn_embeds;
 use crate::connections::game::GuessResult;
 use crate::db::queries::get_guild_settings;

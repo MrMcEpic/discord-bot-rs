@@ -72,6 +72,10 @@ pub struct Data {
 	pub connections_games: Arc<DashMap<ChannelId, Arc<Mutex<ConnectionsGame>>>>,
 	pub wordle_games: Arc<DashMap<ChannelId, Arc<Mutex<WordleGame>>>>,
 	pub config: Config,
+	/// Capability-routed AI providers built once at startup from `config`.
+	/// Replaces the old inline `ApiEndpoint { url, model, api_key }` literals
+	/// scattered through `ai/chat.rs`. See `src/ai/providers/mod.rs`.
+	pub ai_router: ai::providers::ProviderRouter,
 	pub personality: String,
 	pub bot_name: String,
 	/// Pre-rendered command invocation prefix used by the help embed and any
@@ -321,6 +325,7 @@ async fn main() {
 			Box::pin(async move {
 				let mc_verify_url = config.mc_verify_url.clone();
 				let mc_verify_secret = config.mc_verify_secret.clone();
+				let ai_router = ai::providers::ProviderRouter::from_config(&config);
 				Ok(Data {
 					db,
 					http_client,
@@ -332,6 +337,7 @@ async fn main() {
 					connections_games: Arc::new(DashMap::new()),
 					wordle_games: Arc::new(DashMap::new()),
 					config,
+					ai_router,
 					personality,
 					bot_name: instance_cfg.bot_name.clone(),
 					cmd_prefix: if instance_cfg.command_root.is_empty() {
