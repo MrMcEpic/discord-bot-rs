@@ -63,7 +63,7 @@ pub async fn event_handler(
 
 				tokio::spawn(async move {
 					crate::run_supervised("mcp_server", || async {
-						crate::mcp::start(
+						if let Err(e) = crate::mcp::start(
 							http,
 							guild_id,
 							mcp_port,
@@ -71,7 +71,14 @@ pub async fn event_handler(
 							mcp_auth_token,
 							webhook_router,
 						)
-						.await;
+						.await
+						{
+							// Bot keeps running without MCP — operator sees a clear error
+							// instead of a panic-loop in the supervisor wrapper. Common
+							// causes: port already bound, security gate refusal, axum
+							// transport error.
+							tracing::error!(error = %e, "MCP server stopped");
+						}
 					})
 					.await;
 				});

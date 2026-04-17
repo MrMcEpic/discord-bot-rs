@@ -1,5 +1,6 @@
 pub mod tools;
 
+use crate::error::BotError;
 use rmcp::transport::streamable_http_server::{
 	session::local::LocalSessionManager, tower::StreamableHttpService, StreamableHttpServerConfig,
 };
@@ -17,18 +18,18 @@ pub async fn start(
 	bind_addr: String,
 	auth_token: String,
 	webhook_router: Option<axum::Router>,
-) {
+) -> Result<(), BotError> {
 	// Security gate: refuse to start when auth is disabled on a non-loopback bind.
 	// Without this, a default `MCP_BIND_ADDR=0.0.0.0` plus an unset `MCP_AUTH_TOKEN`
 	// would expose every Discord MCP tool (ban, delete-channel, send-message, ...)
 	// to the entire network with zero credentials.
 	if auth_token.is_empty() {
 		if !is_loopback_addr(&bind_addr) {
-			panic!(
+			return Err(BotError::Other(format!(
 				"Refusing to start MCP server: MCP_AUTH_TOKEN is empty but MCP_BIND_ADDR={bind_addr} is not loopback. \
 				 This would expose destructive Discord tools (ban, delete-channel, send-message, ...) to the network with no auth. \
 				 Either set MCP_AUTH_TOKEN to a strong secret, or set MCP_BIND_ADDR=127.0.0.1 (loopback only)."
-			);
+			)));
 		}
 		tracing::warn!(
 			"MCP server starting without authentication (loopback-only bind {}). \
@@ -99,8 +100,16 @@ pub async fn start(
 	};
 
 	let addr = format!("{}:{}", bind_addr, port);
-	let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+	let listener = tokio::net::TcpListener::bind(&addr).await.map_err(|e| {
+		BotError::Other(format!(
+			"MCP server failed to bind {addr}: {e}. Is the port already in use?"
+		))
+	})?;
 	tracing::info!("MCP server listening on {}", addr);
 
-	axum::serve(listener, app).await.unwrap();
+	axum::serve(listener, app)
+		.await
+		.map_err(|e| BotError::Other(format!("MCP server crashed: {e}")))?;
+
+	Ok(())
 }
