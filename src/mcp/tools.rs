@@ -2151,6 +2151,39 @@ mod tests {
 	}
 
 	#[test]
+	fn parse_id_rejects_negative_inputs() {
+		// u64 has no negative range; if we ever loosened the parse type to i64
+		// silently, snowflakes that look like negatives (e.g. mistyped) would
+		// suddenly start succeeding. Lock it down.
+		assert!(parse_id("-1").is_err());
+		assert!(parse_id("-123456789012345678").is_err());
+	}
+
+	#[test]
+	fn parse_id_rejects_overflow_beyond_u64() {
+		// Discord snowflakes max out around 2^63. A value beyond u64::MAX must
+		// fail cleanly, not panic or wrap.
+		assert!(parse_id("99999999999999999999999999999").is_err());
+	}
+
+	#[test]
+	fn parse_id_rejects_whitespace_and_decimals() {
+		// We don't trim — snowflakes are pure integers. Whitespace or decimals
+		// indicate the caller has the wrong field.
+		assert!(parse_id(" 123 ").is_err());
+		assert!(parse_id("123.0").is_err());
+		assert!(parse_id("1e10").is_err());
+	}
+
+	#[test]
+	fn parse_id_accepts_zero_and_u64_boundaries() {
+		// Zero is a valid u64 even though no real snowflake equals it; the
+		// downstream Discord API will reject it semantically. We accept here.
+		assert_eq!(parse_id("0").unwrap(), 0);
+		assert_eq!(parse_id(&u64::MAX.to_string()).unwrap(), u64::MAX);
+	}
+
+	#[test]
 	fn parse_time_or_snowflake_accepts_snowflake() {
 		let s = parse_time_or_snowflake("123456789012345678").unwrap();
 		assert_eq!(s.get(), 123456789012345678);

@@ -146,3 +146,216 @@ impl GuildPlayer {
 		self.paused = false;
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::music::track::Track;
+
+	fn track(title: &str) -> Track {
+		Track {
+			url: format!("https://example.invalid/{title}"),
+			title: title.to_string(),
+			duration: 180,
+			thumbnail: String::new(),
+			requested_by: "tester".to_string(),
+		}
+	}
+
+	fn player() -> GuildPlayer {
+		GuildPlayer::new(GuildId::new(1))
+	}
+
+	#[test]
+	fn loop_mode_cycle_walks_off_track_queue_off() {
+		assert_eq!(LoopMode::Off.cycle(), LoopMode::Track);
+		assert_eq!(LoopMode::Track.cycle(), LoopMode::Queue);
+		assert_eq!(LoopMode::Queue.cycle(), LoopMode::Off);
+	}
+
+	#[test]
+	fn new_player_is_empty() {
+		let p = player();
+		assert!(p.queue.is_empty());
+		assert!(p.current.is_none());
+		assert_eq!(p.loop_mode, LoopMode::Off);
+		assert!(!p.paused);
+		assert!(!p.is_full());
+	}
+
+	#[test]
+	fn enqueue_appends_and_returns_new_length() {
+		let mut p = player();
+		assert_eq!(p.enqueue(track("a")), 1);
+		assert_eq!(p.enqueue(track("b")), 2);
+		assert_eq!(p.queue.front().unwrap().title, "a");
+	}
+
+	#[test]
+	fn is_full_at_max_queue_length() {
+		let mut p = player();
+		for i in 0..MAX_QUEUE_LENGTH {
+			p.enqueue(track(&format!("t{i}")));
+		}
+		assert!(p.is_full());
+		assert_eq!(p.queue.len(), MAX_QUEUE_LENGTH);
+	}
+
+	#[test]
+	fn enqueue_many_caps_at_remaining_capacity() {
+		let mut p = player();
+		// Pre-fill so only 3 slots remain.
+		for i in 0..(MAX_QUEUE_LENGTH - 3) {
+			p.enqueue(track(&format!("seed{i}")));
+		}
+		let added = p.enqueue_many(vec![track("x"), track("y"), track("z"), track("dropped")]);
+		assert_eq!(added, 3);
+		assert_eq!(p.queue.len(), MAX_QUEUE_LENGTH);
+		// The "dropped" track must not have been silently appended past the cap.
+		assert!(p.queue.iter().all(|t| t.title != "dropped"));
+	}
+
+	#[test]
+	fn enqueue_many_returns_zero_when_already_full() {
+		let mut p = player();
+		for i in 0..MAX_QUEUE_LENGTH {
+			p.enqueue(track(&format!("t{i}")));
+		}
+		assert_eq!(p.enqueue_many(vec![track("nope")]), 0);
+		assert_eq!(p.queue.len(), MAX_QUEUE_LENGTH);
+	}
+
+	#[test]
+	fn advance_pops_from_queue_when_loop_off() {
+		let mut p = player();
+		p.enqueue(track("a"));
+		p.enqueue(track("b"));
+		assert_eq!(p.advance().unwrap().title, "a");
+		assert_eq!(p.current.as_ref().unwrap().title, "a");
+		assert_eq!(p.advance().unwrap().title, "b");
+		assert!(p.advance().is_none());
+		// Queue exhausted: current cleared.
+		assert!(p.current.is_none());
+	}
+
+	#[test]
+	fn advance_with_loop_track_repeats_current_indefinitely() {
+		let mut p = player();
+		p.enqueue(track("a"));
+		p.enqueue(track("b"));
+		p.advance(); // current = a
+		p.loop_mode = LoopMode::Track;
+		// Should keep returning "a" without consuming the queue.
+		for _ in 0..5 {
+			assert_eq!(p.advance().unwrap().title, "a");
+		}
+		assert_eq!(
+			p.queue.len(),
+			1,
+			"queue must NOT drain under LoopMode::Track"
+		);
+	}
+
+	#[test]
+	fn advance_with_loop_queue_rotates_finished_track_to_back() {
+		let mut p = player();
+		p.enqueue(track("a"));
+		p.enqueue(track("b"));
+		p.advance(); // current = a, queue = [b]
+		p.loop_mode = LoopMode::Queue;
+		assert_eq!(p.advance().unwrap().title, "b"); // a moves to back
+		assert_eq!(p.queue.back().unwrap().title, "a");
+		assert_eq!(p.advance().unwrap().title, "a"); // b moves to back
+		assert_eq!(p.queue.back().unwrap().title, "b");
+	}
+
+	#[test]
+	fn skip_current_returns_title_of_currently_playing_track() {
+		let mut p = player();
+		assert!(p.skip_current().is_none());
+		p.enqueue(track("a"));
+		p.advance();
+		assert_eq!(p.skip_current().as_deref(), Some("a"));
+	}
+
+	#[test]
+	fn stop_all_clears_state_and_resets_loop() {
+		let mut p = player();
+		p.enqueue(track("a"));
+		p.enqueue(track("b"));
+		p.advance();
+		p.loop_mode = LoopMode::Queue;
+		p.paused = true;
+		p.stop_all();
+		assert!(p.queue.is_empty());
+		assert!(p.current.is_none());
+		assert_eq!(p.loop_mode, LoopMode::Off);
+		assert!(!p.paused);
+	}
+
+	#[test]
+	fn remove_uses_one_based_position() {
+		let mut p = player();
+		p.enqueue(track("a"));
+		p.enqueue(track("b"));
+		p.enqueue(track("c"));
+		assert_eq!(p.remove(2).unwrap().title, "b");
+		assert_eq!(p.queue.len(), 2);
+		assert_eq!(p.queue[0].title, "a");
+		assert_eq!(p.queue[1].title, "c");
+	}
+
+	#[test]
+	fn remove_rejects_out_of_range_positions() {
+		let mut p = player();
+		p.enqueue(track("a"));
+		assert!(p.remove(0).is_none());
+		assert!(p.remove(2).is_none());
+		assert_eq!(p.queue.len(), 1);
+	}
+
+	#[test]
+	fn shuffle_no_op_when_fewer_than_two_tracks() {
+		let mut p = player();
+		assert_eq!(p.shuffle(), 0);
+		p.enqueue(track("a"));
+		assert_eq!(p.shuffle(), 1);
+	}
+
+	#[test]
+	fn shuffle_preserves_track_set() {
+		let mut p = player();
+		let titles = ["a", "b", "c", "d", "e", "f", "g"];
+		for t in &titles {
+			p.enqueue(track(t));
+		}
+		assert_eq!(p.shuffle(), titles.len());
+		let mut got: Vec<String> = p.queue.iter().map(|t| t.title.clone()).collect();
+		got.sort();
+		let mut want: Vec<String> = titles.iter().map(|s| s.to_string()).collect();
+		want.sort();
+		assert_eq!(got, want);
+	}
+
+	#[test]
+	fn leave_empty_resets_state_like_stop_all() {
+		let mut p = player();
+		p.enqueue(track("a"));
+		p.advance();
+		p.loop_mode = LoopMode::Track;
+		p.paused = true;
+		p.leave_empty();
+		assert!(p.queue.is_empty());
+		assert!(p.current.is_none());
+		assert_eq!(p.loop_mode, LoopMode::Off);
+		assert!(!p.paused);
+	}
+
+	#[test]
+	fn loop_mode_label_strings_are_non_empty() {
+		// Sanity check — these surface as user-facing toast text.
+		assert!(!LoopMode::Off.label().is_empty());
+		assert!(!LoopMode::Track.label().is_empty());
+		assert!(!LoopMode::Queue.label().is_empty());
+	}
+}

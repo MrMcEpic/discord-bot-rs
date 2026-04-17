@@ -10,6 +10,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - (track new changes here until the next release)
 
+## [0.13.1] - 2026-04-17
+
+### Fixed
+- **MCP server panics on bind/serve failure** (#21). `mcp::start` previously called `.unwrap()` on `TcpListener::bind` and `axum::serve`, so a port collision (common in multi-instance Docker setups) or a transport error would panic the spawned task. The supervisor wrapper would catch and respawn forever. `mcp::start` now returns `Result<(), BotError>`; the security-gate refusal also returns `Err` instead of `panic!`. The caller in `events::ready` logs a single clean error and the rest of the bot keeps running.
+- **README MCP tool count** (#20). The "22 Discord management tools" claim in the README was a stale carryover from earlier releases; the actual catalog has been at 51 since 0.13.0. Updated the count and added a link to `docs/reference/mcp-tool-catalog.md`.
+- **README architecture diagram failed to render on GitHub**. Mermaid blocks with `<br/>` self-closing tags hang GitHub's renderer indefinitely. Switched to `<br>` so the diagram renders both in the GitHub README and in the mdBook.
+
+### Changed
+- Internal: extracted `is_censored_body` helper in `src/ai/deepseek.rs` for the DeepSeek `"Content Exists Risk"` sentinel-detection. Pure refactor (same substring check, same call site), made the helper testable.
+
+### Tests
+- `src/music/player.rs` (#22): 17 new unit tests for queue, loop modes, shuffle, and player state lifecycle. Was previously 0.
+- `src/ai/deepseek.rs` (#23): 12 new unit tests for `get_system_prompt`, `is_bad_assistant_message`, and `is_censored_body`. Was previously 0 (the file is the largest in `src/`).
+- `src/mcp/tools.rs` (#24): 4 new boundary tests for `parse_id` (negative, overflow, whitespace, u64 boundaries). Existing helper coverage was thorough; this rounds it out.
+- Total unit-test count: 107 → 140.
+
 ## [0.13.0] - 2026-04-17
 
 ### Added
