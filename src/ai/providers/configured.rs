@@ -10,9 +10,12 @@ use std::time::Duration;
 
 use super::AiProvider;
 
-/// Phase-1: only `OpenAi`. Phase-2 will add `Anthropic`. The phase-1
-/// dispatcher in `chat.rs` errors at startup on anything other than
-/// `OpenAi` so misconfigurations surface early.
+/// API spec this provider speaks. Determines the dispatcher path in
+/// `chat.rs`: `OpenAi` → `complete()` (OpenAI `/v1/chat/completions`
+/// shape, also used by DeepSeek/Gemini/Grok/Mistral/OpenRouter/Ollama/
+/// etc.); `Anthropic` → `complete_anthropic()` (native `/v1/messages`).
+/// A hypothetical third spec would be a new variant + `complete_X()`
+/// function + one new `match` arm in `complete_dispatch`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderSpec {

@@ -358,9 +358,9 @@ impl ProviderRouter {
 	/// (section absent → default matrix; section present → only user-set
 	/// keys take effect, omitted vision/reasoner mean "graceful degrade").
 	///
-	/// Validation (panic on typos, warn on unavailable, capability sanity)
-	/// is added separately in Commit 3; this constructor just builds the
-	/// state.
+	/// Validation (panic on typos, warn on unavailable, capability sanity) is
+	/// handled by `from_instance_config_strict`; this constructor just builds
+	/// the state without validation and is intended for test use only.
 	#[allow(dead_code)] // test-only; called from mod tests — not reachable from bin
 	pub(crate) fn from_instance_config(
 		ai_cfg: &crate::instance_config::AiConfig,
@@ -390,9 +390,9 @@ impl ProviderRouter {
 		let (chat_role, vision_role, reasoner_role) = match &ai_cfg.routing {
 			Some(r) => {
 				// Layer 2: section present, only user-set keys take effect.
-				// `chat` is required at this layer (validated in Commit 3).
-				// For now, fall back to the default if missing so the build
-				// is well-defined.
+				// chat is required when [ai.routing] is present; validated in
+				// from_instance_config_strict. For now, fall back to the default
+				// if missing so the non-strict path remains well-defined.
 				let chat = r
 					.chat
 					.clone()
@@ -417,10 +417,10 @@ impl ProviderRouter {
 
 	/// Same as [`Self::from_instance_config`] but with startup validation:
 	/// panics on unknown provider names referenced by `[ai.routing]`, on
-	/// `[ai.routing]` without `chat`, on whitespace-bearing provider names,
-	/// and on phase-2 spec values. Warns (non-fatal) on unavailable
-	/// providers referenced by routing or fallback, and on capability
-	/// mismatches (vision role pointing at `supports_vision = false`, etc.).
+	/// `[ai.routing]` without `chat`, and on whitespace-bearing provider names.
+	/// Warns (non-fatal) on unavailable providers referenced by routing or
+	/// fallback, and on capability mismatches (vision role pointing at
+	/// `supports_vision = false`, etc.).
 	///
 	/// This is the production constructor — `from_instance_config` exists
 	/// only so tests can build a router without exercising validation.
@@ -604,7 +604,6 @@ impl ProviderRouter {
 /// type. Used by `complete_anthropic` to translate OpenAI-shape image
 /// content parts (which are always base64 data URLs) into Anthropic's
 /// `image.source` block shape.
-#[allow(dead_code)]
 fn parse_data_url(s: &str) -> Result<(String, String), String> {
 	let rest = s
 		.strip_prefix("data:")
@@ -628,7 +627,6 @@ fn parse_data_url(s: &str) -> Result<(String, String), String> {
 /// passes through unchanged.
 ///
 /// Returns `Err` on malformed input (e.g. non-data-URL image_url).
-#[allow(dead_code)]
 fn translate_messages_to_anthropic(
 	messages: &[serde_json::Value],
 ) -> Result<(Option<String>, Vec<serde_json::Value>), String> {
@@ -675,7 +673,6 @@ fn translate_messages_to_anthropic(
 
 /// Translate a single `user`/`assistant` message. The `content` field may be
 /// a string (pass-through) or an array of content parts (translate each).
-#[allow(dead_code)]
 fn translate_message_content(msg: &serde_json::Value) -> Result<serde_json::Value, String> {
 	let role = msg["role"].as_str().unwrap_or("");
 	let content = &msg["content"];
@@ -731,7 +728,6 @@ fn translate_message_content(msg: &serde_json::Value) -> Result<serde_json::Valu
 ///
 /// Anything without a `function` sub-object is left as-is (defensive — we
 /// expect the input always to be OpenAI-shape today).
-#[allow(dead_code)]
 fn translate_tool_defs_to_anthropic(openai_defs: &[serde_json::Value]) -> Vec<serde_json::Value> {
 	openai_defs
 		.iter()
@@ -759,7 +755,6 @@ fn translate_tool_defs_to_anthropic(openai_defs: &[serde_json::Value]) -> Vec<se
 /// path). DSML-embedded tool calls in the text content are also extracted
 /// via `parse_dsml`, and the DSML text is stripped from the returned
 /// content.
-#[allow(dead_code)]
 fn parse_anthropic_response(body: &serde_json::Value) -> Result<ApiResponse, String> {
 	let content_blocks = body["content"]
 		.as_array()
@@ -833,7 +828,6 @@ fn parse_anthropic_response(body: &serde_json::Value) -> Result<ApiResponse, Str
 /// Uses `provider.auth_header()` / `provider.auth_scheme()` / `provider.extra_headers()`
 /// to configure auth + extra headers — Anthropic requires
 /// `x-api-key: <key>` with no scheme + `anthropic-version: 2023-06-01`.
-#[allow(dead_code)] // wired into dispatch in Commit 3
 pub async fn complete_anthropic(
 	provider: &dyn AiProvider,
 	client: &reqwest::Client,
@@ -1936,9 +1930,8 @@ mod tests {
 		let mut def = def_for("https://example.invalid/v1/chat", "KEY");
 		def.spec = ProviderSpec::Anthropic;
 		let cfg = ai_cfg(vec![("claude", def)], None);
-		// This call would previously panic under phase-1's gate; Commit 3
-		// removes that gate, but this test is dispatched-first so we need
-		// from_instance_config (non-strict) for now.
+		// from_instance_config_strict would also work here; using non-strict
+		// to keep the test focused on spec storage, not routing.
 		let r = ProviderRouter::from_instance_config(&cfg, env_with(&[("KEY", "k")]));
 		let p = r.named("claude").unwrap();
 		assert_eq!(p.spec(), ProviderSpec::Anthropic);
