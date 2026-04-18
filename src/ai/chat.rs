@@ -1723,7 +1723,7 @@ async fn classify_message(
 		}),
 	];
 
-	let response = providers::complete(provider, client, &messages, false, 10).await?;
+	let response = providers::complete_dispatch(provider, client, &messages, false, 10).await?;
 	let text = response.content.unwrap_or_default().to_lowercase();
 	Ok(text.starts_with("yes"))
 }
@@ -1821,7 +1821,7 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
 					vision_provider.name(),
 					data_uris.len()
 				);
-				match providers::complete(
+				match providers::complete_dispatch(
 					vision_provider,
 					&data.http_client,
 					&history,
@@ -1907,16 +1907,21 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
 		let mut all_search_context = Vec::new();
 
 		for round in 0..MAX_SEARCH_ROUNDS {
-			let pf_response =
-				match providers::complete(chat_provider, &data.http_client, &pf_history, true, 256)
-					.await
-				{
-					Ok(r) => r,
-					Err(e) => {
-						tracing::warn!("Reasoner pre-flight round {} failed: {e}", round + 1);
-						break;
-					}
-				};
+			let pf_response = match providers::complete_dispatch(
+				chat_provider,
+				&data.http_client,
+				&pf_history,
+				true,
+				256,
+			)
+			.await
+			{
+				Ok(r) => r,
+				Err(e) => {
+					tracing::warn!("Reasoner pre-flight round {} failed: {e}", round + 1);
+					break;
+				}
+			};
 
 			let search_calls: Vec<&ToolCall> = pf_response
 				.tool_calls

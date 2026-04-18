@@ -93,7 +93,7 @@ Each `[ai.providers.<name>]` block is independent. The `<name>` is your handle f
 - `supports_vision` (default `false`) — whether the model accepts image content parts. Today only the Gemini default registry entry sets this to `true`.
 - `supports_tools` (default `true`) — whether the model accepts a `tools` array. DeepSeek Reasoner is the standout exception (set to `false`).
 - `is_reasoner` (default `false`) — flags a slow reasoning model. The orchestration layer uses this signal alongside the longer `timeout_secs` budget you should also set.
-- `spec` (default `"openai"`) — request/response shape. Today only `"openai"` is implemented; `"anthropic"` is reserved for phase 2 of issue #28.
+- `spec` (default `"openai"`) — request/response shape. `"openai"` (default) and `"anthropic"` (added in 0.16.0) are supported. See [Anthropic spec](#anthropic-spec) for details.
 
 ### Provider name rules
 
@@ -116,6 +116,66 @@ These aliases work in `[ai.fallback] on_censored` and in any other place the bot
 
 New configs should use the canonical names. The aliases exist purely so a `[ai.fallback] on_censored = ["grok", "gemini"]` line copied from a 0.14.0 example doesn't silently produce an empty cascade.
 
+### Anthropic spec
+
+As of 0.16.0, `spec = "anthropic"` enables native Anthropic `/v1/messages` routing. This is useful for using Claude directly without going through an OpenAI-compat proxy — native routing preserves Claude's structured tool use, vision content parts, and prompt caching (future work).
+
+An Anthropic provider definition looks like this:
+
+```toml
+[ai.providers.claude]
+spec = "anthropic"
+url = "https://api.anthropic.com/v1/messages"
+model = "claude-opus-4-7"
+api_key_env = "ANTHROPIC_API_KEY"
+max_tokens = 8192
+supports_vision = true
+supports_tools = true
+
+# Anthropic's auth is x-api-key with no scheme prefix.
+auth_header = "x-api-key"
+auth_scheme = ""
+
+# Anthropic's required version header.
+headers = { "anthropic-version" = "2023-06-01" }
+```
+
+#### New fields (also available to OpenAI providers)
+
+- `headers` — `HashMap<String, String>` of extra HTTP headers. Default empty. Values must be printable ASCII. Use inline-table syntax (`headers = { "x" = "y" }`) for 1-2 headers, or a sub-table (`[ai.providers.claude.headers]`) for longer lists.
+- `auth_header` — name of the auth header. Default `"Authorization"`. Must be non-empty.
+- `auth_scheme` — prefix prepended to the API key. Default `"Bearer "` (with trailing space). Use `""` for Anthropic.
+
+These fields are respected by both the OpenAI and Anthropic paths — you can use them on any provider that needs custom auth or headers (e.g. a self-hosted endpoint requiring a custom `x-internal-auth` header).
+
+#### Translation — what the bot handles automatically
+
+When you route to an Anthropic provider, the bot translates every shape difference transparently. The internal tool definitions, system prompt, and message history are all built in OpenAI shape (the bot's internal canonical form) and translated to Anthropic's wire shape on each request. You never need to write Anthropic-specific prompt logic.
+
+Translation covers:
+
+- System prompt → top-level `system` field on the request body (not a `role: "system"` message in the array)
+- Image content parts → base64 `source` blocks with correct `media_type`
+- Tool definitions → flat `{name, description, input_schema}` shape
+- Tool call responses → `tool_use` content blocks are extracted into the same flat `ToolCall { id, name, arguments }` shape the bot uses internally
+- Tool result messages → wrapped in user-content `tool_result` blocks
+
+#### What works with Claude today
+
+- Text chat (any routing role)
+- Vision (when `supports_vision = true`)
+- Tool use (when `supports_tools = true`)
+- Multi-round search via the CENSORED cascade / `[ai.fallback] on_censored = ["claude", ...]` as a post-DeepSeek-refusal fallback
+- Mixed setups: DeepSeek primary + Claude as cascade member, or Claude primary + DeepSeek as reasoner, etc.
+
+#### What's not yet available
+
+- Streaming responses
+- Anthropic's `cache_control` ephemeral blocks for prompt caching
+- Structured "thinking" / extended reasoning outputs (Claude's reasoning models)
+
+These are tracked as future enhancements; today's integration gives feature parity with DeepSeek/Gemini for the bot's standard workflow.
+
 ## Validation behaviour
 
 Performed once at startup, before the bot connects to Discord:
@@ -126,7 +186,7 @@ Performed once at startup, before the bot connects to Discord:
 | `[ai.routing] vision` / `reasoner` set to unknown provider name | Panic |
 | `[ai.routing]` section present without `chat` | Panic |
 | Provider name contains whitespace | Panic |
-| Provider with `spec` other than `"openai"` | Panic ("phase 2") |
+| Provider with `spec = "anthropic"` | Fully supported as of 0.16.0 — see [Anthropic spec](#anthropic-spec) |
 | Provider's `api_key_env` resolves to unset env var | Provider marked unavailable |
 | Routing or fallback references an unavailable provider | Warn at startup |
 | `[ai.routing] vision` references provider with `supports_vision = false` | Warn at startup |

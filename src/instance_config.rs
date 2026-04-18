@@ -380,4 +380,79 @@ some_phase_2_field = "ignored"
 		);
 		assert!(ai.providers.contains_key("x"));
 	}
+
+	#[test]
+	fn ai_providers_parses_headers_inline_table() {
+		let ai = parse_ai_config(
+			r#"
+[ai.providers.claude]
+url = "https://api.anthropic.com/v1/messages"
+model = "claude-opus-4-7"
+api_key_env = "ANTHROPIC_API_KEY"
+max_tokens = 8192
+spec = "anthropic"
+headers = { "anthropic-version" = "2023-06-01" }
+"#,
+		);
+		let def = &ai.providers["claude"];
+		assert_eq!(
+			def.headers.get("anthropic-version").map(String::as_str),
+			Some("2023-06-01")
+		);
+	}
+
+	#[test]
+	fn ai_providers_parses_headers_subtable() {
+		let ai = parse_ai_config(
+			r#"
+[ai.providers.custom]
+url = "https://example.invalid/v1/chat"
+model = "m"
+api_key_env = "KEY"
+max_tokens = 1000
+[ai.providers.custom.headers]
+"x-custom-one" = "a"
+"x-custom-two" = "b"
+"#,
+		);
+		let def = &ai.providers["custom"];
+		assert_eq!(def.headers.len(), 2);
+		assert_eq!(def.headers.get("x-custom-one").unwrap(), "a");
+		assert_eq!(def.headers.get("x-custom-two").unwrap(), "b");
+	}
+
+	#[test]
+	fn ai_providers_parses_custom_auth_header_and_scheme() {
+		let ai = parse_ai_config(
+			r#"
+[ai.providers.claude]
+url = "https://api.anthropic.com/v1/messages"
+model = "claude-opus-4-7"
+api_key_env = "ANTHROPIC_API_KEY"
+max_tokens = 8192
+auth_header = "x-api-key"
+auth_scheme = ""
+"#,
+		);
+		let def = &ai.providers["claude"];
+		assert_eq!(def.auth_header, "x-api-key");
+		assert_eq!(def.auth_scheme, "");
+	}
+
+	#[test]
+	fn ai_providers_auth_fields_default_to_openai_shape() {
+		let ai = parse_ai_config(
+			r#"
+[ai.providers.vanilla]
+url = "https://example.invalid/v1/chat"
+model = "m"
+api_key_env = "KEY"
+max_tokens = 1000
+"#,
+		);
+		let def = &ai.providers["vanilla"];
+		assert_eq!(def.auth_header, "Authorization");
+		assert_eq!(def.auth_scheme, "Bearer ");
+		assert!(def.headers.is_empty());
+	}
 }

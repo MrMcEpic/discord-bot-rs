@@ -49,7 +49,7 @@ features still work.
 
 ## Configuration
 
-**Provider configuration:** as of 0.15.0, the providers DeepSeek + Gemini + Grok the bot ships with can be replaced or extended by your own definitions in `config.toml`. See [AI Providers](../configuration/ai-providers.md) for the schema and examples (single-model setup, custom routing, overriding defaults).
+**Provider configuration:** as of 0.15.0, the providers DeepSeek + Gemini + Grok the bot ships with can be replaced or extended by your own definitions in `config.toml`. As of 0.16.0, Anthropic Claude is also supported natively (`spec = "anthropic"`) — native routing preserves structured tool use and vision content parts without going through an OpenAI-compat proxy. See [AI Providers](../configuration/ai-providers.md) for the schema and examples, and the [Anthropic spec](../configuration/ai-providers.md#anthropic-spec) section for Claude-specific configuration.
 
 There are exactly three things to configure:
 

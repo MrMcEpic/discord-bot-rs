@@ -46,6 +46,9 @@ pub fn default_provider_registry() -> Vec<(&'static str, ProviderDef)> {
 				supports_tools: true,
 				is_reasoner: false,
 				spec: ProviderSpec::OpenAi,
+				headers: std::collections::HashMap::new(),
+				auth_header: "Authorization".to_string(),
+				auth_scheme: "Bearer ".to_string(),
 			},
 		),
 		(
@@ -60,6 +63,9 @@ pub fn default_provider_registry() -> Vec<(&'static str, ProviderDef)> {
 				supports_tools: false,
 				is_reasoner: true,
 				spec: ProviderSpec::OpenAi,
+				headers: std::collections::HashMap::new(),
+				auth_header: "Authorization".to_string(),
+				auth_scheme: "Bearer ".to_string(),
 			},
 		),
 		(
@@ -75,6 +81,9 @@ pub fn default_provider_registry() -> Vec<(&'static str, ProviderDef)> {
 				supports_tools: true,
 				is_reasoner: false,
 				spec: ProviderSpec::OpenAi,
+				headers: std::collections::HashMap::new(),
+				auth_header: "Authorization".to_string(),
+				auth_scheme: "Bearer ".to_string(),
 			},
 		),
 		(
@@ -89,6 +98,9 @@ pub fn default_provider_registry() -> Vec<(&'static str, ProviderDef)> {
 				supports_tools: true,
 				is_reasoner: false,
 				spec: ProviderSpec::OpenAi,
+				headers: std::collections::HashMap::new(),
+				auth_header: "Authorization".to_string(),
+				auth_scheme: "Bearer ".to_string(),
 			},
 		),
 	]
@@ -151,6 +163,37 @@ pub trait AiProvider: Send + Sync + std::fmt::Debug {
 	fn timeout(&self) -> Duration {
 		Duration::from_secs(30)
 	}
+
+	/// Which API spec this provider speaks. Determines the dispatcher path in
+	/// `chat.rs`: `ProviderSpec::OpenAi` → `complete()`,
+	/// `ProviderSpec::Anthropic` → `complete_anthropic()`. Default is
+	/// `OpenAi` for trait objects that don't override — every provider
+	/// shipped today is OpenAI-compatible.
+	fn spec(&self) -> crate::ai::providers::ProviderSpec {
+		crate::ai::providers::ProviderSpec::OpenAi
+	}
+
+	/// Name of the HTTP auth header. Default `"Authorization"`. Anthropic
+	/// uses `"x-api-key"`. Override by setting `auth_header` in the
+	/// provider's `ProviderDef`.
+	fn auth_header(&self) -> &str {
+		"Authorization"
+	}
+
+	/// Prefix prepended to the API key in the auth header value. Default
+	/// `"Bearer "` (note trailing space). Anthropic uses `""` (empty).
+	fn auth_scheme(&self) -> &str {
+		"Bearer "
+	}
+
+	/// Extra HTTP headers attached to every request. Default empty.
+	/// Anthropic uses `{"anthropic-version": "2023-06-01"}`.
+	fn extra_headers(&self) -> &std::collections::HashMap<String, String> {
+		use std::sync::LazyLock;
+		static EMPTY: LazyLock<std::collections::HashMap<String, String>> =
+			LazyLock::new(std::collections::HashMap::new);
+		&EMPTY
+	}
 }
 
 /// Send an OpenAI-compatible chat-completions request and return the parsed
@@ -182,12 +225,21 @@ pub async fn complete(
 		body["tools"] = Value::Array(tool_definitions());
 	}
 
-	let response = client
+	let mut req = client
 		.post(provider.url())
 		.header("Content-Type", "application/json")
-		.header("Authorization", format!("Bearer {}", provider.api_key()))
+		.header(
+			provider.auth_header(),
+			format!("{}{}", provider.auth_scheme(), provider.api_key()),
+		)
 		.timeout(provider.timeout())
-		.json(&body)
+		.json(&body);
+
+	for (k, v) in provider.extra_headers() {
+		req = req.header(k.as_str(), v.as_str());
+	}
+
+	let response = req
 		.send()
 		.await
 		.map_err(|e| format!("API request failed: {e}"))?;
@@ -239,7 +291,7 @@ pub async fn complete(
 				arguments: args_json,
 			});
 		}
-		content = if cleaned.is_empty() {
+		content = if cleaned.trim().is_empty() {
 			None
 		} else {
 			Some(cleaned)
@@ -306,9 +358,9 @@ impl ProviderRouter {
 	/// (section absent → default matrix; section present → only user-set
 	/// keys take effect, omitted vision/reasoner mean "graceful degrade").
 	///
-	/// Validation (panic on typos, warn on unavailable, capability sanity)
-	/// is added separately in Commit 3; this constructor just builds the
-	/// state.
+	/// Validation (panic on typos, warn on unavailable, capability sanity) is
+	/// handled by `from_instance_config_strict`; this constructor just builds
+	/// the state without validation and is intended for test use only.
 	#[allow(dead_code)] // test-only; called from mod tests — not reachable from bin
 	pub(crate) fn from_instance_config(
 		ai_cfg: &crate::instance_config::AiConfig,
@@ -338,9 +390,9 @@ impl ProviderRouter {
 		let (chat_role, vision_role, reasoner_role) = match &ai_cfg.routing {
 			Some(r) => {
 				// Layer 2: section present, only user-set keys take effect.
-				// `chat` is required at this layer (validated in Commit 3).
-				// For now, fall back to the default if missing so the build
-				// is well-defined.
+				// chat is required when [ai.routing] is present; validated in
+				// from_instance_config_strict. For now, fall back to the default
+				// if missing so the non-strict path remains well-defined.
 				let chat = r
 					.chat
 					.clone()
@@ -365,10 +417,10 @@ impl ProviderRouter {
 
 	/// Same as [`Self::from_instance_config`] but with startup validation:
 	/// panics on unknown provider names referenced by `[ai.routing]`, on
-	/// `[ai.routing]` without `chat`, on whitespace-bearing provider names,
-	/// and on phase-2 spec values. Warns (non-fatal) on unavailable
-	/// providers referenced by routing or fallback, and on capability
-	/// mismatches (vision role pointing at `supports_vision = false`, etc.).
+	/// `[ai.routing]` without `chat`, and on whitespace-bearing provider names.
+	/// Warns (non-fatal) on unavailable providers referenced by routing or
+	/// fallback, and on capability mismatches (vision role pointing at
+	/// `supports_vision = false`, etc.).
 	///
 	/// This is the production constructor — `from_instance_config` exists
 	/// only so tests can build a router without exercising validation.
@@ -390,16 +442,9 @@ impl ProviderRouter {
 			merged.insert(name.clone(), def.clone());
 		}
 
-		// Phase-1 spec gate: any non-OpenAi provider definition is a
-		// configuration error today.
+		// Validate headers + auth fields on every (user + default) provider.
 		for (name, def) in &merged {
-			if def.spec != ProviderSpec::OpenAi {
-				panic!(
-					"Provider '{name}' has spec={:?} but only spec=\"openai\" is supported \
-					 in this release. Anthropic-spec dispatcher is phase 2 of issue #28.",
-					def.spec
-				);
-			}
+			validate_provider_def_headers_and_auth(name, def);
 		}
 
 		// Resolve routing roles + validate they reference known names.
@@ -553,6 +598,340 @@ impl ProviderRouter {
 	}
 }
 
+/// Parse a `data:MEDIA_TYPE;base64,DATA` URL into `(media_type, data)`.
+///
+/// Returns `Err` on any input that isn't a base64 data URL with a media
+/// type. Used by `complete_anthropic` to translate OpenAI-shape image
+/// content parts (which are always base64 data URLs) into Anthropic's
+/// `image.source` block shape.
+fn parse_data_url(s: &str) -> Result<(String, String), String> {
+	let rest = s
+		.strip_prefix("data:")
+		.ok_or_else(|| format!("not a data URL: {s}"))?;
+	let (media_type, data) = rest
+		.split_once(";base64,")
+		.ok_or_else(|| format!("data URL missing ';base64,' separator: {s}"))?;
+	if media_type.is_empty() {
+		return Err(format!("data URL has empty media type: {s}"));
+	}
+	Ok((media_type.to_string(), data.to_string()))
+}
+
+/// Translate OpenAI-shape `messages` into `(system_prompt, anthropic_messages)`.
+///
+/// Extracts the first `role: "system"` message's content as the system prompt
+/// and omits it from the returned `messages` array. Transforms tool-result
+/// messages (`role: "tool"`) into Anthropic's user-content `tool_result`
+/// blocks. Translates `image_url` content parts (OpenAI shape) into
+/// Anthropic's `image.source.base64` shape. User/assistant text content
+/// passes through unchanged.
+///
+/// Returns `Err` on malformed input (e.g. non-data-URL image_url).
+fn translate_messages_to_anthropic(
+	messages: &[serde_json::Value],
+) -> Result<(Option<String>, Vec<serde_json::Value>), String> {
+	let mut system: Option<String> = None;
+	let mut out: Vec<serde_json::Value> = Vec::with_capacity(messages.len());
+
+	for msg in messages {
+		let role = msg["role"].as_str().unwrap_or("");
+		match role {
+			"system" => {
+				if system.is_none() {
+					system = msg["content"].as_str().map(|s| s.to_string());
+				}
+				// Subsequent system messages are dropped — Anthropic only
+				// accepts a single top-level system prompt. Callers that need
+				// multiple would need to concatenate themselves.
+			}
+			"tool" => {
+				let tool_call_id = msg["tool_call_id"].as_str().unwrap_or("");
+				let content = msg["content"].as_str().unwrap_or("");
+				out.push(serde_json::json!({
+					"role": "user",
+					"content": [{
+						"type": "tool_result",
+						"tool_use_id": tool_call_id,
+						"content": content,
+					}],
+				}));
+			}
+			"user" | "assistant" => {
+				let translated = translate_message_content(msg)?;
+				out.push(translated);
+			}
+			other => {
+				return Err(format!(
+					"translate_messages_to_anthropic: unexpected role '{other}'"
+				));
+			}
+		}
+	}
+
+	Ok((system, out))
+}
+
+/// Translate a single `user`/`assistant` message. The `content` field may be
+/// a string (pass-through) or an array of content parts (translate each).
+fn translate_message_content(msg: &serde_json::Value) -> Result<serde_json::Value, String> {
+	let role = msg["role"].as_str().unwrap_or("");
+	let content = &msg["content"];
+
+	if content.is_string() {
+		return Ok(serde_json::json!({
+			"role": role,
+			"content": content.clone(),
+		}));
+	}
+
+	let parts = content
+		.as_array()
+		.ok_or_else(|| format!("message content is neither string nor array: {content:?}"))?;
+
+	let mut translated_parts: Vec<serde_json::Value> = Vec::with_capacity(parts.len());
+	for part in parts {
+		let part_type = part["type"].as_str().unwrap_or("");
+		match part_type {
+			"text" => {
+				translated_parts.push(part.clone());
+			}
+			"image_url" => {
+				let url = part["image_url"]["url"].as_str().unwrap_or("");
+				let (media_type, data) = parse_data_url(url)?;
+				translated_parts.push(serde_json::json!({
+					"type": "image",
+					"source": {
+						"type": "base64",
+						"media_type": media_type,
+						"data": data,
+					},
+				}));
+			}
+			other => {
+				return Err(format!(
+					"translate_message_content: unexpected content part type '{other}'"
+				));
+			}
+		}
+	}
+
+	Ok(serde_json::json!({
+		"role": role,
+		"content": translated_parts,
+	}))
+}
+
+/// Translate OpenAI-shape tool definitions to Anthropic's flatter shape.
+///
+/// OpenAI: `{"type": "function", "function": {"name", "description", "parameters"}}`
+/// Anthropic: `{"name", "description", "input_schema"}`
+///
+/// Anything without a `function` sub-object is left as-is (defensive — we
+/// expect the input always to be OpenAI-shape today).
+fn translate_tool_defs_to_anthropic(openai_defs: &[serde_json::Value]) -> Vec<serde_json::Value> {
+	openai_defs
+		.iter()
+		.map(|def| {
+			let function = &def["function"];
+			if function.is_null() {
+				return def.clone();
+			}
+			serde_json::json!({
+				"name": function["name"].clone(),
+				"description": function["description"].clone(),
+				"input_schema": function["parameters"].clone(),
+			})
+		})
+		.collect()
+}
+
+/// Parse an Anthropic `/v1/messages` response JSON body into the uniform
+/// `ApiResponse` shape used by `chat.rs`.
+///
+/// Concatenates all `content[i].text` blocks into the returned `content`
+/// string. Flattens `tool_use` content blocks into `ToolCall { id, name,
+/// arguments }` where `arguments` is the stringified JSON of the structured
+/// `input` object (matching the shape `chat.rs` expects from the OpenAI
+/// path). DSML-embedded tool calls in the text content are also extracted
+/// via `parse_dsml`, and the DSML text is stripped from the returned
+/// content.
+fn parse_anthropic_response(body: &serde_json::Value) -> Result<ApiResponse, String> {
+	let content_blocks = body["content"]
+		.as_array()
+		.ok_or_else(|| format!("Anthropic response missing 'content' array: {body}"))?;
+
+	let mut text = String::new();
+	let mut tool_calls: Vec<ToolCall> = Vec::new();
+
+	for block in content_blocks {
+		let block_type = block["type"].as_str().unwrap_or("");
+		match block_type {
+			"text" => {
+				if let Some(t) = block["text"].as_str() {
+					text.push_str(t);
+				}
+			}
+			"tool_use" => {
+				let id = block["id"].as_str().unwrap_or("").to_string();
+				let name = block["name"].as_str().unwrap_or("").to_string();
+				let arguments = serde_json::to_string(&block["input"]).unwrap_or_default();
+				tool_calls.push(ToolCall {
+					id,
+					name,
+					arguments,
+				});
+			}
+			_ => {
+				// Unknown block types (future Anthropic additions) are ignored.
+			}
+		}
+	}
+
+	// Pull DSML-embedded tool calls out of the text content, same as the
+	// OpenAI path in `complete`.
+	let (dsml_calls, cleaned) = parse_dsml(&text);
+	for dsml in dsml_calls {
+		let args_json = serde_json::to_string(&dsml.arguments).unwrap_or_default();
+		tool_calls.push(ToolCall {
+			id: format!(
+				"dsml_{}_{}",
+				chrono::Utc::now().timestamp_millis(),
+				rand::random::<u32>()
+			),
+			name: dsml.name,
+			arguments: args_json,
+		});
+	}
+
+	let final_content = if cleaned.trim().is_empty() {
+		None
+	} else {
+		Some(cleaned)
+	};
+
+	Ok(ApiResponse {
+		content: final_content,
+		tool_calls,
+	})
+}
+
+/// Send a chat-completions-equivalent request to an Anthropic-spec provider
+/// (`POST /v1/messages`) and return the uniform `ApiResponse` shape.
+///
+/// Translates OpenAI-shape `messages` + tool definitions to Anthropic's
+/// wire shape on input; translates `content` blocks + `tool_use` blocks
+/// back into the flat `ApiResponse { content, tool_calls }` shape on
+/// output. See `translate_messages_to_anthropic`,
+/// `translate_tool_defs_to_anthropic`, and `parse_anthropic_response` for
+/// per-dimension translation details.
+///
+/// Uses `provider.auth_header()` / `provider.auth_scheme()` / `provider.extra_headers()`
+/// to configure auth + extra headers — Anthropic requires
+/// `x-api-key: <key>` with no scheme + `anthropic-version: 2023-06-01`.
+pub async fn complete_anthropic(
+	provider: &dyn AiProvider,
+	client: &reqwest::Client,
+	messages: &[serde_json::Value],
+	use_tools: bool,
+	max_tokens: u32,
+) -> Result<ApiResponse, String> {
+	let clamped_tokens = max_tokens.min(provider.max_tokens_limit());
+
+	let (system, translated_msgs) = translate_messages_to_anthropic(messages)?;
+
+	let mut body = serde_json::json!({
+		"model": provider.model(),
+		"messages": translated_msgs,
+		"max_tokens": clamped_tokens,
+	});
+
+	if let Some(sys) = system {
+		body["system"] = serde_json::Value::String(sys);
+	}
+
+	if use_tools && provider.supports_tools() && !provider.is_reasoner() {
+		let openai_tool_defs = tool_definitions();
+		body["tools"] =
+			serde_json::Value::Array(translate_tool_defs_to_anthropic(&openai_tool_defs));
+	}
+
+	// Build the request with provider-configured auth + headers.
+	let auth_value = format!("{}{}", provider.auth_scheme(), provider.api_key());
+	let mut req = client
+		.post(provider.url())
+		.header("Content-Type", "application/json")
+		.header(provider.auth_header(), auth_value)
+		.timeout(provider.timeout())
+		.json(&body);
+
+	for (k, v) in provider.extra_headers() {
+		req = req.header(k.as_str(), v.as_str());
+	}
+
+	let response = req
+		.send()
+		.await
+		.map_err(|e| format!("API request failed: {e}"))?;
+
+	if !response.status().is_success() {
+		let status = response.status();
+		let err_body = response.text().await.unwrap_or_default();
+		tracing::error!("{} API {status}: {err_body}", provider.model());
+		return Err(format!("API returned {status}"));
+	}
+
+	let data: serde_json::Value = response
+		.json()
+		.await
+		.map_err(|e| format!("Failed to parse API response: {e}"))?;
+
+	parse_anthropic_response(&data)
+}
+
+/// Dispatch to the right spec-specific completion function based on
+/// `provider.spec()`. This is the function every call site in `chat.rs`
+/// should use (directly or via `complete_with_cascade`), so that swapping
+/// an OpenAI-spec provider for an Anthropic-spec one at routing time is a
+/// single-line config change with no chat.rs code change required.
+pub async fn complete_dispatch(
+	provider: &dyn AiProvider,
+	client: &reqwest::Client,
+	messages: &[serde_json::Value],
+	use_tools: bool,
+	max_tokens: u32,
+) -> Result<ApiResponse, String> {
+	match provider.spec() {
+		ProviderSpec::OpenAi => complete(provider, client, messages, use_tools, max_tokens).await,
+		ProviderSpec::Anthropic => {
+			complete_anthropic(provider, client, messages, use_tools, max_tokens).await
+		}
+	}
+}
+
+fn validate_provider_def_headers_and_auth(name: &str, def: &ProviderDef) {
+	if def.auth_header.trim().is_empty() {
+		panic!(
+			"Provider '{name}' has auth_header = \"{}\" (empty or whitespace). \
+			 auth_header must be a non-empty header name like \"Authorization\" or \"x-api-key\".",
+			def.auth_header
+		);
+	}
+	for (key, value) in &def.headers {
+		if key.trim().is_empty() {
+			panic!(
+				"Provider '{name}' has an empty header key in its headers map. \
+				 HTTP header names must be non-empty."
+			);
+		}
+		if value.chars().any(|c| c.is_ascii_control() || !c.is_ascii()) {
+			panic!(
+				"Provider '{name}' header '{key}' has a value containing non-printable \
+				 or non-ASCII characters. HTTP header values must be printable ASCII."
+			);
+		}
+	}
+}
+
 fn validate_provider_name(name: &str) {
 	let trimmed = name.trim();
 	if trimmed.is_empty() {
@@ -604,7 +983,7 @@ pub async fn complete_with_cascade(
 	use_tools: bool,
 	max_tokens: u32,
 ) -> Result<(ApiResponse, String), String> {
-	match complete(primary, client, messages, use_tools, max_tokens).await {
+	match complete_dispatch(primary, client, messages, use_tools, max_tokens).await {
 		Ok(r) => return Ok((r, primary.name().to_string())),
 		Err(e) if e != "CENSORED" => return Err(e),
 		Err(_) => {
@@ -620,7 +999,7 @@ pub async fn complete_with_cascade(
 	}
 
 	for alt in cascade {
-		match complete(*alt, client, messages, use_tools, max_tokens).await {
+		match complete_dispatch(*alt, client, messages, use_tools, max_tokens).await {
 			Ok(r) => {
 				tracing::info!("Cascade succeeded via {}", alt.name());
 				return Ok((r, alt.name().to_string()));
@@ -699,6 +1078,11 @@ mod tests {
 		assert!(def.supports_tools);
 		assert!(!def.is_reasoner);
 		assert_eq!(def.spec, ProviderSpec::OpenAi);
+		// New in phase 2: default registry uses OpenAI-compat defaults for
+		// the auth + headers fields (trait methods respect these).
+		assert_eq!(def.auth_header, "Authorization");
+		assert_eq!(def.auth_scheme, "Bearer ");
+		assert!(def.headers.is_empty());
 	}
 
 	#[test]
@@ -714,6 +1098,11 @@ mod tests {
 		assert!(!def.supports_tools, "reasoner does not accept tools");
 		assert!(def.is_reasoner);
 		assert_eq!(def.spec, ProviderSpec::OpenAi);
+		// New in phase 2: default registry uses OpenAI-compat defaults for
+		// the auth + headers fields (trait methods respect these).
+		assert_eq!(def.auth_header, "Authorization");
+		assert_eq!(def.auth_scheme, "Bearer ");
+		assert!(def.headers.is_empty());
 	}
 
 	#[test]
@@ -732,6 +1121,11 @@ mod tests {
 		assert!(def.supports_tools);
 		assert!(!def.is_reasoner);
 		assert_eq!(def.spec, ProviderSpec::OpenAi);
+		// New in phase 2: default registry uses OpenAI-compat defaults for
+		// the auth + headers fields (trait methods respect these).
+		assert_eq!(def.auth_header, "Authorization");
+		assert_eq!(def.auth_scheme, "Bearer ");
+		assert!(def.headers.is_empty());
 	}
 
 	#[test]
@@ -747,6 +1141,11 @@ mod tests {
 		assert!(def.supports_tools);
 		assert!(!def.is_reasoner);
 		assert_eq!(def.spec, ProviderSpec::OpenAi);
+		// New in phase 2: default registry uses OpenAI-compat defaults for
+		// the auth + headers fields (trait methods respect these).
+		assert_eq!(def.auth_header, "Authorization");
+		assert_eq!(def.auth_scheme, "Bearer ");
+		assert!(def.headers.is_empty());
 	}
 
 	// --- ProviderRouter::from_defaults -----------------------------------
@@ -1002,6 +1401,9 @@ mod tests {
 			supports_tools: true,
 			is_reasoner: false,
 			spec: ProviderSpec::OpenAi,
+			headers: std::collections::HashMap::new(),
+			auth_header: "Authorization".to_string(),
+			auth_scheme: "Bearer ".to_string(),
 		}
 	}
 
@@ -1167,14 +1569,393 @@ mod tests {
 	}
 
 	#[test]
-	#[should_panic(expected = "phase 2")]
-	fn validation_panics_on_anthropic_spec() {
-		// Phase 1 only handles spec="openai". Anthropic dispatcher is phase 2.
-		// A user setting spec="anthropic" at this point would fail at request
-		// time with a confusing error — better to surface it at startup.
-		let mut def = def_for("u", "K");
+	#[should_panic(expected = "auth_header")]
+	fn validation_panics_on_empty_auth_header() {
+		let mut def = def_for("https://example.invalid/v1/chat", "KEY");
+		def.auth_header = "".to_string();
+		let cfg = ai_cfg(vec![("bad", def)], None);
+		ProviderRouter::from_instance_config_strict(&cfg, env_with(&[("KEY", "k")]));
+	}
+
+	#[test]
+	#[should_panic(expected = "auth_header")]
+	fn validation_panics_on_whitespace_only_auth_header() {
+		let mut def = def_for("https://example.invalid/v1/chat", "KEY");
+		def.auth_header = "   ".to_string();
+		let cfg = ai_cfg(vec![("bad", def)], None);
+		ProviderRouter::from_instance_config_strict(&cfg, env_with(&[("KEY", "k")]));
+	}
+
+	#[test]
+	#[should_panic(expected = "empty header key")]
+	fn validation_panics_on_empty_header_key() {
+		let mut def = def_for("https://example.invalid/v1/chat", "KEY");
+		def.headers.insert("".to_string(), "value".to_string());
+		let cfg = ai_cfg(vec![("bad", def)], None);
+		ProviderRouter::from_instance_config_strict(&cfg, env_with(&[("KEY", "k")]));
+	}
+
+	#[test]
+	#[should_panic(expected = "non-printable")]
+	fn validation_panics_on_non_printable_header_value() {
+		let mut def = def_for("https://example.invalid/v1/chat", "KEY");
+		// Control character (null byte) in header value.
+		def.headers
+			.insert("x-bad".to_string(), "\0invalid".to_string());
+		let cfg = ai_cfg(vec![("bad", def)], None);
+		ProviderRouter::from_instance_config_strict(&cfg, env_with(&[("KEY", "k")]));
+	}
+
+	// --- parse_data_url --------------------------------------------------
+
+	#[test]
+	fn parse_data_url_extracts_media_type_and_data() {
+		let (mt, data) = parse_data_url(
+			"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8Dw/z8ABf4C/1vvdCkAAAAASUVORK5CYII=",
+		)
+		.expect("parse");
+		assert_eq!(mt, "image/png");
+		assert!(data.starts_with("iVBORw0KG"));
+	}
+
+	#[test]
+	fn parse_data_url_handles_jpeg_media_type() {
+		let (mt, data) = parse_data_url("data:image/jpeg;base64,/9j/4AAQSkZJRg==").expect("parse");
+		assert_eq!(mt, "image/jpeg");
+		assert_eq!(data, "/9j/4AAQSkZJRg==");
+	}
+
+	#[test]
+	fn parse_data_url_rejects_non_data_scheme() {
+		assert!(parse_data_url("https://example.com/pic.png").is_err());
+	}
+
+	#[test]
+	fn parse_data_url_rejects_missing_base64_marker() {
+		assert!(parse_data_url("data:image/png,raw-text-not-base64").is_err());
+	}
+
+	// --- Anthropic input translation -------------------------------------
+
+	#[test]
+	fn anthropic_extracts_system_prompt_from_first_system_message() {
+		let msgs = vec![
+			serde_json::json!({"role": "system", "content": "You are helpful."}),
+			serde_json::json!({"role": "user", "content": "Hi"}),
+		];
+		let (system, translated) = translate_messages_to_anthropic(&msgs).expect("translate");
+		assert_eq!(system.as_deref(), Some("You are helpful."));
+		assert_eq!(translated.len(), 1);
+		assert_eq!(translated[0]["role"], "user");
+	}
+
+	#[test]
+	fn anthropic_passes_user_assistant_messages_through_with_string_content() {
+		let msgs = vec![
+			serde_json::json!({"role": "user", "content": "hi"}),
+			serde_json::json!({"role": "assistant", "content": "hello"}),
+		];
+		let (_, translated) = translate_messages_to_anthropic(&msgs).expect("translate");
+		assert_eq!(translated.len(), 2);
+		assert_eq!(translated[0]["content"], "hi");
+		assert_eq!(translated[1]["content"], "hello");
+	}
+
+	#[test]
+	fn anthropic_translates_image_content_part_data_url_to_base64_source() {
+		let msgs = vec![serde_json::json!({
+			"role": "user",
+			"content": [
+				{"type": "image_url", "image_url": {"url": "data:image/png;base64,ABCD"}},
+				{"type": "text", "text": "describe this"},
+			],
+		})];
+		let (_, translated) = translate_messages_to_anthropic(&msgs).expect("translate");
+		let content = translated[0]["content"].as_array().expect("array");
+		assert_eq!(content.len(), 2);
+		assert_eq!(content[0]["type"], "image");
+		assert_eq!(content[0]["source"]["type"], "base64");
+		assert_eq!(content[0]["source"]["media_type"], "image/png");
+		assert_eq!(content[0]["source"]["data"], "ABCD");
+		assert_eq!(content[1]["type"], "text");
+		assert_eq!(content[1]["text"], "describe this");
+	}
+
+	#[test]
+	fn anthropic_drops_subsequent_system_messages_keeping_only_first() {
+		let msgs = vec![
+			serde_json::json!({"role": "system", "content": "First system prompt."}),
+			serde_json::json!({"role": "system", "content": "Second system prompt — should be dropped."}),
+			serde_json::json!({"role": "user", "content": "hi"}),
+		];
+		let (system, translated) = translate_messages_to_anthropic(&msgs).expect("translate");
+		assert_eq!(
+			system.as_deref(),
+			Some("First system prompt."),
+			"first-system-wins rule violated"
+		);
+		// Only the user message remains.
+		assert_eq!(translated.len(), 1);
+		assert_eq!(translated[0]["role"], "user");
+		// Neither system message is in the translated array.
+		for msg in &translated {
+			assert_ne!(msg["role"], "system");
+		}
+	}
+
+	#[test]
+	fn anthropic_translates_image_gif_media_type() {
+		let msgs = vec![serde_json::json!({
+			"role": "user",
+			"content": [
+				{"type": "image_url", "image_url": {"url": "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"}},
+			],
+		})];
+		let (_, translated) = translate_messages_to_anthropic(&msgs).expect("translate");
+		let content = translated[0]["content"].as_array().expect("array");
+		assert_eq!(content[0]["type"], "image");
+		assert_eq!(content[0]["source"]["media_type"], "image/gif");
+	}
+
+	#[test]
+	fn anthropic_translates_image_webp_media_type() {
+		let msgs = vec![serde_json::json!({
+			"role": "user",
+			"content": [
+				{"type": "image_url", "image_url": {"url": "data:image/webp;base64,UklGRhoAAABXRUJQVlA4TA0AAAAvAAAAEAcQERGIiP4HAA=="}},
+			],
+		})];
+		let (_, translated) = translate_messages_to_anthropic(&msgs).expect("translate");
+		let content = translated[0]["content"].as_array().expect("array");
+		assert_eq!(content[0]["type"], "image");
+		assert_eq!(content[0]["source"]["media_type"], "image/webp");
+	}
+
+	#[test]
+	fn anthropic_translates_tool_result_role_message_to_user_content_block() {
+		let msgs = vec![serde_json::json!({
+			"role": "tool",
+			"tool_call_id": "call_abc",
+			"content": "the tool result",
+		})];
+		let (_, translated) = translate_messages_to_anthropic(&msgs).expect("translate");
+		assert_eq!(translated.len(), 1);
+		assert_eq!(translated[0]["role"], "user");
+		let content = translated[0]["content"].as_array().expect("array");
+		assert_eq!(content.len(), 1);
+		assert_eq!(content[0]["type"], "tool_result");
+		assert_eq!(content[0]["tool_use_id"], "call_abc");
+		assert_eq!(content[0]["content"], "the tool result");
+	}
+
+	#[test]
+	fn anthropic_rejects_non_data_url_image() {
+		let msgs = vec![serde_json::json!({
+			"role": "user",
+			"content": [
+				{"type": "image_url", "image_url": {"url": "https://example.com/p.png"}},
+			],
+		})];
+		assert!(translate_messages_to_anthropic(&msgs).is_err());
+	}
+
+	// --- Tool definition translation -------------------------------------
+
+	#[test]
+	fn anthropic_translates_tool_definitions_function_wrap_to_flat_shape() {
+		let openai_shape = vec![serde_json::json!({
+			"type": "function",
+			"function": {
+				"name": "music_play",
+				"description": "Play a song",
+				"parameters": {
+					"type": "object",
+					"properties": {"query": {"type": "string"}},
+					"required": ["query"],
+				},
+			},
+		})];
+		let anthropic_shape = translate_tool_defs_to_anthropic(&openai_shape);
+		assert_eq!(anthropic_shape.len(), 1);
+		assert_eq!(anthropic_shape[0]["name"], "music_play");
+		assert_eq!(anthropic_shape[0]["description"], "Play a song");
+		assert_eq!(anthropic_shape[0]["input_schema"]["type"], "object");
+		assert_eq!(
+			anthropic_shape[0]["input_schema"]["properties"]["query"]["type"],
+			"string"
+		);
+		// No top-level "type": "function" wrapper.
+		assert!(anthropic_shape[0]["type"].is_null());
+		assert!(anthropic_shape[0]["function"].is_null());
+	}
+
+	// --- Anthropic response parsing --------------------------------------
+
+	#[test]
+	fn anthropic_parses_single_text_content_block() {
+		let body = serde_json::json!({
+			"id": "msg_01",
+			"role": "assistant",
+			"content": [{"type": "text", "text": "hello!"}],
+			"stop_reason": "end_turn",
+		});
+		let resp = parse_anthropic_response(&body).expect("parse");
+		assert_eq!(resp.content.as_deref(), Some("hello!"));
+		assert!(resp.tool_calls.is_empty());
+	}
+
+	#[test]
+	fn anthropic_concatenates_multiple_text_blocks() {
+		let body = serde_json::json!({
+			"content": [
+				{"type": "text", "text": "part one"},
+				{"type": "text", "text": " part two"},
+			],
+			"stop_reason": "end_turn",
+		});
+		let resp = parse_anthropic_response(&body).expect("parse");
+		assert_eq!(resp.content.as_deref(), Some("part one part two"));
+	}
+
+	#[test]
+	fn anthropic_extracts_tool_use_blocks_into_tool_calls() {
+		let body = serde_json::json!({
+			"content": [
+				{"type": "text", "text": "I'll search."},
+				{
+					"type": "tool_use",
+					"id": "toolu_abc",
+					"name": "web_search",
+					"input": {"query": "rust async"},
+				},
+			],
+			"stop_reason": "tool_use",
+		});
+		let resp = parse_anthropic_response(&body).expect("parse");
+		assert_eq!(resp.content.as_deref(), Some("I'll search."));
+		assert_eq!(resp.tool_calls.len(), 1);
+		assert_eq!(resp.tool_calls[0].id, "toolu_abc");
+		assert_eq!(resp.tool_calls[0].name, "web_search");
+		// arguments is the stringified JSON of the input object.
+		let parsed: serde_json::Value =
+			serde_json::from_str(&resp.tool_calls[0].arguments).expect("json");
+		assert_eq!(parsed["query"], "rust async");
+	}
+
+	#[test]
+	fn anthropic_handles_empty_content_array() {
+		let body = serde_json::json!({
+			"content": [],
+			"stop_reason": "end_turn",
+		});
+		let resp = parse_anthropic_response(&body).expect("parse");
+		assert!(resp.content.is_none());
+		assert!(resp.tool_calls.is_empty());
+	}
+
+	#[test]
+	fn anthropic_parses_dsml_embedded_tool_calls_in_text_content() {
+		// Closing tag is <｜DSML｜/invoke> (slash before invoke, after the bar).
+		let body = serde_json::json!({
+			"content": [{
+				"type": "text",
+				"text": "before <\u{ff5c}DSML\u{ff5c}invoke name=\"stub\"><\u{ff5c}DSML\u{ff5c}/invoke> after",
+			}],
+			"stop_reason": "end_turn",
+		});
+		let resp = parse_anthropic_response(&body).expect("parse");
+		// DSML call extracted into tool_calls.
+		assert!(resp.tool_calls.iter().any(|t| t.name == "stub"));
+		// DSML text stripped from content.
+		assert!(!resp.content.as_deref().unwrap_or("").contains("DSML"));
+	}
+
+	// --- ConfiguredProvider trait method reflection ----------------------
+
+	#[test]
+	fn complete_uses_configurable_auth_header_and_scheme() {
+		// The actual HTTP call isn't exercised here (no network in tests).
+		// This test just verifies that a ConfiguredProvider built from a
+		// ProviderDef with custom auth fields correctly reflects them through
+		// the trait.
+		let mut def = def_for("https://example.invalid/v1/chat", "KEY");
+		def.auth_header = "x-custom-auth".to_string();
+		def.auth_scheme = "Token ".to_string();
+		def.headers
+			.insert("x-req-id".to_string(), "abc".to_string());
+		let cfg = ai_cfg(vec![("custom", def)], None);
+		let r = ProviderRouter::from_instance_config_strict(&cfg, env_with(&[("KEY", "k")]));
+		let p = r.named("custom").unwrap();
+		assert_eq!(p.auth_header(), "x-custom-auth");
+		assert_eq!(p.auth_scheme(), "Token ");
+		assert_eq!(
+			p.extra_headers().get("x-req-id").map(String::as_str),
+			Some("abc")
+		);
+	}
+
+	// --- Dispatch --------------------------------------------------------
+
+	#[test]
+	fn provider_spec_trait_default_is_openai() {
+		#[derive(Debug)]
+		struct StubOpenAi;
+		impl AiProvider for StubOpenAi {
+			fn name(&self) -> &str {
+				"stub"
+			}
+			fn url(&self) -> &str {
+				"https://example.invalid"
+			}
+			fn model(&self) -> &str {
+				"m"
+			}
+			fn api_key(&self) -> &str {
+				"k"
+			}
+			fn supports_vision(&self) -> bool {
+				false
+			}
+			fn max_tokens_limit(&self) -> u32 {
+				100
+			}
+			// Don't override spec() — verify default.
+		}
+		let s = StubOpenAi;
+		assert_eq!(s.spec(), ProviderSpec::OpenAi);
+	}
+
+	#[test]
+	fn configured_provider_spec_reflects_stored_value() {
+		let mut def = def_for("https://example.invalid/v1/chat", "KEY");
 		def.spec = ProviderSpec::Anthropic;
 		let cfg = ai_cfg(vec![("claude", def)], None);
-		ProviderRouter::from_instance_config_strict(&cfg, env_with(&[("K", "k")]));
+		// from_instance_config_strict would also work here; using non-strict
+		// to keep the test focused on spec storage, not routing.
+		let r = ProviderRouter::from_instance_config(&cfg, env_with(&[("KEY", "k")]));
+		let p = r.named("claude").unwrap();
+		assert_eq!(p.spec(), ProviderSpec::Anthropic);
+	}
+
+	#[test]
+	fn anthropic_spec_no_longer_panics_after_phase2() {
+		// The phase-1 startup gate that rejected spec = "anthropic" is gone.
+		// from_instance_config_strict should successfully build a router
+		// containing an anthropic-spec provider.
+		let mut def = def_for("https://api.anthropic.com/v1/messages", "ANTHROPIC_API_KEY");
+		def.spec = ProviderSpec::Anthropic;
+		def.auth_header = "x-api-key".to_string();
+		def.auth_scheme = "".to_string();
+		def.headers
+			.insert("anthropic-version".to_string(), "2023-06-01".to_string());
+		let cfg = ai_cfg(vec![("claude", def)], None);
+		let r = ProviderRouter::from_instance_config_strict(
+			&cfg,
+			env_with(&[("ANTHROPIC_API_KEY", "k")]),
+		);
+		let p = r.named("claude").unwrap();
+		assert_eq!(p.spec(), ProviderSpec::Anthropic);
+		assert_eq!(p.auth_header(), "x-api-key");
+		assert_eq!(p.auth_scheme(), "");
 	}
 }

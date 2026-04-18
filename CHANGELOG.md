@@ -10,6 +10,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - (track new changes here until the next release)
 
+## [0.16.0] - 2026-04-17
+
+### Added
+- **Native Anthropic-spec dispatcher** (#29, closes phase 2 of #28). New `spec = "anthropic"` value on provider definitions routes to `POST /v1/messages` via a dedicated `complete_anthropic` translation layer instead of the OpenAI `complete` path. Translation is bidirectional: OpenAI-shape messages / tool definitions / tool results get transformed to Anthropic wire shape on input, and Claude's `content` blocks / `tool_use` blocks get flattened back into the uniform `ApiResponse` shape on output. `chat.rs` stays provider-agnostic — adding a new spec is ~15 new translation functions plus one match arm in `complete_dispatch`.
+- **Claude example in `defaults/example-providers.toml`** — worked commented block showing the three Anthropic-specific fields (`auth_header = "x-api-key"`, `auth_scheme = ""`, `headers = { "anthropic-version" = "2023-06-01" }`) and `claude-opus-4-7` as the default model. Claude is NOT in the baked default registry; users opt in explicitly.
+- **Three new optional `ProviderDef` fields** for configurable auth + extra headers (usable by both OpenAI and Anthropic providers):
+  - `headers: HashMap<String, String>` (default empty) — extra request headers
+  - `auth_header: String` (default `"Authorization"`) — name of the auth header
+  - `auth_scheme: String` (default `"Bearer "`) — prefix before the API key in the auth header value
+- **New `AiProvider::spec()` trait method** with default `ProviderSpec::OpenAi` so any future external `AiProvider` implementor gets the OpenAI default without change. `ConfiguredProvider` overrides to return its stored spec.
+
+### Changed
+- **`complete()` (the OpenAI path) now uses the same configurable auth + headers** as `complete_anthropic`. Behaviour unchanged for every existing provider (defaults match the previous hardcoded `Authorization: Bearer`). Future OpenAI-compat providers can override if they need different auth.
+- **Phase-1 startup panic on `spec = "anthropic"` removed.** That spec is now fully supported; the panic gate + its test are deleted.
+- **`complete_with_cascade` dispatches by spec** (via the new `complete_dispatch` helper), so mixed OpenAI + Anthropic cascade chains work transparently — e.g. `[ai.fallback] on_censored = ["claude", "grok"]` tries Claude first then Grok when DeepSeek refuses.
+
+### Tests
+- ~29 new tests across: data-URL parsing, message translation (system extract, pass-through, image transform, tool_result wrap, bad-URL reject), tool-def translation, response parsing (single + multi text blocks, tool_use extraction, empty content, DSML embedded calls), schema parsing for the new fields (inline table + sub-table + custom auth + defaults), validation (empty auth_header, whitespace-only auth_header, empty header key, non-printable header value), and dispatch routing.
+- Total inline unit-test count: 179 → 208.
+
+### Phase 2 closure
+- Phase 2 of #28 (Anthropic dispatcher + Claude provider) is complete. Issue #29 and umbrella issue #28 both close with this release.
+
 ## [0.15.0] - 2026-04-17
 
 ### Added
