@@ -12,6 +12,7 @@ The file is read once at startup from `CONFIG_DIR/config.toml` (where `CONFIG_DI
 | `command_prefix`   | string | yes      | —                  | Prefix for text-based commands                         |
 | `command_root`     | string | no       | `"m"`              | Parent command name; `""` for flat commands            |
 | `personality_file` | string | no       | `"personality.txt"`| Path to the personality file, relative to `config.toml`|
+| `timezone`         | string | no       | (UTC)              | IANA timezone for the AI system prompt's date/time line|
 
 ### `bot_name`
 
@@ -42,6 +43,18 @@ The bot pre-renders the full command-invocation string (`<prefix><root> ` for th
 ### `personality_file`
 
 The filename (relative to the same directory as `config.toml`) where the AI system prompt lives. Defaults to `personality.txt`. The file must exist and must not be empty when AI chat is active — the loader panics if either condition fails. See [Personality Files](personality.md) for how to write one.
+
+### `timezone`
+
+Optional IANA timezone name (for example `"America/Toronto"`, `"Europe/London"`, `"Asia/Tokyo"`) used to build the "current date / time" line in the AI system prompt. When this field is set, the bot formats the line as the local date, local clock time, IANA zone, and numeric UTC offset — for example:
+
+```
+Today is Friday, April 17, 2026. Current local time: 10:52 PM (America/Toronto, UTC-04:00).
+```
+
+When the field is absent, the bot falls back to UTC and explicitly labels the line as UTC so the AI model doesn't guess at a timezone. The bare-UTC fallback is safe for non-chat workloads but is typically wrong for conversation: at 10:52 PM local in most of the Americas, UTC has already rolled over to the next day, and without a timezone label the model will happily report "today" as tomorrow's date (and sometimes invent a plausible-sounding city to justify it).
+
+Accepted values are any zone name `chrono-tz` can parse. Prefer full IANA zone names like `"America/New_York"`, `"America/Los_Angeles"`, or `"Europe/Paris"` over bare abbreviations like `"EST"`, `"PST"`, or `"CET"` — the abbreviations parse as fixed offsets with no daylight saving, so a config that says `"EST"` will report the wrong time for half the year. A value `chrono-tz` can't parse makes the bot panic at startup with the offending string, so misconfiguration fails loudly rather than silently defaulting.
 
 ## `[features]` section
 

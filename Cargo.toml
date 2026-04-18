@@ -1,6 +1,6 @@
 [package]
 name = "discord-bot"
-version = "0.16.0"
+version = "0.17.0"
 edition = "2021"
 description = "Multi-instance Discord bot framework written in Rust. AI chat, music, games, moderation, Minecraft integration, and a Model Context Protocol server."
 license = "AGPL-3.0-or-later"
@@ -29,6 +29,7 @@ dashmap = "6"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
 dotenvy = "0.15"
 rand = "0.10"
 async-trait = "0.1"
