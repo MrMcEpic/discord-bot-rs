@@ -39,9 +39,31 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// quoted in the system prompt below.
 const MAX_SEARCH_ROUNDS: u8 = 3;
 
-fn get_system_prompt(personality: &str) -> String {
-	let now = chrono::Utc::now();
-	let date_str = now.format("%A, %B %e, %Y").to_string();
+fn get_system_prompt(personality: &str, timezone: Option<chrono_tz::Tz>) -> String {
+	let now_utc = chrono::Utc::now();
+	// Give the model date + time + IANA zone + numeric UTC offset, all in one
+	// line, so it doesn't have to reason about time zones. Bare date strings
+	// (which is what this used to be) caused the model to confidently report
+	// the next day's date whenever UTC had rolled over but the user's local
+	// time hadn't — and to hallucinate fake offsets when asked for the time.
+	let date_line =
+		match timezone {
+			Some(tz) => {
+				let local = now_utc.with_timezone(&tz);
+				let date_str = local.format("%A, %B %-d, %Y").to_string();
+				let time_str = local.format("%-I:%M %p").to_string();
+				let offset = local.format("%:z").to_string();
+				let zone_name = tz.name();
+				format!(
+				"Today is {date_str}. Current local time: {time_str} ({zone_name}, UTC{offset})."
+			)
+			}
+			None => {
+				let date_str = now_utc.format("%A, %B %-d, %Y").to_string();
+				let time_str = now_utc.format("%H:%M").to_string();
+				format!("Today is {date_str}. Current time: {time_str} UTC (no local timezone configured).")
+			}
+		};
 
 	let version = VERSION;
 	let max_search_rounds = MAX_SEARCH_ROUNDS;
@@ -49,8 +71,8 @@ fn get_system_prompt(personality: &str) -> String {
 	format!(
 		r#"{personality}
 
-## Current Date
-Today is {date_str}. Use this for any time-sensitive queries or searches.
+## Current Date and Time
+{date_line} Use this for any time-sensitive queries or searches. Do not second-guess it, do not invent a different timezone, and do not apologise for not knowing the date — it is stated here.
 
 ## Version
 v{version}
@@ -183,13 +205,14 @@ async fn build_message_history(
 	message: &Message,
 	bot_started_at: chrono::DateTime<chrono::Utc>,
 	personality: &str,
+	timezone: Option<chrono_tz::Tz>,
 ) -> (Vec<serde_json::Value>, Vec<Attachment>) {
 	let bot_id = ctx.cache.current_user().id;
 	let mention_pattern = Regex::new(&format!(r"<@!?{}>", bot_id)).unwrap();
 
 	let mut history = vec![serde_json::json!({
 		"role": "system",
-		"content": get_system_prompt(personality)
+		"content": get_system_prompt(personality, timezone)
 	})];
 
 	// Fetch recent messages
@@ -1760,8 +1783,14 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
 		}
 	});
 
-	let (mut history, reply_attachments) =
-		build_message_history(ctx, message, data.started_at, &data.personality).await;
+	let (mut history, reply_attachments) = build_message_history(
+		ctx,
+		message,
+		data.started_at,
+		&data.personality,
+		data.timezone,
+	)
+	.await;
 	let has_reply_images = !reply_attachments.is_empty();
 	let has_images = has_images || has_reply_images;
 
@@ -2172,13 +2201,13 @@ mod tests {
 	#[test]
 	fn system_prompt_includes_personality_verbatim() {
 		let p = "You are a helpful assistant who loves dad jokes.";
-		let got = get_system_prompt(p);
+		let got = get_system_prompt(p, None);
 		assert!(got.starts_with(p), "personality must lead the prompt");
 	}
 
 	#[test]
 	fn system_prompt_includes_current_date_and_version() {
-		let got = get_system_prompt("p");
+		let got = get_system_prompt("p", None);
 		// Today's year — the prompt embeds the live wall-clock, so this drifts
 		// over time but always contains a 4-digit year.
 		let year = chrono::Utc::now().format("%Y").to_string();
@@ -2191,7 +2220,7 @@ mod tests {
 
 	#[test]
 	fn system_prompt_includes_security_section() {
-		let got = get_system_prompt("p");
+		let got = get_system_prompt("p", None);
 		// Guard against accidental deletion of the prompt-injection defenses.
 		assert!(got.contains("Security"), "missing Security section");
 		assert!(
@@ -2202,10 +2231,60 @@ mod tests {
 
 	#[test]
 	fn system_prompt_advertises_search_round_budget() {
-		let got = get_system_prompt("p");
+		let got = get_system_prompt("p", None);
 		assert!(
 			got.contains(&format!("{MAX_SEARCH_ROUNDS} times")),
 			"search round budget not surfaced to the model"
+		);
+	}
+
+	#[test]
+	fn system_prompt_without_timezone_labels_utc_explicitly() {
+		// When no timezone is configured we fall back to UTC — but the
+		// prompt MUST state that, otherwise the model happily pretends the
+		// date is in whatever zone feels plausible (this is the bug that
+		// prompted the whole timezone fix: the model saw a bare UTC date
+		// and narrated it as Eastern Time).
+		let got = get_system_prompt("p", None);
+		assert!(
+			got.contains("UTC"),
+			"UTC fallback must be explicit in the prompt: {got}"
+		);
+		assert!(
+			got.contains("no local timezone configured"),
+			"UTC fallback must explain why there's no local time: {got}"
+		);
+	}
+
+	#[test]
+	fn system_prompt_with_timezone_includes_local_time_and_offset() {
+		let got = get_system_prompt("p", Some(chrono_tz::America::Toronto));
+		// Zone name appears verbatim.
+		assert!(
+			got.contains("America/Toronto"),
+			"IANA zone name must be in the prompt: {got}"
+		);
+		// A numeric offset like "UTC-04:00" or "UTC-05:00" (depending on DST)
+		// — the model needs this to avoid inventing a wrong one.
+		let has_offset = got.contains("UTC-05:00") || got.contains("UTC-04:00");
+		assert!(
+			has_offset,
+			"numeric UTC offset must be in the prompt: {got}"
+		);
+		// Current year as a sanity check that the date is actually formatted.
+		let year = chrono::Utc::now().format("%Y").to_string();
+		assert!(got.contains(&year), "year missing from prompt: {got}");
+	}
+
+	#[test]
+	fn system_prompt_instructs_model_not_to_override_stated_time() {
+		// The whole point of the fix: once we state the time explicitly, we
+		// don't want the model to "helpfully" reason its way to a different
+		// answer. Keep this anti-drift clause in the prompt.
+		let got = get_system_prompt("p", Some(chrono_tz::UTC));
+		assert!(
+			got.contains("Do not second-guess"),
+			"anti-drift clause missing from prompt: {got}"
 		);
 	}
 

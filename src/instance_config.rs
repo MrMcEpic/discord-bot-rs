@@ -14,6 +14,13 @@ pub struct InstanceConfig {
 	pub command_root: String,
 	#[serde(default = "default_personality_file")]
 	pub personality_file: String,
+	/// IANA timezone name (e.g. `"America/Toronto"`) used to format the
+	/// "current date / time" line in the AI system prompt. When absent, the
+	/// prompt is expressed in UTC and explicitly labelled as such. Set this
+	/// for any community where users will ask time-of-day questions —
+	/// without it, a user chatting late at night local time will see the
+	/// model confidently report tomorrow's date.
+	pub timezone: Option<String>,
 	#[serde(default)]
 	pub features: Features,
 	#[serde(default)]
@@ -174,6 +181,18 @@ pub fn validate_command_root(s: &str) -> Result<(), String> {
 	Ok(())
 }
 
+/// Resolve an IANA timezone name (e.g. `"America/Toronto"`) to a
+/// [`chrono_tz::Tz`]. Returns a typed error with the offending string so
+/// misconfiguration fails loudly at startup rather than silently falling back
+/// to UTC.
+pub fn parse_timezone(s: &str) -> Result<chrono_tz::Tz, String> {
+	s.parse::<chrono_tz::Tz>().map_err(|_| {
+		format!(
+			"unknown IANA timezone '{s}' (expected e.g. 'America/Toronto', 'UTC', 'Europe/London')"
+		)
+	})
+}
+
 fn default_welcome_prompt_file() -> String {
 	"welcome_prompt.txt".to_string()
 }
@@ -187,7 +206,21 @@ impl InstanceConfig {
 			.unwrap_or_else(|e| panic!("Failed to parse {}: {e}", config_path.display()));
 		validate_command_root(&cfg.command_root)
 			.unwrap_or_else(|e| panic!("Invalid command_root in {}: {e}", config_path.display()));
+		if let Some(tz) = &cfg.timezone {
+			parse_timezone(tz)
+				.unwrap_or_else(|e| panic!("Invalid timezone in {}: {e}", config_path.display()));
+		}
 		cfg
+	}
+
+	/// Resolved `chrono_tz::Tz`, or `None` when the instance didn't set one.
+	/// `load()` has already validated the string if it was present, so this
+	/// panic should never fire in practice; it's a safety net for the case
+	/// where `InstanceConfig` is constructed without going through `load()`.
+	pub fn resolved_timezone(&self) -> Option<chrono_tz::Tz> {
+		self.timezone
+			.as_deref()
+			.map(|s| parse_timezone(s).expect("timezone already validated at load"))
 	}
 
 	pub fn load_personality(&self, config_dir: &Path) -> String {
@@ -224,7 +257,7 @@ impl InstanceConfig {
 
 #[cfg(test)]
 mod tests {
-	use super::{validate_command_root, AiConfig, InstanceConfig};
+	use super::{parse_timezone, validate_command_root, AiConfig, InstanceConfig};
 
 	#[test]
 	fn validate_command_root_accepts_default() {
@@ -249,6 +282,56 @@ mod tests {
 		assert!(validate_command_root("bot ").is_err());
 		assert!(validate_command_root(" bot").is_err());
 		assert!(validate_command_root("a\tb").is_err());
+	}
+
+	// --- timezone parsing ------------------------------------------------
+
+	#[test]
+	fn parse_timezone_accepts_common_iana_names() {
+		assert!(parse_timezone("UTC").is_ok());
+		assert!(parse_timezone("America/Toronto").is_ok());
+		assert!(parse_timezone("Europe/London").is_ok());
+		assert!(parse_timezone("Asia/Tokyo").is_ok());
+	}
+
+	#[test]
+	fn parse_timezone_rejects_gibberish_with_helpful_message() {
+		let err = parse_timezone("Middle/Earth").expect_err("bogus zone must fail");
+		assert!(
+			err.contains("Middle/Earth"),
+			"error should surface bad input: {err}"
+		);
+		assert!(
+			err.contains("IANA"),
+			"error should hint at IANA format: {err}"
+		);
+	}
+
+	#[test]
+	fn timezone_field_is_optional_and_defaults_to_none() {
+		let cfg: InstanceConfig = toml::from_str(
+			r#"
+bot_name = "Test"
+command_prefix = "!"
+"#,
+		)
+		.unwrap();
+		assert!(cfg.timezone.is_none());
+		assert!(cfg.resolved_timezone().is_none());
+	}
+
+	#[test]
+	fn timezone_field_parses_and_resolves() {
+		let cfg: InstanceConfig = toml::from_str(
+			r#"
+bot_name = "Test"
+command_prefix = "!"
+timezone = "America/Toronto"
+"#,
+		)
+		.unwrap();
+		assert_eq!(cfg.timezone.as_deref(), Some("America/Toronto"));
+		assert_eq!(cfg.resolved_timezone(), Some(chrono_tz::America::Toronto));
 	}
 
 	// --- AI provider schema parsing -------------------------------------

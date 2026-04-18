@@ -10,6 +10,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - (track new changes here until the next release)
 
+## [0.17.0] - 2026-04-17
+
+### Added
+- **`timezone` field on `InstanceConfig`** — optional IANA zone name
+  (`"America/Toronto"`, `"Europe/London"`, …) used to format the
+  "current date / time" line in the AI system prompt. When set, the prompt
+  states the local date, local clock time, IANA zone name, and numeric UTC
+  offset in one line. When unset, the prompt falls back to UTC and labels
+  it explicitly. See
+  [`docs/configuration/instance-config.md`](docs/configuration/instance-config.md)
+  for details.
+
+### Fixed
+- **AI system prompt no longer reports tomorrow's date late at night.**
+  Previously the system prompt embedded `chrono::Utc::now()` formatted as a
+  bare date with no timezone, so a user chatting at 10:52 PM Eastern saw
+  the model confidently announce "Today is Saturday, April 18" (UTC had
+  rolled over; their local day hadn't). The model also regularly
+  hallucinated plausible-sounding cities to justify the date. The prompt
+  now always carries a timezone label — either the configured IANA zone
+  or an explicit "UTC" callout — and an anti-drift instruction telling
+  the model not to second-guess the stated time.
+- **Typos in the timezone name fail loudly at startup** with a message
+  that includes the offending string, instead of silently defaulting to
+  UTC. Docs steer users toward full IANA names (e.g. `America/New_York`)
+  rather than bare abbreviations (e.g. `EST`) so `chrono-tz` handles
+  daylight saving correctly.
+
+### Dependencies
+- Added `chrono-tz = "0.10"` for IANA timezone resolution.
+
+### Tests
+- 4 new tests in `instance_config.rs` covering timezone parsing (accepts
+  common IANA names, rejects gibberish with a helpful message,
+  default-to-`None` behaviour, resolve-to-`Tz` when set).
+- 3 new tests in `ai/chat.rs` covering the prompt's UTC fallback wording,
+  the presence of local time / zone name / numeric offset when a timezone
+  is configured, and the anti-drift instruction.
+
 ## [0.16.0] - 2026-04-17
 
 ### Added

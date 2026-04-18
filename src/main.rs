@@ -82,6 +82,9 @@ pub struct Data {
 	pub ai_fallback_on_censored: Vec<String>,
 	pub personality: String,
 	pub bot_name: String,
+	/// Resolved IANA timezone for the "current date / time" line in the AI
+	/// system prompt. `None` = UTC (the prompt explicitly labels it as such).
+	pub timezone: Option<chrono_tz::Tz>,
 	/// Pre-rendered command invocation prefix used by the help embed and any
 	/// other code that needs to print example commands. Equal to
 	/// `command_prefix + command_root + " "` for the default case (`"!m "`)
@@ -267,6 +270,12 @@ async fn main() {
 	let guild_id_for_tasks = config.guild_id.clone();
 	let mc_verify_url_for_tasks = config.mc_verify_url.clone();
 	let mc_verify_secret_for_tasks = config.mc_verify_secret.clone();
+	// Resolve timezone here, BEFORE the poise setup closure, so the closure's
+	// disjoint-capture on `instance_cfg` stays field-level (needed because
+	// `instance_cfg` is borrowed again below for auto_role / minecraft tasks).
+	// `Tz` is `Copy`, so moving this into the closure doesn't consume anything
+	// else.
+	let timezone = instance_cfg.resolved_timezone();
 
 	let db_clone = db.clone();
 
@@ -360,6 +369,7 @@ async fn main() {
 					ai_fallback_on_censored,
 					personality,
 					bot_name: instance_cfg.bot_name.clone(),
+					timezone,
 					cmd_prefix: if instance_cfg.command_root.is_empty() {
 						instance_cfg.command_prefix.clone()
 					} else {

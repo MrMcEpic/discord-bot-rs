@@ -33,6 +33,28 @@ command_root = "m"
 # config file. Default: "personality.txt"
 personality_file = "personality.txt"
 
+# IANA timezone name for the AI system prompt's date/time line. When set, the
+# prompt gives the model the local date, local clock time, IANA zone name,
+# and numeric UTC offset — e.g.
+#
+#   Today is Friday, April 17, 2026. Current local time: 10:52 PM
+#   (America/Toronto, UTC-04:00).
+#
+# When unset, the prompt falls back to UTC and labels it as such. Leaving this
+# unset is fine for non-chat workloads, but for any community where users ask
+# time-of-day questions (and the whole of AI chat basically does), a bare-UTC
+# prompt causes the model to report tomorrow's date whenever a user is chatting
+# late at night local time. Use the full IANA name so DST is handled correctly
+# — "EST" / "PST" / etc. are rejected at startup. Examples:
+#
+#   timezone = "America/Toronto"
+#   timezone = "America/Los_Angeles"
+#   timezone = "Europe/London"
+#   timezone = "Asia/Tokyo"
+#
+# Default: unset (UTC with explicit label).
+# timezone = "America/Toronto"
+
 
 # ----- Feature Flags --------------------------------------------------------
 #
