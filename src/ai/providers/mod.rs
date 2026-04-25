@@ -562,11 +562,14 @@ impl ProviderRouter {
 	/// unavailable providers (used by `cascade_for` and external direct access).
 	///
 	/// Accepts the canonical default-registry names (`deepseek_chat`,
-	/// `deepseek_reasoner`, `gemini_flash`, `grok`) plus the short aliases
-	/// supported by 0.14.0's `named()` — `"gemini"`, `"deepseek"`,
-	/// `"deepseek-chat"` — for backward compat with instance configs written
-	/// before 0.15.0. User-defined provider names always go through the
-	/// canonical lookup path; aliases only apply to the default registry.
+	/// `deepseek_reasoner`, `gemini_flash`, `grok`) plus these short aliases:
+	///
+	/// - 0.14.0: `"gemini"`, `"deepseek"`, `"deepseek-chat"`
+	/// - 0.18.0: `"deepseek-v4"`, `"deepseek-v4-flash"`, `"deepseek-v4-pro"`,
+	///   `"deepseek-reasoner"`
+	///
+	/// User-defined provider names always go through the canonical lookup
+	/// path; aliases only apply to the default registry.
 	pub fn named(&self, name: &str) -> Option<&dyn AiProvider> {
 		// Direct lookup wins (covers canonical default names + all user-defined).
 		if let Some(p) = self.providers.get(name) {
@@ -575,7 +578,8 @@ impl ProviderRouter {
 		// Then 0.14.0 aliases for default-registry providers.
 		let aliased = match name {
 			"gemini" => "gemini_flash",
-			"deepseek" | "deepseek-chat" => "deepseek_chat",
+			"deepseek" | "deepseek-chat" | "deepseek-v4" | "deepseek-v4-flash" => "deepseek_chat",
+			"deepseek-reasoner" | "deepseek-v4-pro" => "deepseek_reasoner",
 			_ => return None,
 		};
 		self.providers.get(aliased).map(|p| p as &dyn AiProvider)
@@ -1328,6 +1332,27 @@ mod tests {
 		assert_eq!(
 			r.named("deepseek-chat").map(|p| p.name()),
 			Some("deepseek_chat")
+		);
+		// 0.18.0 aliases for V4 explicit names + the deprecated reasoner string.
+		assert_eq!(
+			r.named("deepseek-v4").map(|p| p.name()),
+			Some("deepseek_chat"),
+			"deepseek-v4 should resolve to deepseek_chat (V4-Flash default)"
+		);
+		assert_eq!(
+			r.named("deepseek-v4-flash").map(|p| p.name()),
+			Some("deepseek_chat"),
+			"explicit V4-Flash name resolves to deepseek_chat"
+		);
+		assert_eq!(
+			r.named("deepseek-v4-pro").map(|p| p.name()),
+			Some("deepseek_reasoner"),
+			"explicit V4-Pro name resolves to deepseek_reasoner"
+		);
+		assert_eq!(
+			r.named("deepseek-reasoner").map(|p| p.name()),
+			Some("deepseek_reasoner"),
+			"deprecated deepseek-reasoner alias preserved past 2026-07-24 retirement"
 		);
 		// Sanity: unknown names still return None.
 		assert!(r.named("not_a_provider").is_none());
