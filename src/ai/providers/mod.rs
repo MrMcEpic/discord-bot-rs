@@ -129,7 +129,7 @@ pub struct ToolCall {
 /// non-OpenAI-compatible providers (e.g. native Anthropic) by writing a new
 /// `complete_*` function alongside this one.
 pub trait AiProvider: Send + Sync + std::fmt::Debug {
-	/// Short human label for log lines (e.g. "deepseek-chat", "gemini").
+	/// Short human label for log lines (e.g. "deepseek_chat", "gemini_flash").
 	fn name(&self) -> &str;
 
 	/// HTTPS endpoint for the chat-completions request.
