@@ -61,7 +61,7 @@ boot, the last `info` line before silence is your strongest hint.
 
 Each module logs its hot paths at `debug`:
 
-- `ai/deepseek.rs` logs the inbound message, tool calls and their
+- `ai/chat.rs` logs the inbound message, tool calls and their
   results, and the final reply.
 - `music/voice.rs` logs joins, leaves, track starts, and track-end
   events.
@@ -136,7 +136,7 @@ When in doubt: reproduce with `RUST_LOG=discord_bot=debug,info`.
 
 ### "AI chat doesn't reply."
 
-Mention the bot, get nothing. The pipeline is in `src/ai/deepseek.rs`
+Mention the bot, get nothing. The pipeline is in `src/ai/chat.rs`
 (look for `handle_mention`); the code logs at `info` when a request
 comes in and at `error` when it fails. Possible causes:
 

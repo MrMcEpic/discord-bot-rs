@@ -13,7 +13,7 @@ The bot is built from independent feature modules that you enable or
 disable per instance in `config.toml`. Out of the box you get:
 
 - **AI chat** — @mention the bot and it replies in-character, using
-  DeepSeek V3.2 as the primary provider and Google Gemini as a fallback,
+  DeepSeek V4 as the primary provider and Google Gemini as a fallback,
   with a configurable personality prompt.
 - **Music** — yt-dlp plus songbird plus ffmpeg, with a full queue, loop
   modes, shuffle, and interactive button controls on the now-playing

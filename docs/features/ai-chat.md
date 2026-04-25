@@ -12,9 +12,9 @@ collects the recent conversation in that channel, feeds it to the AI along
 with your `personality.txt` system prompt, and sends the model's reply back
 as a Discord message. It does this with whatever model you have keys for:
 
-- `DEEPSEEK_API_KEY` — primary provider (`deepseek-chat`, with automatic
-  routing to `deepseek-reasoner` for hard questions). Free or cheap; the bot
-  is built around its tool-calling format.
+- `DEEPSEEK_API_KEY` — primary provider (`deepseek-v4-flash`, with automatic
+  routing to `deepseek-v4-pro` for hard questions). The chat-tier output is
+  inexpensive; the bot is built around DeepSeek's tool-calling format.
 - `GEMINI_API_KEY` — secondary provider. Used for image attachments
   (DeepSeek Chat is text-only) and as a fallback if the DeepSeek text path
   is unavailable.
@@ -65,7 +65,7 @@ There are exactly three things to configure:
    without a personality means the bot has no voice.
 
 There is no in-app configuration of model parameters, temperature, or
-context window size — they are tuned in `src/ai/deepseek.rs`. If you want
+context window size — they are tuned in `src/ai/chat.rs`. If you want
 to override them you have to recompile.
 
 For details on how to write a good personality file, see
@@ -95,7 +95,7 @@ This means:
 ## Conversation context window
 
 For each mention, the bot fetches the last 100 messages in the channel
-(`FETCH_LIMIT` in `src/ai/deepseek.rs`) and walks them in order, picking
+(`FETCH_LIMIT` in `src/ai/chat.rs`) and walks them in order, picking
 up to **10 relevant messages** (`MAX_RELEVANT`) that meet two filters:
 
 - They are no older than **30 minutes**.
@@ -131,7 +131,7 @@ The AI has access to a set of function-calling tools defined in
   before it actually runs.
 - **Web search** — `web_search`, used for current-events questions and
   fact-checking. Up to **three** rounds of search are allowed per
-  request (the `MAX_SEARCH_ROUNDS` constant in `src/ai/deepseek.rs`,
+  request (the `MAX_SEARCH_ROUNDS` constant in `src/ai/chat.rs`,
   also interpolated into the system prompt so the model and the loop
   agree), so the AI can refine queries based on results.
 - **Stocks** — `stock_buy`, `stock_sell`, `stock_price`, `stock_portfolio`,
@@ -201,12 +201,12 @@ Gemini. If a request has image attachments, the bot tries Gemini first;
 on failure it strips the multimodal content and falls back to DeepSeek
 text-only with a description-of-context placeholder.
 
-Inside the DeepSeek path, the bot routes between `deepseek-chat`
-(`v3`-class, fast) and `deepseek-reasoner` (slow, thinks step-by-step) by
-classifying each message: simple chat goes to V3, anything that smells
-like a reasoning task goes to Reasoner. Reasoner can't use tools
-directly, so the bot uses V3 as a research assistant first to perform
-any web searches, then hands the gathered context to Reasoner for the
+Inside the DeepSeek path, the bot routes between `deepseek-v4-flash`
+(fast) and `deepseek-v4-pro` (the V4 flagship) by classifying each
+message: simple chat goes to V4-Flash, anything that smells like a
+reasoning task goes to V4-Pro. The reasoner role can't use tools
+directly, so the bot uses `deepseek-v4-flash` as a research assistant first to perform
+any web searches, then hands the gathered context to V4-Pro for the
 final answer.
 
 ## Common issues
@@ -240,11 +240,11 @@ final answer.
 
 ## Cost
 
-Costs depend almost entirely on which model you route to. DeepSeek V3 is
-inexpensive enough that an active community server typically lands at
-single-digit dollars per month. Reasoner is more expensive per request
-but only fires on detected reasoning queries. Gemini's free tier covers
-casual image traffic.
+Costs depend almost entirely on which model you route to. DeepSeek V4-Flash
+is inexpensive enough that an active community server typically lands at
+single-digit dollars per month. V4-Pro is ~12× more expensive per output
+token (the flagship reasoner) but only fires on detected reasoning queries.
+Gemini's free tier covers casual image traffic.
 
 Check the providers' current pricing pages directly:
 

@@ -100,6 +100,22 @@ welcome = false       # AI-generated welcome message on join
 # [ai.routing]
 # chat = "my_local"
 
+# Disabling V4-Pro flagship reasoner. The default reasoner provider routes
+# to DeepSeek V4-Pro, the 1.6T-parameter flagship — output is ~12x V4-Flash
+# per token. To skip V4-Pro entirely, point the reasoner role at the
+# cheaper V4-Flash provider (canonical name `deepseek_chat`):
+#
+# [ai.routing]
+# reasoner = "deepseek_chat"
+#
+# Or disable the reasoner role altogether — the bot then never invokes any
+# reasoner provider, and every chat goes through the chat role:
+#
+# [ai.routing]
+# chat = "deepseek_chat"
+# vision = "gemini_flash"
+# # reasoner intentionally omitted — graceful degrade
+
 
 # ----- AI Fallback (CENSORED cascade) ---------------------------------------
 #

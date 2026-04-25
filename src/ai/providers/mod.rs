@@ -30,7 +30,7 @@ pub use configured::{ConfiguredProvider, ProviderDef, ProviderSpec};
 /// `[ai.providers]` section is in instance config; user-defined providers
 /// merge on top (user wins on name collision).
 ///
-/// Field values here are pinned by `default_registry_*_matches_v0_14_0`
+/// Field values here are pinned by `default_registry_*_matches_v0_18_0`
 /// snapshot tests in this module. Drift breaks the test.
 pub fn default_provider_registry() -> Vec<(&'static str, ProviderDef)> {
 	vec![
@@ -38,7 +38,7 @@ pub fn default_provider_registry() -> Vec<(&'static str, ProviderDef)> {
 			"deepseek_chat",
 			ProviderDef {
 				url: "https://api.deepseek.com/chat/completions".to_string(),
-				model: "deepseek-chat".to_string(),
+				model: "deepseek-v4-flash".to_string(),
 				api_key_env: "DEEPSEEK_API_KEY".to_string(),
 				max_tokens: 8192,
 				timeout_secs: 30,
@@ -55,9 +55,9 @@ pub fn default_provider_registry() -> Vec<(&'static str, ProviderDef)> {
 			"deepseek_reasoner",
 			ProviderDef {
 				url: "https://api.deepseek.com/chat/completions".to_string(),
-				model: "deepseek-reasoner".to_string(),
+				model: "deepseek-v4-pro".to_string(),
 				api_key_env: "DEEPSEEK_API_KEY".to_string(),
-				max_tokens: 32768,
+				max_tokens: 65536,
 				timeout_secs: 300,
 				supports_vision: false,
 				supports_tools: false,
@@ -129,7 +129,7 @@ pub struct ToolCall {
 /// non-OpenAI-compatible providers (e.g. native Anthropic) by writing a new
 /// `complete_*` function alongside this one.
 pub trait AiProvider: Send + Sync + std::fmt::Debug {
-	/// Short human label for log lines (e.g. "deepseek-chat", "gemini").
+	/// Short human label for log lines (e.g. "deepseek_chat", "gemini_flash").
 	fn name(&self) -> &str;
 
 	/// HTTPS endpoint for the chat-completions request.
@@ -562,11 +562,14 @@ impl ProviderRouter {
 	/// unavailable providers (used by `cascade_for` and external direct access).
 	///
 	/// Accepts the canonical default-registry names (`deepseek_chat`,
-	/// `deepseek_reasoner`, `gemini_flash`, `grok`) plus the short aliases
-	/// supported by 0.14.0's `named()` — `"gemini"`, `"deepseek"`,
-	/// `"deepseek-chat"` — for backward compat with instance configs written
-	/// before 0.15.0. User-defined provider names always go through the
-	/// canonical lookup path; aliases only apply to the default registry.
+	/// `deepseek_reasoner`, `gemini_flash`, `grok`) plus these short aliases:
+	///
+	/// - 0.14.0: `"gemini"`, `"deepseek"`, `"deepseek-chat"`
+	/// - 0.18.0: `"deepseek-v4"`, `"deepseek-v4-flash"`, `"deepseek-v4-pro"`,
+	///   `"deepseek-reasoner"`
+	///
+	/// User-defined provider names always go through the canonical lookup
+	/// path; aliases only apply to the default registry.
 	pub fn named(&self, name: &str) -> Option<&dyn AiProvider> {
 		// Direct lookup wins (covers canonical default names + all user-defined).
 		if let Some(p) = self.providers.get(name) {
@@ -575,7 +578,8 @@ impl ProviderRouter {
 		// Then 0.14.0 aliases for default-registry providers.
 		let aliased = match name {
 			"gemini" => "gemini_flash",
-			"deepseek" | "deepseek-chat" => "deepseek_chat",
+			"deepseek" | "deepseek-chat" | "deepseek-v4" | "deepseek-v4-flash" => "deepseek_chat",
+			"deepseek-reasoner" | "deepseek-v4-pro" => "deepseek_reasoner",
 			_ => return None,
 		};
 		self.providers.get(aliased).map(|p| p as &dyn AiProvider)
@@ -1066,11 +1070,11 @@ mod tests {
 	}
 
 	#[test]
-	fn default_registry_deepseek_chat_matches_v0_14_0() {
+	fn default_registry_deepseek_chat_matches_v0_18_0() {
 		let r = default_provider_registry();
 		let def = def_by_name(&r, "deepseek_chat");
 		assert_eq!(def.url, "https://api.deepseek.com/chat/completions");
-		assert_eq!(def.model, "deepseek-chat");
+		assert_eq!(def.model, "deepseek-v4-flash");
 		assert_eq!(def.api_key_env, "DEEPSEEK_API_KEY");
 		assert_eq!(def.max_tokens, 8192);
 		assert_eq!(def.timeout_secs, 30);
@@ -1086,13 +1090,13 @@ mod tests {
 	}
 
 	#[test]
-	fn default_registry_deepseek_reasoner_matches_v0_14_0() {
+	fn default_registry_deepseek_reasoner_matches_v0_18_0() {
 		let r = default_provider_registry();
 		let def = def_by_name(&r, "deepseek_reasoner");
 		assert_eq!(def.url, "https://api.deepseek.com/chat/completions");
-		assert_eq!(def.model, "deepseek-reasoner");
+		assert_eq!(def.model, "deepseek-v4-pro");
 		assert_eq!(def.api_key_env, "DEEPSEEK_API_KEY");
-		assert_eq!(def.max_tokens, 32768);
+		assert_eq!(def.max_tokens, 65536);
 		assert_eq!(def.timeout_secs, 300);
 		assert!(!def.supports_vision);
 		assert!(!def.supports_tools, "reasoner does not accept tools");
@@ -1245,7 +1249,7 @@ mod tests {
 		assert_eq!(r.named("deepseek_chat").unwrap().max_tokens_limit(), 8192);
 		assert_eq!(
 			r.named("deepseek_reasoner").unwrap().max_tokens_limit(),
-			32768
+			65536
 		);
 		assert_eq!(r.named("gemini_flash").unwrap().max_tokens_limit(), 16384);
 		assert_eq!(r.named("grok").unwrap().max_tokens_limit(), 16384);
@@ -1328,6 +1332,27 @@ mod tests {
 		assert_eq!(
 			r.named("deepseek-chat").map(|p| p.name()),
 			Some("deepseek_chat")
+		);
+		// 0.18.0 aliases for V4 explicit names + the deprecated reasoner string.
+		assert_eq!(
+			r.named("deepseek-v4").map(|p| p.name()),
+			Some("deepseek_chat"),
+			"deepseek-v4 should resolve to deepseek_chat (V4-Flash default)"
+		);
+		assert_eq!(
+			r.named("deepseek-v4-flash").map(|p| p.name()),
+			Some("deepseek_chat"),
+			"explicit V4-Flash name resolves to deepseek_chat"
+		);
+		assert_eq!(
+			r.named("deepseek-v4-pro").map(|p| p.name()),
+			Some("deepseek_reasoner"),
+			"explicit V4-Pro name resolves to deepseek_reasoner"
+		);
+		assert_eq!(
+			r.named("deepseek-reasoner").map(|p| p.name()),
+			Some("deepseek_reasoner"),
+			"deprecated deepseek-reasoner alias preserved past 2026-07-24 retirement"
 		);
 		// Sanity: unknown names still return None.
 		assert!(r.named("not_a_provider").is_none());

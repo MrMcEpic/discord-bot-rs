@@ -17,7 +17,7 @@ their source available to its users on request. See the
 
 ### DeepSeek
 
-A Chinese AI provider whose `deepseek-chat` model is the bot's
+A Chinese AI provider whose `deepseek-v4-flash` model is the bot's
 primary backend for `@mention` AI chat when `DEEPSEEK_API_KEY` is set.
 Cheap, fast, supports OpenAI-style tool calls. See the
 [AI Pipeline](../architecture/ai-pipeline.md) page.
@@ -177,7 +177,7 @@ Gemini's tool-call protocol. When the LLM emits a structured tool
 call in its response, the bot dispatches it to the matching Rust
 handler (e.g. `web_search`, `play_song`, `start_wordle`,
 `create_tempban`) and feeds the result back into the conversation.
-Defined in `src/ai/tools.rs`, dispatched in `src/ai/deepseek.rs`.
+Defined in `src/ai/tools.rs`, dispatched in `src/ai/chat.rs`.
 
 ### Tool (MCP)
 
