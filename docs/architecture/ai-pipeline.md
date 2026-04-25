@@ -9,7 +9,7 @@ extend the AI in new directions — adding tools, tweaking the system
 prompt, swapping providers — without breaking the rest.
 
 The core file is
-[`src/ai/deepseek.rs`](https://github.com/MrMcEpic/discord-bot-rs/blob/master/src/ai/deepseek.rs).
+[`src/ai/chat.rs`](https://github.com/MrMcEpic/discord-bot-rs/blob/master/src/ai/chat.rs).
 Everything under `src/ai/` is either called from there or defines data
 it consumes. For how users actually interact with this from Discord,
 see [AI Chat](../features/ai-chat.md).
@@ -81,7 +81,7 @@ before any API call.
 The AI's memory is whatever messages the bot can reconstruct from the
 channel's recent history. There is no vector store, no long-term memory,
 no per-user state. When the pipeline starts,
-[`build_message_history`](https://github.com/MrMcEpic/discord-bot-rs/blob/master/src/ai/deepseek.rs)
+[`build_message_history`](https://github.com/MrMcEpic/discord-bot-rs/blob/master/src/ai/chat.rs)
 fetches the last 100 messages before the current one via
 `channel.messages(...).before(message.id).limit(100)` and walks them in
 reverse-chronological order.
@@ -103,7 +103,7 @@ where "relevant" means:
 - **Not a known bad assistant message.** Leaked `I'm Claude`, memory
   denials, broken tool replies, and error strings are pattern-matched
   via
-  [`BAD_ASSISTANT_PATTERNS`](https://github.com/MrMcEpic/discord-bot-rs/blob/master/src/ai/deepseek.rs)
+  [`BAD_ASSISTANT_PATTERNS`](https://github.com/MrMcEpic/discord-bot-rs/blob/master/src/ai/chat.rs)
   and skipped — and any user message those bad assistant messages were
   replying to is skipped too, on the theory that if the AI blew up on
   that question, feeding it back in will make it blow up again.
@@ -136,7 +136,7 @@ collected for vision routing.
 
 The personality file loaded from `CONFIG_DIR/personality.txt` is
 appended verbatim into the system prompt by
-[`get_system_prompt`](https://github.com/MrMcEpic/discord-bot-rs/blob/master/src/ai/deepseek.rs).
+[`get_system_prompt`](https://github.com/MrMcEpic/discord-bot-rs/blob/master/src/ai/chat.rs).
 Around it, the function hard-codes:
 
 - The current date (so the model doesn't guess),
@@ -179,7 +179,7 @@ a multimodal completion to Gemini. If Gemini fails, the pipeline strips
 the images and falls through to the text path.
 
 Second, **reasoning routing**: for text requests,
-[`classify_message`](https://github.com/MrMcEpic/discord-bot-rs/blob/master/src/ai/deepseek.rs)
+[`classify_message`](https://github.com/MrMcEpic/discord-bot-rs/blob/master/src/ai/chat.rs)
 sends the user's most recent message to DeepSeek V4 with a one-shot
 "yes/no — does this need deep reasoning?" prompt. If the classifier
 says yes, the pipeline switches the active endpoint to `deepseek-v4-pro`.
@@ -210,7 +210,7 @@ Tools come in two flavours:
   whether to search again or answer. Up to `MAX_SEARCH_ROUNDS` rounds
   (currently 3), after which the pipeline forces a final answer with
   tools disabled. The same `MAX_SEARCH_ROUNDS` constant in
-  `src/ai/deepseek.rs` is interpolated into the system prompt and
+  `src/ai/chat.rs` is interpolated into the system prompt and
   drives both the V4-Flash chat loop and the V4-Pro pre-flight loop, so
   the prompt and the code can never disagree about the limit.
 - **Action tools** — everything that changes state: `play_song`,

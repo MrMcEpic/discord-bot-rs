@@ -344,7 +344,7 @@ if cooldown > 0 {
 ```
 
 `check` returns `0` if the call is allowed and the number of seconds
-until reset if not. See `ai/deepseek.rs` for real call sites.
+until reset if not. See `ai/chat.rs` for real call sites.
 
 ## Testing it
 

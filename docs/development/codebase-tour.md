@@ -188,19 +188,20 @@ codebase and the one where you should start by reading the
 [AI Pipeline](../architecture/ai-pipeline.md) architecture page rather
 than the files.
 
-- **`deepseek.rs`** — by far the biggest file in the project. It owns
-  `handle_mention`, the message-history builder, the DeepSeek HTTP
-  call, the Gemini fallback path, and every tool implementation the
-  bot exposes to the LLM. If a tool call resolves to playing music,
-  creating a tempban, or starting a game, the dispatch lives here.
+- **`chat.rs`** — by far the biggest file in the project. It owns
+  `handle_mention`, the message-history builder, provider dispatch
+  through the `AiProvider` trait + `ProviderRouter`, and every tool
+  implementation the bot exposes to the LLM. If a tool call resolves
+  to playing music, creating a tempban, or starting a game, the
+  dispatch lives here.
 - **`tools.rs`** — JSON schema definitions for the tool set the bot
-  advertises to DeepSeek/Gemini: `web_search`, `play_song`, `skip`,
-  `stop`, `pause`, `resume`, `show_queue`, `now_playing`, `shuffle`,
-  `set_loop`, `remove_from_queue`, `tempban`, `unban`, `nuke`,
-  `stock_buy`, `stock_sell`, `stock_price`, `stock_portfolio`,
+  advertises to DeepSeek/Gemini/Claude: `web_search`, `play_song`,
+  `skip`, `stop`, `pause`, `resume`, `show_queue`, `now_playing`,
+  `shuffle`, `set_loop`, `remove_from_queue`, `tempban`, `unban`,
+  `nuke`, `stock_buy`, `stock_sell`, `stock_price`, `stock_portfolio`,
   `stock_leaderboard`, `connections_start`, `wordle_start`, and a few
   others. Predicate helpers (`is_search_tool`, `is_moderation_tool`,
-  ...) are used by `deepseek.rs` to route each tool call.
+  ...) are used by `chat.rs` to route each tool call.
 - **`dsml.rs`** — parses "DSML" (DeepSeek Markup Language) tool-call
   blocks embedded in model output, for models that emit structured
   tool calls in prose rather than in the OpenAI-style `tool_calls`
@@ -419,7 +420,7 @@ lives.
 |---|---|
 | Adding a new command | [`commands/mod.rs`](https://github.com/MrMcEpic/discord-bot-rs/blob/master/src/commands/mod.rs) and [Adding a Command](adding-a-command.md) |
 | Adding a new event handler branch | [`events/mod.rs`](https://github.com/MrMcEpic/discord-bot-rs/blob/master/src/events/mod.rs) |
-| Adding a new AI tool for DeepSeek | [`ai/tools.rs`](https://github.com/MrMcEpic/discord-bot-rs/blob/master/src/ai/tools.rs) and the dispatch in `ai/deepseek.rs` |
+| Adding a new AI tool | [`ai/tools.rs`](https://github.com/MrMcEpic/discord-bot-rs/blob/master/src/ai/tools.rs) and the dispatch in `ai/chat.rs` |
 | Adding a new MCP tool | [`mcp/tools.rs`](https://github.com/MrMcEpic/discord-bot-rs/blob/master/src/mcp/tools.rs) and [Adding an MCP Tool](adding-an-mcp-tool.md) |
 | Adding a whole new feature module | [Adding a Feature Module](adding-a-feature-module.md) |
 | Adding a DB table | [`db/mod.rs`](https://github.com/MrMcEpic/discord-bot-rs/blob/master/src/db/mod.rs) (CREATE TABLE), [`db/models.rs`](https://github.com/MrMcEpic/discord-bot-rs/blob/master/src/db/models.rs) (struct), [`db/queries.rs`](https://github.com/MrMcEpic/discord-bot-rs/blob/master/src/db/queries.rs) (functions) |

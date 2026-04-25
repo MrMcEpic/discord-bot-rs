@@ -65,7 +65,7 @@ There are exactly three things to configure:
    without a personality means the bot has no voice.
 
 There is no in-app configuration of model parameters, temperature, or
-context window size — they are tuned in `src/ai/deepseek.rs`. If you want
+context window size — they are tuned in `src/ai/chat.rs`. If you want
 to override them you have to recompile.
 
 For details on how to write a good personality file, see
@@ -95,7 +95,7 @@ This means:
 ## Conversation context window
 
 For each mention, the bot fetches the last 100 messages in the channel
-(`FETCH_LIMIT` in `src/ai/deepseek.rs`) and walks them in order, picking
+(`FETCH_LIMIT` in `src/ai/chat.rs`) and walks them in order, picking
 up to **10 relevant messages** (`MAX_RELEVANT`) that meet two filters:
 
 - They are no older than **30 minutes**.
@@ -131,7 +131,7 @@ The AI has access to a set of function-calling tools defined in
   before it actually runs.
 - **Web search** — `web_search`, used for current-events questions and
   fact-checking. Up to **three** rounds of search are allowed per
-  request (the `MAX_SEARCH_ROUNDS` constant in `src/ai/deepseek.rs`,
+  request (the `MAX_SEARCH_ROUNDS` constant in `src/ai/chat.rs`,
   also interpolated into the system prompt so the model and the loop
   agree), so the AI can refine queries based on results.
 - **Stocks** — `stock_buy`, `stock_sell`, `stock_price`, `stock_portfolio`,

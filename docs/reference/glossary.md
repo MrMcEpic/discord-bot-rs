@@ -177,7 +177,7 @@ Gemini's tool-call protocol. When the LLM emits a structured tool
 call in its response, the bot dispatches it to the matching Rust
 handler (e.g. `web_search`, `play_song`, `start_wordle`,
 `create_tempban`) and feeds the result back into the conversation.
-Defined in `src/ai/tools.rs`, dispatched in `src/ai/deepseek.rs`.
+Defined in `src/ai/tools.rs`, dispatched in `src/ai/chat.rs`.
 
 ### Tool (MCP)
 
