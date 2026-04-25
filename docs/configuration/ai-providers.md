@@ -33,8 +33,8 @@ When `[ai.providers]` is absent, the bot ships these four definitions:
 
 | Name | URL | Model | Env var | max_tokens | timeout | vision | tools | reasoner |
 |---|---|---|---|---|---|---|---|---|
-| `deepseek_chat` | `https://api.deepseek.com/chat/completions` | `deepseek-chat` | `DEEPSEEK_API_KEY` | 8192 | 30 | no | yes | no |
-| `deepseek_reasoner` | `https://api.deepseek.com/chat/completions` | `deepseek-reasoner` | `DEEPSEEK_API_KEY` | 32768 | 300 | no | no | yes |
+| `deepseek_chat` | `https://api.deepseek.com/chat/completions` | `deepseek-v4-flash` | `DEEPSEEK_API_KEY` | 8192 | 30 | no | yes | no |
+| `deepseek_reasoner` | `https://api.deepseek.com/chat/completions` | `deepseek-v4-pro` | `DEEPSEEK_API_KEY` | 65536 | 300 | no | no | yes |
 | `gemini_flash` | `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions` | `gemini-3-flash-preview` | `GEMINI_API_KEY` | 16384 | 30 | yes | yes | no |
 | `grok` | `https://api.x.ai/v1/chat/completions` | `grok-3` | `GROK_API_KEY` | 16384 | 30 | no | yes | no |
 
@@ -76,6 +76,36 @@ chat = "my_local"
 # vision and reasoner omitted → graceful degrade
 ```
 
+## Disabling V4-Pro flagship
+
+`deepseek_reasoner` defaults to DeepSeek V4-Pro (the 1.6T-parameter
+flagship). V4-Pro output costs roughly 12× V4-Flash output per token, so
+high-volume reasoner traffic adds up quickly. The existing routing
+system already provides the off-switch — no per-feature boolean is
+needed.
+
+To skip V4-Pro entirely without redefining a provider, point the
+reasoner role at the cheaper V4-Flash:
+
+```toml
+[ai.routing]
+reasoner = "deepseek_chat"
+```
+
+To disable the reasoner role altogether — the bot will never invoke a
+reasoner provider, and every chat goes through the chat role — set
+`[ai.routing]` and omit `reasoner`:
+
+```toml
+[ai.routing]
+chat = "deepseek_chat"
+vision = "gemini_flash"
+# reasoner intentionally omitted — graceful degrade
+```
+
+Either pattern leaves V4-Pro unconfigured by routing and unbilled by
+DeepSeek.
+
 ## Provider definitions
 
 Each `[ai.providers.<name>]` block is independent. The `<name>` is your handle for the provider — used in `[ai.routing]` lookups, in `[ai.fallback] on_censored` lists, and in log lines.
@@ -104,17 +134,34 @@ Each `[ai.providers.<name>]` block is independent. The `<name>` is your handle f
 
 ### Backward-compatible alias names
 
-For instance configs written before 0.15.0, three short aliases are accepted at runtime when looking up providers by name:
+For instance configs that pin model-string aliases instead of canonical
+provider names, the bot recognises a small set of short aliases at lookup
+time. They were introduced in two waves:
 
-| Alias | Resolves to |
-|---|---|
-| `gemini` | `gemini_flash` |
-| `deepseek` | `deepseek_chat` |
-| `deepseek-chat` | `deepseek_chat` |
+| Alias | Resolves to | Added in |
+|---|---|---|
+| `gemini` | `gemini_flash` | 0.14.0 |
+| `deepseek` | `deepseek_chat` | 0.14.0 |
+| `deepseek-chat` | `deepseek_chat` | 0.14.0 |
+| `deepseek-v4` | `deepseek_chat` | 0.18.0 |
+| `deepseek-v4-flash` | `deepseek_chat` | 0.18.0 |
+| `deepseek-v4-pro` | `deepseek_reasoner` | 0.18.0 |
+| `deepseek-reasoner` | `deepseek_reasoner` | 0.18.0 |
 
-These aliases work in `[ai.fallback] on_censored` and in any other place the bot looks up a provider by name at request time. They are **not** accepted by `[ai.routing]` startup validation — using `[ai.routing] chat = "gemini"` panics at startup with the canonical name (`gemini_flash`) in the error message.
+These aliases work in `[ai.fallback] on_censored` and in any other place
+the bot looks up a provider by name at request time. They are **not**
+accepted by `[ai.routing]` startup validation — using `[ai.routing] chat
+= "gemini"` panics at startup with the canonical name (`gemini_flash`) in
+the error message.
 
-New configs should use the canonical names. The aliases exist purely so a `[ai.fallback] on_censored = ["grok", "gemini"]` line copied from a 0.14.0 example doesn't silently produce an empty cascade.
+The 0.14.0 aliases exist so a `[ai.fallback] on_censored = ["grok",
+"gemini"]` line copied from a 0.14.0 example doesn't silently produce an
+empty cascade. The 0.18.0 aliases preserve `[ai.fallback]` configs that
+named DeepSeek's `deepseek-reasoner` (retiring 2026-07-24) and add
+forward-compatible spellings for the explicit V4 model names.
+
+New configs should use the canonical names (`deepseek_chat`,
+`deepseek_reasoner`, `gemini_flash`, `grok`).
 
 ### Anthropic spec
 

@@ -164,8 +164,9 @@ The bot speaks two providers, both through an OpenAI-compatible
 chat-completions API:
 
 - **DeepSeek** at `https://api.deepseek.com/chat/completions`.
-  `deepseek-chat` (DeepSeek V3) is the default for text. `deepseek-reasoner`
-  is used for questions the router classifies as needing deeper thinking.
+  `deepseek-v4-flash` (DeepSeek V4) is the default for text. `deepseek-v4-pro`
+  is the flagship used for questions the router classifies as needing deeper
+  thinking.
 - **Gemini** at `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`.
   `gemini-3-flash-preview` handles image vision, because DeepSeek's
   chat model is text-only.
@@ -179,17 +180,17 @@ the images and falls through to the text path.
 
 Second, **reasoning routing**: for text requests,
 [`classify_message`](https://github.com/MrMcEpic/discord-bot-rs/blob/master/src/ai/deepseek.rs)
-sends the user's most recent message to DeepSeek V3 with a one-shot
+sends the user's most recent message to DeepSeek V4 with a one-shot
 "yes/no — does this need deep reasoning?" prompt. If the classifier
-says yes, the pipeline switches the active endpoint to DeepSeek
-Reasoner. Because Reasoner can't use tools, the pipeline first runs a
-**pre-flight** loop on V3 that's allowed to call `web_search` up to
+says yes, the pipeline switches the active endpoint to `deepseek-v4-pro`.
+Because the reasoner role can't use tools, the pipeline first runs a
+**pre-flight** loop on `deepseek-v4-flash` that's allowed to call `web_search` up to
 `MAX_SEARCH_ROUNDS` times (currently 3), collects the results, and
-injects them into the Reasoner's conversation as extra system context
-before asking Reasoner the real question.
+injects them into the V4-Pro conversation as extra system context
+before asking V4-Pro the real question.
 
 If the classifier itself fails (network error, timeout), the pipeline
-defaults to V3 without reasoning — "failing toward the cheap path" is
+defaults to `deepseek-v4-flash` without reasoning — "failing toward the cheap path" is
 the preferred failure mode.
 
 ## Tool use loop
@@ -197,7 +198,7 @@ the preferred failure mode.
 Once an endpoint and model are picked, `call_api` posts the history
 with the full
 [tool definitions](https://github.com/MrMcEpic/discord-bot-rs/blob/master/src/ai/tools.rs)
-attached (except for Reasoner, which gets no tools). The response
+attached (except for the reasoner role, which gets no tools). The response
 contains `content` (the assistant message), `tool_calls` (any function
 calls the model wants to invoke), or both.
 
@@ -210,7 +211,7 @@ Tools come in two flavours:
   (currently 3), after which the pipeline forces a final answer with
   tools disabled. The same `MAX_SEARCH_ROUNDS` constant in
   `src/ai/deepseek.rs` is interpolated into the system prompt and
-  drives both the V3 chat loop and the Reasoner pre-flight loop, so
+  drives both the V4-Flash chat loop and the V4-Pro pre-flight loop, so
   the prompt and the code can never disagree about the limit.
 - **Action tools** — everything that changes state: `play_song`,
   `skip`, `stop`, `pause`, `resume`, `show_queue`, `now_playing`,
@@ -242,7 +243,7 @@ each tool by the DJ mode check or by Discord's own permissions.
 
 ### DSML: tool calls in prose
 
-DeepSeek V3 sometimes emits tool calls as structured text inside the
+DeepSeek V4 sometimes emits tool calls as structured text inside the
 content field instead of the proper OpenAI-style `tool_calls` array.
 The bot handles this by parsing a custom "DSML" (Discord Structured
 Message Language) block out of the content — fullwidth pipe characters
@@ -316,7 +317,7 @@ on the API's own error responses.
 
 Each layer has its own fallback:
 
-- **Classifier fails** → default to V3 (non-reasoner) path.
+- **Classifier fails** → default to `deepseek-v4-flash` (non-reasoner) path.
 - **Vision API fails** → strip images and fall through to text.
 - **Text API fails** → reply with "Something went wrong talking to the
   AI. Try again in a sec." Log the upstream error with `tracing`.

@@ -136,7 +136,7 @@ After the join-role step, `handle_member_join` checks for both
    single user re-joining repeatedly is throttled, but a raid of
    distinct users all get their own welcomes.
 2. **Picks a provider.** If `DEEPSEEK_API_KEY` is set, use
-   DeepSeek (`deepseek-chat`). Otherwise fall back to Gemini
+   DeepSeek (`deepseek-v4-flash`). Otherwise fall back to Gemini
    (`gemini-3-flash-preview`). Both providers are called via
    their OpenAI-compatible chat endpoints.
 3. **Builds the system prompt.** Concatenates the bot's full
@@ -184,7 +184,7 @@ moves on.
 
 ### Cost
 
-One AI call per join, capped at 512 output tokens. On DeepSeek V3
+One AI call per join, capped at 512 output tokens. On DeepSeek V4-Flash
 that's a fraction of a cent per welcome — even an active server
 won't notice the bill. If you're using Gemini, the free tier
 covers most casual join volumes; check

@@ -10,6 +10,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - (track new changes here until the next release)
 
+## [0.18.0] - 2026-04-25
+
+### Changed
+- **Default DeepSeek registry now uses V4 model identifiers.** `deepseek_chat`
+  defaults to `deepseek-v4-flash` (was `deepseek-chat`). `deepseek_reasoner`
+  defaults to `deepseek-v4-pro` (was `deepseek-reasoner`) — the V4 flagship.
+  The reasoner's per-provider `max_tokens` cap is bumped from 32768 to 65536
+  to accommodate V4-Pro's larger thinking budget; the chat cap stays at 8192
+  (Discord-bound). Motivated by DeepSeek's announced retirement of the legacy
+  `deepseek-chat` and `deepseek-reasoner` model strings on 2026-07-24.
+- **Heads-up on V4-Pro pricing.** V4-Pro output costs roughly 12× V4-Flash per
+  token. Instances that don't want flagship pricing on the reasoner role can
+  route the reasoner role at V4-Flash with one line in `[ai.routing]`:
+  ```toml
+  [ai.routing]
+  reasoner = "deepseek_chat"
+  ```
+  Or disable the reasoner role entirely by setting `[ai.routing]` and
+  omitting `reasoner`. See the new "Disabling V4-Pro flagship" section in
+  [`docs/configuration/ai-providers.md`](docs/configuration/ai-providers.md)
+  for both patterns.
+
+### Added
+- **Four new aliases preserved by `ProviderRouter::named()`:** `deepseek-v4`
+  and `deepseek-v4-flash` resolve to `deepseek_chat`; `deepseek-v4-pro` and
+  `deepseek-reasoner` resolve to `deepseek_reasoner`. The `deepseek-reasoner`
+  alias keeps `[ai.fallback] on_censored` configs working past 2026-07-24.
+  All 0.14.0 aliases (`gemini`, `deepseek`, `deepseek-chat`) remain.
+
+### Tests
+- 4 new alias-resolution assertions in
+  `router_named_resolves_v0_14_0_short_aliases_for_backward_compat` covering
+  every new V4 alias and the deprecated `deepseek-reasoner` spelling.
+- Snapshot tests `default_registry_deepseek_chat_matches_*` and
+  `default_registry_deepseek_reasoner_matches_*` renamed `_v0_14_0` →
+  `_v0_18_0` and updated for the new model strings + 65536 cap.
+
 ## [0.17.0] - 2026-04-17
 
 ### Added

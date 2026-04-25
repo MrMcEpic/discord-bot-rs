@@ -17,7 +17,7 @@ their source available to its users on request. See the
 
 ### DeepSeek
 
-A Chinese AI provider whose `deepseek-chat` model is the bot's
+A Chinese AI provider whose `deepseek-v4-flash` model is the bot's
 primary backend for `@mention` AI chat when `DEEPSEEK_API_KEY` is set.
 Cheap, fast, supports OpenAI-style tool calls. See the
 [AI Pipeline](../architecture/ai-pipeline.md) page.

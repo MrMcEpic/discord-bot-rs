@@ -247,7 +247,7 @@ to land your first PR.
 
 ### What models does the AI use?
 
-The default is DeepSeek's `deepseek-chat` model when
+The default is DeepSeek's `deepseek-v4-flash` model when
 `DEEPSEEK_API_KEY` is set, falling back to Google's Gemini
 (`gemini-2.0-flash`) when DeepSeek errors out and `GEMINI_API_KEY`
 is set. Both are remote API calls; the bot has no local model.
