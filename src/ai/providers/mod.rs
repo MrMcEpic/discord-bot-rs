@@ -30,7 +30,7 @@ pub use configured::{ConfiguredProvider, ProviderDef, ProviderSpec};
 /// `[ai.providers]` section is in instance config; user-defined providers
 /// merge on top (user wins on name collision).
 ///
-/// Field values here are pinned by `default_registry_*_matches_v0_14_0`
+/// Field values here are pinned by `default_registry_*_matches_v0_18_0`
 /// snapshot tests in this module. Drift breaks the test.
 pub fn default_provider_registry() -> Vec<(&'static str, ProviderDef)> {
 	vec![
@@ -38,7 +38,7 @@ pub fn default_provider_registry() -> Vec<(&'static str, ProviderDef)> {
 			"deepseek_chat",
 			ProviderDef {
 				url: "https://api.deepseek.com/chat/completions".to_string(),
-				model: "deepseek-chat".to_string(),
+				model: "deepseek-v4-flash".to_string(),
 				api_key_env: "DEEPSEEK_API_KEY".to_string(),
 				max_tokens: 8192,
 				timeout_secs: 30,
@@ -55,9 +55,9 @@ pub fn default_provider_registry() -> Vec<(&'static str, ProviderDef)> {
 			"deepseek_reasoner",
 			ProviderDef {
 				url: "https://api.deepseek.com/chat/completions".to_string(),
-				model: "deepseek-reasoner".to_string(),
+				model: "deepseek-v4-pro".to_string(),
 				api_key_env: "DEEPSEEK_API_KEY".to_string(),
-				max_tokens: 32768,
+				max_tokens: 65536,
 				timeout_secs: 300,
 				supports_vision: false,
 				supports_tools: false,
@@ -1066,11 +1066,11 @@ mod tests {
 	}
 
 	#[test]
-	fn default_registry_deepseek_chat_matches_v0_14_0() {
+	fn default_registry_deepseek_chat_matches_v0_18_0() {
 		let r = default_provider_registry();
 		let def = def_by_name(&r, "deepseek_chat");
 		assert_eq!(def.url, "https://api.deepseek.com/chat/completions");
-		assert_eq!(def.model, "deepseek-chat");
+		assert_eq!(def.model, "deepseek-v4-flash");
 		assert_eq!(def.api_key_env, "DEEPSEEK_API_KEY");
 		assert_eq!(def.max_tokens, 8192);
 		assert_eq!(def.timeout_secs, 30);
@@ -1086,13 +1086,13 @@ mod tests {
 	}
 
 	#[test]
-	fn default_registry_deepseek_reasoner_matches_v0_14_0() {
+	fn default_registry_deepseek_reasoner_matches_v0_18_0() {
 		let r = default_provider_registry();
 		let def = def_by_name(&r, "deepseek_reasoner");
 		assert_eq!(def.url, "https://api.deepseek.com/chat/completions");
-		assert_eq!(def.model, "deepseek-reasoner");
+		assert_eq!(def.model, "deepseek-v4-pro");
 		assert_eq!(def.api_key_env, "DEEPSEEK_API_KEY");
-		assert_eq!(def.max_tokens, 32768);
+		assert_eq!(def.max_tokens, 65536);
 		assert_eq!(def.timeout_secs, 300);
 		assert!(!def.supports_vision);
 		assert!(!def.supports_tools, "reasoner does not accept tools");
@@ -1245,7 +1245,7 @@ mod tests {
 		assert_eq!(r.named("deepseek_chat").unwrap().max_tokens_limit(), 8192);
 		assert_eq!(
 			r.named("deepseek_reasoner").unwrap().max_tokens_limit(),
-			32768
+			65536
 		);
 		assert_eq!(r.named("gemini_flash").unwrap().max_tokens_limit(), 16384);
 		assert_eq!(r.named("grok").unwrap().max_tokens_limit(), 16384);
