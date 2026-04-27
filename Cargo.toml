@@ -47,7 +47,7 @@ subtle = "2"
 # Pinned to match the version serenity 0.12 transitively pulls in. Used in
 # src/mcp/tools.rs to read webhook tokens out of `Webhook::token`, which
 # wraps them in `secrecy::Secret` to keep them out of Debug/Display output.
-secrecy = "0.8"
+secrecy = "0.10"
 futures = "0.3"
 rust_decimal = { version = "1", features = ["db-postgres", "macros"] }
 
