@@ -812,9 +812,9 @@ dependencies = [
 
 [[package]]
 name = "dashmap"
-version = "6.1.0"
+version = "6.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5041cc499144891f3790297212f32a74fb938e5136a14943f338ef9e0ae276cf"
+checksum = "e6361d5c062261c78a176addb82d4c821ae42bed6089de0e12603cd25de2059c"
 dependencies = [
  "cfg-if",
  "crossbeam-utils",
@@ -960,7 +960,7 @@ dependencies = [
  "base64",
  "chrono",
  "chrono-tz",
- "dashmap 6.1.0",
+ "dashmap 6.2.1",
  "dotenvy",
  "futures",
  "image",
@@ -3797,9 +3797,9 @@ dependencies = [
 
 [[package]]
 name = "rust_decimal"
-version = "1.41.0"
+version = "1.42.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ce901f9a19d251159075a4c37af514c3b8ef99c22e02dd8c19161cf397ee94a"
+checksum = "be2a24f50780bc85f09cc6ac299bdf1424302742d77221106859c9d8b102126a"
 dependencies = [
  "arrayvec",
  "borsh",
@@ -4465,7 +4465,7 @@ dependencies = [
  "bytes",
  "chacha20poly1305",
  "crypto-common 0.1.7",
- "dashmap 6.1.0",
+ "dashmap 6.2.1",
  "davey",
  "derivative",
  "discortp",
