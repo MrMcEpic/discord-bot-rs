@@ -44,7 +44,7 @@ RUN apt-get update && apt-get install -y \
     python3 python3-pip ffmpeg \
     && apt-get clean && rm -rf /var/lib/apt/lists/* \
     && pip3 install --break-system-packages yt-dlp \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /usr/local/bin/discord-bot /usr/local/bin/discord-bot
