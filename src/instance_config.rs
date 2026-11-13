@@ -63,24 +63,23 @@ pub struct RoutingConfig {
 	pub reasoner: Option<String>,
 	/// Cheap no-thinking model for one-word utility calls (reasoner
 	/// classifier, refusal check, pre-flight search for tool-less
-	/// reasoners). Omitted → the chat provider is used for these.
+	/// reasoners). Omitted → `deepseek_flash_fast` when chat uses the same
+	/// API key (i.e. is DeepSeek), otherwise the chat provider.
 	pub fast: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct AiFallbackConfig {
-	/// Ordered provider names to retry through when the primary provider hits
-	/// a content-moderation refusal (DeepSeek's `"Content Exists Risk"` →
-	/// `Err("CENSORED")`). Recognised canonical names: `"grok"`, `"gemini_flash"`,
-	/// `"deepseek_chat"`. For backward compat with 0.14.0 instance configs, the
-	/// short aliases `"gemini"`, `"deepseek"`, and `"deepseek-chat"` also resolve
-	/// here at request time. See `docs/configuration/ai-providers.md` for the full
-	/// alias table. First non-CENSORED success wins; if every entry also CENSORS,
-	/// the bot falls back to its existing snarky-reply canned message.
+	/// Ordered provider names to retry through when the primary provider's
+	/// content filter blocks a request (error-body `refusal_markers`,
+	/// `finish_reason = "content_filter"`, or a soft refusal caught by
+	/// `refusal_check`). Accepts canonical names (`grok`, `gemini_flash`,
+	/// `deepseek_flash`, ...) and the aliases in `defaults/providers.toml`
+	/// (`gemini`, `xai`, `deepseek_chat`, ...). First success wins; if every
+	/// entry also fails, the bot sends `censored_reply`.
 	///
-	/// Default empty (opt-in) — strict-moderation servers want the snarky
-	/// reply behaviour preserved. Names that resolve to a missing API key or
-	/// an unknown name are skipped at startup with a warning.
+	/// Default empty (opt-in). Names whose API key is unset or that are
+	/// unknown are skipped with a startup warning.
 	#[serde(default)]
 	pub on_censored: Vec<String>,
 
