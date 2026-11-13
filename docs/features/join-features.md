@@ -95,11 +95,13 @@ Welcome messages have three prerequisites:
 1. `features.welcome = true` in `config.toml`.
 2. A `[welcome]` section pointing at the channel and an optional
    custom prompt file.
-3. At least one AI provider key — `DEEPSEEK_API_KEY` or
-   `GEMINI_API_KEY` — in `.env`.
+3. An available AI provider for the `chat` or `vision` role. With the
+   default routing, that means `DEEPSEEK_API_KEY` in `.env`. See
+   [AI Providers](../configuration/ai-providers.md).
 
 If you set the flag but skip the prompt file, the welcome stays off
-silently (logged at warn level). Same if neither AI key is set.
+silently (logged at warn level). The same happens if no chat or vision
+provider is available.
 
 ```toml
 [features]
@@ -135,10 +137,13 @@ After the join-role step, `handle_member_join` checks for both
    (1 request / 5 seconds, keyed on the joining user's ID). A
    single user re-joining repeatedly is throttled, but a raid of
    distinct users all get their own welcomes.
-2. **Picks a provider.** If `DEEPSEEK_API_KEY` is set, use
-   DeepSeek (`deepseek-v4-flash`). Otherwise fall back to Gemini
-   (`gemini-3-flash-preview`). Both providers are called via
-   their OpenAI-compatible chat endpoints.
+2. **Picks a provider.** The bot uses the `chat` role provider
+   (default: DeepSeek V4.1 Flash), or the `vision` role provider if
+   chat is unavailable. The call is a plain OpenAI-compatible
+   chat-completions request with Bearer auth. It uses only the
+   provider's `url`, `model` and API key, so `extra_body`, custom
+   auth headers and `spec = "anthropic"` are not applied, and the
+   fallback cascade is not used.
 3. **Builds the system prompt.** Concatenates the bot's full
    personality file with the welcome prompt under a
    `## Welcome Message Instructions` heading.
@@ -184,20 +189,20 @@ moves on.
 
 ### Cost
 
-One AI call per join, capped at 512 output tokens. On DeepSeek V4-Flash
-that's a fraction of a cent per welcome — even an active server
-won't notice the bill. If you're using Gemini, the free tier
-covers most casual join volumes; check
-<https://ai.google.dev/pricing> for current rates.
+One AI call per join, capped at 512 output tokens. On a cheap chat
+model like DeepSeek V4.1 Flash that's a fraction of a cent per
+welcome, so even an active server won't notice the bill. Check your
+provider's pricing page for current rates.
 
 ### Common issues
 
 - **No welcome appears** — check the logs at startup. If you don't
   see `Welcome module enabled`, either `features.welcome = false`,
   the `[welcome]` section is missing, or the prompt file is
-  missing/empty. If you do see the enabled line but no AI key
-  warning, verify `DEEPSEEK_API_KEY` or `GEMINI_API_KEY` is in
-  the running environment.
+  missing/empty. If you see `Welcome feature enabled but no AI
+  provider is available for the chat or vision role`, verify that
+  `DEEPSEEK_API_KEY` (or the key of whatever provider you routed
+  chat to) is in the running environment.
 - **Welcome appears but the personality is wrong** — the
   personality file is loaded once at boot. Restart the bot after
   editing `personality.txt` or `welcome_prompt.txt`.

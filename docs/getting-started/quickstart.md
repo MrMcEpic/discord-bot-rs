@@ -58,7 +58,7 @@ Change `DB_SCHEMA` to match your instance name. Each instance gets its own
 PostgreSQL schema, so you can run several bots side by side without their
 data colliding.
 
-If you want AI chat, paste in `DEEPSEEK_API_KEY` and/or `GEMINI_API_KEY`. If
+If you want AI chat, paste in `DEEPSEEK_API_KEY` (the only key the default AI setup needs). If
 you want stock trading, paste in `FINNHUB_API_KEY`. Anything you leave blank
 just disables the corresponding feature.
 
@@ -205,8 +205,9 @@ prerequisites, re-enable it and restart the bot.
 
 **The bot is online but @mentioning it does nothing.**
 
-AI chat needs at least one of `DEEPSEEK_API_KEY` or `GEMINI_API_KEY` in
-`.env`. If neither is set, AI chat is silently disabled. Set one, then
+AI chat needs `DEEPSEEK_API_KEY` in `.env` (with the default routing;
+`GEMINI_API_KEY` alone isn't enough). If it's unset, AI chat is silently
+disabled. Set it, then
 restart with `docker compose restart bot` and watch the logs for any API
 errors on the next mention.
 

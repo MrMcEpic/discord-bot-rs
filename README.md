@@ -32,7 +32,7 @@ INSTANCE_DIR=./instances/mybot docker compose up -d
 
 ### AI chat with real tool use
 
-@mention the bot and it replies with a DeepSeek-powered conversation shaped by the personality file you wrote. Gemini is the fallback provider when DeepSeek errors. The AI can invoke tools: web search, moderation actions, music control, user confirmations.
+@mention the bot and it replies in a conversation shaped by the personality file you wrote. By default this runs on DeepSeek V4.1 Flash, which handles text, images and reasoning with one `DEEPSEEK_API_KEY`. Providers and routing are config-driven, and you can opt into a fallback cascade (e.g. Grok, Gemini) for answers DeepSeek filters. The AI can invoke tools: web search, moderation actions, music control, user confirmations.
 
 ### Music with passthrough audio
 
@@ -106,7 +106,7 @@ The full configuration model, including how instances are isolated and how to ru
 
 ## Feature Reference
 
-- [AI Chat](https://mrmcepic.github.io/discord-bot-rs/book/features/ai-chat.html) — DeepSeek + Gemini, @mention conversations with tool use
+- [AI Chat](https://mrmcepic.github.io/discord-bot-rs/book/features/ai-chat.html) — DeepSeek by default (config-driven providers + fallback cascade), @mention conversations with tool use
 - [Music](https://mrmcepic.github.io/discord-bot-rs/book/features/music.html) — yt-dlp + ffmpeg passthrough, queue controls, auto-leave
 - [Wordle](https://mrmcepic.github.io/discord-bot-rs/book/features/games-wordle.html), [Connections](https://mrmcepic.github.io/discord-bot-rs/book/features/games-connections.html), [Virtual Stocks](https://mrmcepic.github.io/discord-bot-rs/book/features/games-stocks.html) — built-in games with per-instance state
 - [Moderation](https://mrmcepic.github.io/discord-bot-rs/book/features/moderation.html) — tempban, unban, banlist, nuke

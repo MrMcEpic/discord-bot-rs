@@ -105,8 +105,9 @@ which is one big `match` over `FullEvent` variants:
   its port twice.
 - **`Message`** — `handle_message` runs auto-role bookkeeping, checks
   for active Wordle games in the channel, and dispatches to
-  `ai::deepseek::handle_mention` if the message mentions the bot or
-  replies to a bot message (and at least one AI key is configured).
+  `ai::chat::handle_mention` if the message mentions the bot or
+  replies to a bot message (and a chat or vision AI provider is
+  available).
 - **`VoiceStateUpdate`** — if a user left the bot's voice channel and the
   channel is now empty of humans, `voice_state::handle_voice_state_update`
   cleans up the player, cancels the idle timer, and leaves the channel.

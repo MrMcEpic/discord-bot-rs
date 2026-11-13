@@ -56,25 +56,25 @@ The Postgres schema name this instance owns. The default is `public`, but for an
 
 | Name               | Required | Default | Description                                            |
 |--------------------|----------|---------|--------------------------------------------------------|
-| `DEEPSEEK_API_KEY` | no       | unset   | API key for DeepSeek chat completions                  |
-| `GEMINI_API_KEY`   | no       | unset   | API key for Google Gemini chat completions             |
-| `GROK_API_KEY`     | no       | unset   | API key for xAI Grok (used as a CENSORED-cascade alt)  |
+| `DEEPSEEK_API_KEY` | no       | unset   | API key for DeepSeek. Covers every default AI role (chat, vision, reasoner, fast) |
+| `GEMINI_API_KEY`   | no       | unset   | API key for Google Gemini (fallback / opt-in role target) |
+| `GROK_API_KEY`     | no       | unset   | API key for xAI Grok (fallback / opt-in role target)   |
 
-All three are independently optional. If `DEEPSEEK_API_KEY` and `GEMINI_API_KEY` are both unset the AI chat feature is disabled — mention the bot and you'll get nothing back. If only one is set it is used. If both are set the bot uses DeepSeek as primary text and Gemini for image vision. `GROK_API_KEY` is only used when an instance opts into the CENSORED cascade via `[ai.fallback]` in its `config.toml`. Empty strings (`DEEPSEEK_API_KEY=`) are normalized to "unset."
+All three are independently optional. With the default routing, every AI role runs on DeepSeek V4.1 Flash, so `DEEPSEEK_API_KEY` is the only key AI chat needs. If it's unset, AI chat is disabled: mention the bot and you'll get nothing back. `GEMINI_API_KEY` and `GROK_API_KEY` are used only when an instance lists `gemini_flash` / `grok` in `[ai.fallback] on_censored` or routes a role to them in `[ai.routing]`. Setting only `GEMINI_API_KEY` does **not** enable AI chat unless you also set `[ai.routing] chat = "gemini_flash"`. Empty strings (`DEEPSEEK_API_KEY=`) are normalized to "unset."
 
 **Custom providers may name any env var.** The `api_key_env` field of an `[ai.providers.<name>]` block in instance `config.toml` names the env var the bot will read for that provider's bearer token. The default-registry providers' `api_key_env` values map to the env vars listed above. See [AI Providers](ai-providers.md) for the schema and worked examples (custom env-var names, multiple providers, etc.).
 
 ### `DEEPSEEK_API_KEY`
 
-Get one at [platform.deepseek.com](https://platform.deepseek.com/). DeepSeek's chat models are the cheapest of the supported providers and are recommended as the primary. See the [AI Chat](../features/ai-chat.md) feature page for model selection details.
+Get one at [platform.deepseek.com](https://platform.deepseek.com/). The default providers (`deepseek_flash`, `deepseek_flash_max`, `deepseek_flash_fast`, and the opt-in `deepseek_pro`) all read this key, so it covers chat, image vision, the reasoner and the classifier / refusal-check calls. See [AI Providers](ai-providers.md) for the model matrix.
 
 ### `GEMINI_API_KEY`
 
-Get one in Google AI Studio. Used as the vision provider when image attachments are present in the prompt or replied-to message. Also valid as a CENSORED-cascade fallback if listed in `[ai.fallback]`.
+Get one in Google AI Studio. Optional. Used by the `gemini_flash` provider, which isn't routed to any role by default. Add it to `[ai.fallback] on_censored` to redirect filtered answers to it, or route a role to it in `[ai.routing]`. It is vision-capable, so it can also take over filtered image requests.
 
 ### `GROK_API_KEY`
 
-Get one at [console.x.ai](https://console.x.ai/). Optional; needed only if an instance lists `"grok"` in its `[ai.fallback] on_censored` config. Grok is a less-restrictive alternative the bot can replay a refused conversation through when DeepSeek hits its content-moderation block. See the [AI Chat](../features/ai-chat.md) feature page for the cascade story.
+Get one at [console.x.ai](https://console.x.ai/). Optional. Needed only if an instance lists `"grok"` in `[ai.fallback] on_censored` or routes a role to it. Grok is a less-restrictive alternative the bot can replay a filtered or soft-refused conversation through. See [AI Providers: Fallback cascade](ai-providers.md#fallback-cascade-aifallback).
 
 ## Finnhub (optional)
 

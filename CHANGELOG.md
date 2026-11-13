@@ -10,6 +10,130 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - (track new changes here until the next release)
 
+## [0.19.0] - 2026-11-12
+
+### Changed
+- **DeepSeek V4.1 Flash for every role by default.** Chat and vision both
+  route to `deepseek_flash` (`deepseek-flash`, multimodal,
+  `reasoning_effort = "high"`). Image understanding no longer depends on
+  Gemini. The reasoner is `deepseek_flash_max`, the same model at
+  `reasoning_effort = "max"`, and it keeps its tools. Only
+  `DEEPSEEK_API_KEY` is needed. `GEMINI_API_KEY` / `GROK_API_KEY` are
+  optional fallbacks.
+- **Default providers are data, not code.** The provider registry, the role
+  matrix and the legacy aliases moved out of Rust into
+  [`defaults/providers.toml`](defaults/providers.toml), compiled in via
+  `include_str!`. Its providers, routing and fallback settings can all be
+  overridden from an instance `config.toml` (under `ai.`), so a model swap
+  is a config edit plus a restart. Aliases are built-in only.
+- **`deepseek_pro` (V4-Pro) is defined but no longer routed.** It is
+  text-only with `supports_tools = false`. Opt in with
+  `[ai.routing] reasoner = "deepseek_pro"`.
+- **Gemini and Grok defaults updated:** `gemini_flash` → `gemini-3.8-flash`,
+  `grok` → `grok-4.7` (now `supports_vision = true`). Neither is routed by
+  default.
+- **Tools are gated only on `supports_tools`.** `is_reasoner` no longer
+  strips them. A tool-capable reasoner runs the normal tool loop, searches
+  included. The pre-flight search pass now runs only for a tool-less
+  reasoner, and it runs on the `fast` provider.
+- **`[ai.routing]` accepts aliases.** Old names like `deepseek_chat` or
+  `gemini` pass startup validation instead of panicking.
+- **Routing fallbacks.** With no `[ai.routing]`, a user
+  `[ai.providers.deepseek_chat]` / `[ai.providers.deepseek_reasoner]` block
+  (the pre-0.19 "override a default by name" pattern) is routed as chat /
+  reasoner instead of being silently ignored. With `[ai.routing]` but no
+  `fast`, the fast role defaults to `deepseek_flash_fast` when chat uses the
+  same API key, and falls back to chat otherwise.
+- **Provider layer split into modules.** `src/ai/providers/` is now
+  `registry` / `router` / `openai` / `anthropic` / `cascade`. This is a
+  pure move with no behaviour change.
+
+### Added
+- **`fast` role** (`deepseek_flash_fast`, thinking disabled) for one-word
+  utility calls: the reasoner classifier and the soft-refusal judge. It also
+  runs pre-flight searches for a tool-less reasoner.
+- **Soft-refusal fallback.** DeepSeek now usually filters sensitive topics
+  with an HTTP 200 in-character dodge rather than the `Content Exists Risk`
+  error, so the cascade never fired. Short final replies now get one yes/no
+  check from the `fast` provider. A refusal is retried through
+  `[ai.fallback] on_censored`, skipping the provider that refused. New knobs:
+  `refusal_check` (default `true`; runs only when the cascade has a usable
+  member), `refusal_check_max_chars` (default `1200`) and
+  `refusal_check_prompt`.
+- **`[ai.fallback] on_error`** (default `false`): also cascade on HTTP,
+  timeout and out-of-credit errors.
+- **`[ai.fallback] censored_reply`**: the reply sent when everything was
+  filtered. Defaults to the existing DeepSeek quip.
+- **Vision cascade.** Image requests now cascade too, restricted to
+  vision-capable members.
+- **`ProviderDef.extra_body`**: a table merged into every request body, for
+  vendor knobs like `reasoning_effort` or `thinking`.
+- **`ProviderDef.refusal_markers`**: error-body substrings that mean
+  "filtered". `Content Exists Risk` is always matched too.
+- **More filter signals.** `finish_reason = "content_filter"` (OpenAI spec)
+  and `stop_reason = "refusal"` (Anthropic spec) are treated as filtered and
+  can cascade.
+- **New aliases:** `deepseek_chat`, `deepseek-flash` → `deepseek_flash`,
+  `deepseek_reasoner` → `deepseek_flash_max`, `xai` → `grok`. Existing
+  aliases now point at the new providers (see the alias table in
+  [`docs/configuration/ai-providers.md`](docs/configuration/ai-providers.md)).
+- **Startup summary line** showing the resolved chat / vision / reasoner /
+  fast providers and the fallback settings. There is also a warning for
+  user-defined reasoners with `is_reasoner = true` and
+  `supports_tools = true`.
+
+### Fixed
+- **Reasoner routing never fired.** The classifier ran on the thinking-on
+  chat model with `max_tokens = 10`, so reasoning consumed the budget and
+  the content came back empty. It now runs on the no-thinking `fast`
+  provider.
+- **Empty output with `finish_reason = length`** is now an explicit error
+  instead of a silent empty reply. The default `deepseek_flash` cap is
+  32768, because thinking tokens count against `max_tokens`.
+- **A vision failure with no cascade** no longer retries the same model
+  text-only, except when the image itself was filtered.
+- **Member-join welcomes** now go through the shared provider dispatcher, so
+  they honour `extra_body`, custom auth/headers and the Anthropic spec. The
+  token budget is raised from 512 to 4096 so a thinking model doesn't spend
+  it all before writing the welcome.
+- **DeepSeek's stock "I'm sorry, I can't provide information about that"
+  refusal** is dropped from replayed history so it doesn't prime the next
+  turn to refuse again.
+- **CI is green again on Rust 1.100 stable.** `clippy::result_large_err` is
+  handled via `large-error-threshold`, and rustc's `unreachable_code`
+  false positive inside poise's prefix-command macro expansion is allowed in
+  `commands/`.
+
+### Upgrading
+- **Old provider names keep working.** `deepseek_chat`,
+  `deepseek_reasoner`, `deepseek-v4-flash`, `gemini` and the rest resolve as
+  aliases in `[ai.routing]` and `[ai.fallback] on_censored`. No config
+  change is required.
+- **Pre-0.19 overrides of `deepseek_chat` / `deepseek_reasoner`** are still
+  routed as chat / reasoner when there's no `[ai.routing]`. They are used
+  exactly as written, so they don't pick up V4.1 Flash or the new effort
+  settings (`extra_body`, `refusal_markers`). Vision and fast keep the
+  defaults. Delete the override to get the new defaults.
+- **User-defined reasoners that relied on `is_reasoner` to strip tools**
+  must now set `supports_tools = false`. Startup warns about this
+  combination.
+- **Gemini-only instances** (only `GEMINI_API_KEY` set) no longer get any AI
+  by default, because every default role is now DeepSeek. Route Gemini
+  explicitly:
+  ```toml
+  [ai.routing]
+  chat = "gemini_flash"
+  vision = "gemini_flash"
+  ```
+- **To redirect filtered answers instead of sending the canned reply**, set
+  a cascade. The soft-refusal check only runs when one is configured:
+  ```toml
+  [ai.fallback]
+  on_censored = ["grok", "gemini_flash"]
+  ```
+  See [`docs/configuration/ai-providers.md`](docs/configuration/ai-providers.md)
+  for every `[ai.fallback]` knob.
+
 ## [0.18.0] - 2026-04-25
 
 ### Changed

@@ -15,8 +15,9 @@ There are two flavours of feature gating in the codebase:
 - **Always-on** — the code is always compiled in and the runtime always
   registers the relevant commands and event handlers. The feature only
   *activates* when its dependencies are met. AI chat, for example, is
-  always-on, but if you don't set `DEEPSEEK_API_KEY` or `GEMINI_API_KEY` the
-  bot just never replies to mentions. Music is similarly always-on but
+  always-on, but if no chat provider is available (with the default
+  routing, `DEEPSEEK_API_KEY` unset) the bot just never replies to
+  mentions. Music is similarly always-on but
   needs `yt-dlp` and `ffmpeg` on the `PATH` to actually play anything.
 - **Opt-in** — the feature is gated behind a boolean in the `[features]`
   section of [`config.toml`](../configuration/instance-config.md). If the
@@ -32,7 +33,7 @@ whether it requires a bearer token.
 
 | Feature | Config Flag | Required Env Vars | Required Config | Docs |
 |---|---|---|---|---|
-| AI Chat | always-on (activates if AI key set) | `DEEPSEEK_API_KEY` and/or `GEMINI_API_KEY` | `personality.txt` | [ai-chat.md](ai-chat.md) |
+| AI Chat | always-on (activates if AI key set) | `DEEPSEEK_API_KEY` (default routing; others optional) | `personality.txt` | [ai-chat.md](ai-chat.md) |
 | Music | always-on | none | `yt-dlp` + `ffmpeg` on PATH; optional `cookies.txt` | [music.md](music.md) |
 | Wordle | always-on | none | none | [games-wordle.md](games-wordle.md) |
 | Connections | always-on | none | none | [games-connections.md](games-connections.md) |
@@ -40,7 +41,7 @@ whether it requires a bearer token.
 | Moderation | always-on | none | none | [moderation.md](moderation.md) |
 | Auto-Role Promotion | `features.auto_role = true` | none | `[auto_role]` section | [auto-role.md](auto-role.md) |
 | Join Role | `features.join_role = true` | none | `[join_role]` section | [join-features.md](join-features.md) |
-| Welcome Messages | `features.welcome = true` | `DEEPSEEK_API_KEY` and/or `GEMINI_API_KEY` | `[welcome]` section + `welcome_prompt.txt` | [join-features.md](join-features.md) |
+| Welcome Messages | `features.welcome = true` | `DEEPSEEK_API_KEY` (default routing) | `[welcome]` section + `welcome_prompt.txt` | [join-features.md](join-features.md) |
 | Minecraft: Verify | `features.minecraft = true`, `minecraft.verify = true` | `MC_VERIFY_URL`, `MC_VERIFY_SECRET` | `[minecraft]` section | [minecraft-verify.md](minecraft-verify.md) |
 | Minecraft: Donator Sync | `features.minecraft = true`, `minecraft.donator_sync = true` | `MC_VERIFY_URL`, `MC_VERIFY_SECRET` | `[minecraft.donator_sync_config]` | [minecraft-donator-sync.md](minecraft-donator-sync.md) |
 | Minecraft: Chargeback Alerts | `features.minecraft = true`, `minecraft.chargeback = true` | `MC_VERIFY_URL`, `MC_VERIFY_SECRET` | `[minecraft.chargeback_config]` | [minecraft-chargeback.md](minecraft-chargeback.md) |

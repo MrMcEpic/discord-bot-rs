@@ -1,27 +1,30 @@
 # AI Chat
 
 The bot replies to natural-language messages in Discord using a large
-language model. The chat path is wired up to two providers — DeepSeek as the
-primary, Google Gemini as a vision-and-fallback path — and the personality
-is loaded from a plain text file you write yourself.
+language model. Out of the box every part of the chat path runs on DeepSeek
+V4.1 Flash, which handles text, images, tools and reasoning. Gemini, Grok,
+Claude or any OpenAI-compatible model can be routed in or used as fallbacks.
+The personality is loaded from a plain text file you write yourself.
 
 ## What it does
 
 When someone @mentions the bot or replies to one of its messages, the bot
 collects the recent conversation in that channel, feeds it to the AI along
 with your `personality.txt` system prompt, and sends the model's reply back
-as a Discord message. It does this with whatever model you have keys for:
+as a Discord message. With the default configuration:
 
-- `DEEPSEEK_API_KEY` — primary provider (`deepseek-v4-flash`, with automatic
-  routing to `deepseek-v4-pro` for hard questions). The chat-tier output is
-  inexpensive; the bot is built around DeepSeek's tool-calling format.
-- `GEMINI_API_KEY` — secondary provider. Used for image attachments
-  (DeepSeek Chat is text-only) and as a fallback if the DeepSeek text path
-  is unavailable.
+- `DEEPSEEK_API_KEY` is the only key you need. Chat and images go to
+  `deepseek-flash` (V4.1 Flash) at high reasoning effort. Questions the
+  classifier flags as needing deep reasoning go to the same model at max
+  effort, and that call still has tools.
+- `GEMINI_API_KEY` and `GROK_API_KEY` are optional. They are used only if
+  you list them as fallbacks in `[ai.fallback]` or route a role to them in
+  `[ai.routing]`.
 
-If you set neither key, the bot still starts cleanly — it just won't react
-to mentions. If you set both, you get text replies via DeepSeek and image
-understanding via Gemini for free.
+If no provider is available for the chat or vision role, the bot still
+starts cleanly. It just won't react to mentions. With the default routing
+that means `DEEPSEEK_API_KEY` is unset. Setting only `GEMINI_API_KEY` is
+not enough unless you also route chat to `gemini_flash`.
 
 The pipeline goes well beyond echoing replies: the AI can call tools you've
 exposed (music, moderation, stocks, web search, NYT-style games) and the
@@ -42,31 +45,34 @@ Anything else is ignored. The bot does not respond to keywords, prefixes,
 or DMs. There is no "owner override" or special-user bypass — every user is
 treated identically by the AI path.
 
-When neither `DEEPSEEK_API_KEY` nor `GEMINI_API_KEY` is set, the activation
-check short-circuits and the handler exits immediately. This is the safe
+When no provider is available for the chat or vision role (with the
+default routing: when `DEEPSEEK_API_KEY` is unset), the activation check
+short-circuits and the handler exits immediately. This is the safe
 state: you can deploy the bot without an AI key and the rest of its
 features still work.
 
 ## Configuration
 
-**Provider configuration:** as of 0.15.0, the providers DeepSeek + Gemini + Grok the bot ships with can be replaced or extended by your own definitions in `config.toml`. As of 0.16.0, Anthropic Claude is also supported natively (`spec = "anthropic"`) — native routing preserves structured tool use and vision content parts without going through an OpenAI-compat proxy. See [AI Providers](../configuration/ai-providers.md) for the schema and examples, and the [Anthropic spec](../configuration/ai-providers.md#anthropic-spec) section for Claude-specific configuration.
+**Provider configuration:** the default providers live in `defaults/providers.toml` (compiled in). As of 0.15.0 they can be replaced or extended by your own definitions in `config.toml`. As of 0.19.0, every default (model, effort level, routing) can be changed that way without a rebuild. As of 0.16.0, Anthropic Claude is also supported natively (`spec = "anthropic"`) — native routing preserves structured tool use and vision content parts without going through an OpenAI-compat proxy. See [AI Providers](../configuration/ai-providers.md) for the schema and examples, and the [Anthropic spec](../configuration/ai-providers.md#anthropic-spec) section for Claude-specific configuration.
 
-There are exactly three things to configure:
+The minimum to configure is:
 
 1. **`DEEPSEEK_API_KEY`** in `.env`. Optional in the strict sense, but
    without it you get no text replies. Get one from
    [`platform.deepseek.com`](https://platform.deepseek.com).
-2. **`GEMINI_API_KEY`** in `.env`. Optional. Required only if you want
-   image understanding or text-fallback when DeepSeek is unreachable.
+2. **`GEMINI_API_KEY` / `GROK_API_KEY`** in `.env`. Optional. Only
+   needed if you route a role to them or list them in `[ai.fallback]`.
 3. **`personality.txt`** in the instance config directory (the directory
    pointed at by `CONFIG_DIR`, defaults to the working directory). This is
    loaded at startup by `InstanceConfig::load_personality` and panics if
    the file is missing or empty — this is intentional, because shipping
    without a personality means the bot has no voice.
 
-There is no in-app configuration of model parameters, temperature, or
-context window size — they are tuned in `src/ai/chat.rs`. If you want
-to override them you have to recompile.
+Model choice, `max_tokens`, timeouts, and vendor knobs such as DeepSeek's
+`reasoning_effort` are per-provider settings in `config.toml` (see
+[AI Providers](../configuration/ai-providers.md)). The context window size
+and the prompt framing are tuned in `src/ai/chat.rs`, and changing those
+requires a recompile.
 
 For details on how to write a good personality file, see
 [Personality Files](../configuration/personality.md). For where to keep
@@ -194,25 +200,37 @@ The limits are tuned to absorb normal back-and-forth chat without
 throttling, while preventing one user from running up an API bill in
 isolation.
 
-## Provider failover
+## Model routing and failover
 
-The text path is hard-coded to DeepSeek. The vision path is hard-coded to
-Gemini. If a request has image attachments, the bot tries Gemini first;
-on failure it strips the multimodal content and falls back to DeepSeek
-text-only with a description-of-context placeholder.
+Each request is routed by role (see
+[AI Providers](../configuration/ai-providers.md#roles-and-default-routing)):
 
-Inside the DeepSeek path, the bot routes between `deepseek-v4-flash`
-(fast) and `deepseek-v4-pro` (the V4 flagship) by classifying each
-message: simple chat goes to V4-Flash, anything that smells like a
-reasoning task goes to V4-Pro. The reasoner role can't use tools
-directly, so the bot uses `deepseek-v4-flash` as a research assistant first to perform
-any web searches, then hands the gathered context to V4-Pro for the
-final answer.
+- **Images** go to the `vision` role (default: V4.1 Flash). If that fails
+  and no fallback can answer, the bot strips the images and answers from
+  the text alone.
+- **Text** is first classified by the cheap, no-thinking `fast` model
+  ("does this need deep reasoning?"). Simple chat goes to the `chat` role,
+  and reasoning tasks go to the `reasoner` role (default: V4.1 Flash at max
+  effort). Both run the full tool loop. If you opt into a tool-less
+  reasoner such as V4-Pro, the `fast` model runs any web searches first
+  and hands the results to the reasoner.
+
+**Fallback cascade.** Set `[ai.fallback] on_censored` (for example
+`["grok", "gemini_flash"]`) to retry a filtered answer through those
+providers in order. Filtered answers include a content-filter error,
+`finish_reason = content_filter`, and an HTTP 200 in-character dodge
+caught by the soft-refusal check. With `on_error = true`, outages and
+out-of-credit errors fail over too. If a hard-filtered request can't be
+answered (or there is no cascade), the bot sends its canned
+`censored_reply`. A soft refusal that no fallback can answer is sent
+as-is. See
+[AI Providers: Fallback cascade](../configuration/ai-providers.md#fallback-cascade-aifallback).
 
 ## Common issues
 
-- **Bot doesn't respond to `@MyBot`** — check that `DEEPSEEK_API_KEY` is
-  set in the running environment (Docker users: confirm `.env` is being
+- **Bot doesn't respond to `@MyBot`** — check that `DEEPSEEK_API_KEY` (or
+  the key of whatever provider you routed chat to) is set in the running
+  environment (Docker users: confirm `.env` is being
   passed in), check the bot's logs for `API request failed` messages,
   and verify the bot has the *Message Content* gateway intent enabled in
   the Discord developer portal.
@@ -224,9 +242,16 @@ final answer.
   conversation into a Discord thread, or wait 30 minutes for the older
   context to age out.
 - **Bot refuses to talk about a topic with "my overlords at DeepSeek
-  won't let me"** — DeepSeek's content filter triggered. The bot
-  detects the upstream `Content Exists Risk` error and translates it
-  into a snarky message instead of crashing.
+  won't let me"** — DeepSeek's content filter triggered (a
+  `Content Exists Risk` error or `finish_reason = content_filter`) and
+  no fallback could answer. Set `[ai.fallback] on_censored` to redirect
+  those requests to another provider, or set `censored_reply` to change
+  the message.
+- **Bot dodges a topic in character instead of answering** — this is
+  DeepSeek's soft refusal, an HTTP 200 reply with no error. The
+  soft-refusal check retries it through the fallback cascade, but only
+  when `[ai.fallback] on_censored` lists at least one other available
+  provider.
 - **Bot's reply is cut off mid-sentence** — replies longer than 2000
   characters are split into chunks by `src/ai/split.rs`. If you see a
   truncated message ending in `...[truncated]`, that's the splitter
@@ -240,11 +265,12 @@ final answer.
 
 ## Cost
 
-Costs depend almost entirely on which model you route to. DeepSeek V4-Flash
-is inexpensive enough that an active community server typically lands at
-single-digit dollars per month. V4-Pro is ~12× more expensive per output
-token (the flagship reasoner) but only fires on detected reasoning queries.
-Gemini's free tier covers casual image traffic.
+Costs depend almost entirely on which model you route to and at what
+effort level. Thinking tokens are billed, so the max-effort reasoner costs
+more per reply than chat, but it only fires on detected reasoning queries.
+The classifier and the refusal check are one-word calls on the no-thinking
+`fast` model. The refusal check runs only on short replies, and only when
+a fallback cascade is configured.
 
 Check the providers' current pricing pages directly:
 
@@ -261,5 +287,7 @@ Check the providers' current pricing pages directly:
   to put API keys safely.
 - [Environment Variables](../configuration/environment-variables.md) —
   `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, and friends.
+- [AI Providers](../configuration/ai-providers.md) — models, routing,
+  and the fallback cascade.
 - [Moderation](moderation.md) — what the moderation tools actually do
   when the AI invokes them.

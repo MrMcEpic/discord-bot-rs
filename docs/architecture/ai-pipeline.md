@@ -21,35 +21,51 @@ sequenceDiagram
     participant U as User
     participant E as events::handle_message
     participant H as build_message_history
-    participant R as model router
-    participant API as DeepSeek / Gemini
+    participant F as fast provider
+    participant API as chat / reasoner provider
     participant T as tool executor
+    participant C as fallback cascade
     participant S as sanitize + split
     participant D as Discord
 
     U->>E: @bot what's the weather in tokyo?
-    E->>E: activation check (mention / reply + AI key)
+    E->>E: activation check (mention / reply + chat or vision provider)
     E->>H: fetch 100 recent messages
     H->>H: filter by age, started_at, bad-msg
     H->>E: system prompt + history + current msg
-    E->>R: classify message: reasoning or chat?
-    R->>API: chat completion with tools
-    API-->>R: content + tool_calls (web_search, play_song, ...)
-    loop up to 3 rounds
-        R->>T: run search tool calls
-        T-->>R: search results
-        R->>API: re-call with results
+    opt reasoner role configured
+        E->>F: classify message: reasoning or chat?
+        F-->>E: yes / no
     end
-    R->>S: final text response
+    E->>API: chat completion with tools
+    opt filtered (or any error with on_error)
+        API-->>C: CENSORED
+        C->>C: retry through on_censored members
+    end
+    API-->>E: content + tool_calls (web_search, play_song, ...)
+    loop up to 3 rounds
+        E->>T: run search tool calls
+        T-->>E: search results
+        E->>API: re-call with results
+    end
+    opt short reply, cascade configured
+        E->>F: refusal check: is this a dodge?
+        F-->>E: yes, so retry via cascade (tools off)
+    end
+    E->>S: final text response
     S->>S: sanitize, split at 2000 chars
     S->>D: send one or more reply messages
     T->>D: execute action tools (play_song, tempban, ...)
 ```
 
-Not shown: vision routing (images go directly to Gemini 3 Flash via
-OpenAI-compatible endpoint before any of this), the moderation
-confirmation button flow, and the typing indicator that fires every 8
-seconds while the pipeline is running.
+Each provider in the diagram is a *role* from
+[AI Providers](../configuration/ai-providers.md#roles-and-default-routing).
+By default all of them are DeepSeek V4.1 Flash at different effort
+levels. Not shown: vision routing (image requests go to the `vision`
+role before any of this, see below), the pre-flight search pass for a
+tool-less reasoner, the moderation confirmation button flow, and the
+typing indicator that fires every 8 seconds while the pipeline is
+running.
 
 ## Activation
 
@@ -62,8 +78,9 @@ all hold before `handle_mention` is called:
 1. The message is from a non-bot author in a guild channel.
 2. The message either contains a direct mention of the bot user ID, or
    is a Discord reply to a message the bot itself sent.
-3. At least one of `DEEPSEEK_API_KEY` or `GEMINI_API_KEY` is set on
-   `Data::config`.
+3. The provider router has an available provider for the `chat` or
+   `vision` role (`data.ai_router.chat()` or `.vision()`). With the
+   default routing that means `DEEPSEEK_API_KEY` is set.
 
 There is no keyword trigger, no prefix alternative, no owner override.
 Everything flows through `@mention` or reply. This keeps the activation
@@ -160,45 +177,95 @@ how to write the free-form half.
 
 ## Provider selection
 
-The bot speaks two providers, both through an OpenAI-compatible
-chat-completions API:
+Providers are not hard-coded. The
+[`ProviderRouter`](https://github.com/MrMcEpic/discord-bot-rs/blob/master/src/ai/providers/router.rs)
+is built once at startup from the defaults in
+[`defaults/providers.toml`](https://github.com/MrMcEpic/discord-bot-rs/blob/master/defaults/providers.toml)
+merged with the instance's `[ai.providers]` / `[ai.routing]`, and the
+pipeline asks it for a provider by role. The roles are `chat`,
+`vision`, `reasoner` and `fast`. The defaults are all DeepSeek V4.1
+Flash (`deepseek-flash`) with different effort levels: `high` for
+chat and vision, `max` for the reasoner, and thinking disabled for
+`fast`. See [AI Providers](../configuration/ai-providers.md) for the
+full matrix and how to change it.
 
-- **DeepSeek** at `https://api.deepseek.com/chat/completions`.
-  `deepseek-v4-flash` (DeepSeek V4) is the default for text. `deepseek-v4-pro`
-  is the flagship used for questions the router classifies as needing deeper
-  thinking.
-- **Gemini** at `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`.
-  `gemini-3-flash-preview` handles image vision, because DeepSeek's
-  chat model is text-only.
+Routing happens in two places. First, **vision routing**: if the
+message (or the message it replies to) has image attachments and a
+`vision` provider is available, the pipeline preprocesses each image
+(resize to 1024x1024 max, re-encode as JPEG, base64 in a data URI) and
+sends the history as a multimodal completion to it. That call uses the
+fallback cascade restricted to vision-capable members, and its reply
+goes through the same soft-refusal check as text (see below). If the
+vision call fails and nothing in the cascade answers, the pipeline
+strips the images and falls through to the text path. The exception is
+a plain (non-filtered) error when chat and vision are the same
+provider and there's no cascade. Retrying the same model text-only
+would just repeat the failure, so the bot replies with the generic
+error instead. With no `vision` provider at all, images are ignored
+and the text goes straight to chat.
 
-Routing happens in two places. First, **vision routing**: if the message
-(or the message it replies to) has image attachments and a Gemini key is
-configured, the pipeline preprocesses each image (resize to 1024x1024
-max, re-encode as JPEG, base64 in a data URI) and sends the history as
-a multimodal completion to Gemini. If Gemini fails, the pipeline strips
-the images and falls through to the text path.
-
-Second, **reasoning routing**: for text requests,
+Second, **reasoning routing**: for text requests with a `reasoner`
+role configured,
 [`classify_message`](https://github.com/MrMcEpic/discord-bot-rs/blob/master/src/ai/chat.rs)
-sends the user's most recent message to DeepSeek V4 with a one-shot
-"yes/no — does this need deep reasoning?" prompt. If the classifier
-says yes, the pipeline switches the active endpoint to `deepseek-v4-pro`.
-Because the reasoner role can't use tools, the pipeline first runs a
-**pre-flight** loop on `deepseek-v4-flash` that's allowed to call `web_search` up to
-`MAX_SEARCH_ROUNDS` times (currently 3), collects the results, and
-injects them into the V4-Pro conversation as extra system context
-before asking V4-Pro the real question.
+sends the user's most recent message to the **`fast`** provider with a
+one-shot "yes/no: does this need deep reasoning?" prompt and a
+10-token budget. `fast` exists because a thinking model spends that
+whole budget reasoning and returns empty content. Before 0.19.0 that
+meant reasoner routing never fired. With no reasoner routed, the
+classifier call is skipped entirely.
+
+If the classifier says yes, what happens next depends on the
+reasoner's `supports_tools`:
+
+- **Tool-capable reasoner** (the default, `deepseek_flash_max`): it
+  simply becomes the active provider and runs the normal tool loop
+  below, searches and action tools included.
+- **Tool-less reasoner** (for example `deepseek_pro` when opted in):
+  the pipeline first runs a **pre-flight** loop on the `fast` provider.
+  That loop may call `web_search` up to `MAX_SEARCH_ROUNDS` times
+  (currently 3). The results are collected and injected into the
+  conversation as extra system context, and then the reasoner is asked
+  the real question.
 
 If the classifier itself fails (network error, timeout), the pipeline
-defaults to `deepseek-v4-flash` without reasoning — "failing toward the cheap path" is
-the preferred failure mode.
+uses the chat provider. "Failing toward the cheap path" is the
+preferred failure mode.
+
+### Fallback cascade and soft refusals
+
+`[ai.fallback] on_censored` resolves once per request into an ordered
+`Cascade` of available providers (see
+[`cascade.rs`](https://github.com/MrMcEpic/discord-bot-rs/blob/master/src/ai/providers/cascade.rs)).
+Every completion in the tool loop goes through
+`complete_with_cascade`. If the active provider's answer is **filtered**
+(a `Content Exists Risk` or `refusal_markers` error body,
+`finish_reason = "content_filter"`, or Anthropic
+`stop_reason = "refusal"`), the same messages are replayed through each
+cascade member in order, skipping the one that failed. With
+`on_error = true`, HTTP, timeout and credit errors cascade too. When the
+cascade is empty, or every member fails, a filtered request gets the
+configured `censored_reply`.
+
+DeepSeek now usually filters with an HTTP 200 in-character dodge
+instead of an error, so the pipeline also runs a **soft-refusal
+check** after the tool loop. It runs when the final reply is no longer
+than `refusal_check_max_chars`, carries no action tool calls, and the
+cascade has a member other than the provider that answered. One yes/no
+call goes to the `fast` provider with the user message and the reply.
+On "yes", the history is retried through the cascade with tools off.
+The first non-empty alternative replaces the reply. A judge error or
+an empty alternative keeps the original, so the check never blocks a
+response. `refusal_check = false` turns it off.
 
 ## Tool use loop
 
-Once an endpoint and model are picked, `call_api` posts the history
-with the full
+Once a provider is picked, the pipeline posts the history (via
+`complete_with_cascade`) with the full
 [tool definitions](https://github.com/MrMcEpic/discord-bot-rs/blob/master/src/ai/tools.rs)
-attached (except for the reasoner role, which gets no tools). The response
+attached, unless the provider has `supports_tools = false`, in which
+case no tools are sent. Since 0.19.0 `is_reasoner` no longer strips
+tools. Any `extra_body` from the provider definition (e.g.
+`reasoning_effort`) is merged into the request body. The response
 contains `content` (the assistant message), `tool_calls` (any function
 calls the model wants to invoke), or both.
 
@@ -211,7 +278,7 @@ Tools come in two flavours:
   (currently 3), after which the pipeline forces a final answer with
   tools disabled. The same `MAX_SEARCH_ROUNDS` constant in
   `src/ai/chat.rs` is interpolated into the system prompt and
-  drives both the V4-Flash chat loop and the V4-Pro pre-flight loop, so
+  drives both the main tool loop and the tool-less-reasoner pre-flight loop, so
   the prompt and the code can never disagree about the limit.
 - **Action tools** — everything that changes state: `play_song`,
   `skip`, `stop`, `pause`, `resume`, `show_queue`, `now_playing`,
@@ -270,7 +337,9 @@ prompt" into the model's conversation by typing one into Discord.
 
 **Output filtering** happens at history-build time. Past bot messages
 that match known failure patterns ("I'm Claude", "I don't have access
-to our previous", "created by Anthropic", "Failed to join", etc.) are
+to our previous", "created by Anthropic", "Failed to join", DeepSeek's
+stock "I'm sorry, I can't provide information about that" refusal,
+etc.) are
 skipped when reconstructing the history, and so are any user messages
 those bad bot messages were replying to. This is a self-healing
 mechanism: if the model goes off the rails once, the next turn won't
@@ -309,7 +378,7 @@ on their respective paths; see the
 for the full table and the periodic bucket-cleanup task that keeps the
 limiter maps from growing without bound.
 
-Rate limiting at the API layer (DeepSeek / Gemini quotas) is the
+Rate limiting at the API layer (provider quotas) is the
 provider's responsibility; the bot doesn't pre-check quotas and relies
 on the API's own error responses.
 
@@ -317,12 +386,25 @@ on the API's own error responses.
 
 Each layer has its own fallback:
 
-- **Classifier fails** → default to `deepseek-v4-flash` (non-reasoner) path.
-- **Vision API fails** → strip images and fall through to text.
-- **Text API fails** → reply with "Something went wrong talking to the
-  AI. Try again in a sec." Log the upstream error with `tracing`.
-- **"Content Exists Risk" censored response from DeepSeek** → reply with
-  a sarcastic "my overlords at DeepSeek won't let me talk about that."
+- **Classifier fails** → use the chat provider (non-reasoner path).
+- **Vision API fails** → try vision-capable cascade members, then strip
+  images and fall through to text (or reply with the generic error when
+  chat is the same provider and there's no cascade).
+- **Text API fails** → with `[ai.fallback] on_error = true`, try the
+  cascade first. Otherwise (or if that fails too) reply with "Something
+  went wrong talking to the AI. Try again in a sec." Log the upstream
+  error with `tracing`.
+- **Empty output with `finish_reason = length`** → treated as an error
+  (the thinking budget ran out), not as an empty answer.
+- **Filtered response** (`Content Exists Risk` / `refusal_markers` error
+  body, `finish_reason = "content_filter"`, Anthropic
+  `stop_reason = "refusal"`) → retry through `[ai.fallback]
+  on_censored`. If that is empty or every member fails, reply with
+  `censored_reply` (default: a sarcastic "my overlords at DeepSeek won't
+  let me talk about that").
+- **Soft refusal** (HTTP 200 dodge) → judged by the `fast` provider and
+  retried through the cascade when one is configured. Otherwise the
+  dodge is sent as-is.
 - **Search tool fails** → inject "Search failed." as the tool result
   and let the model continue with whatever it has.
 - **Tool call with bad arguments** → the tool executors generally

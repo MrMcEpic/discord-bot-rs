@@ -119,8 +119,9 @@ DATABASE_URL=postgresql://discord_bot:discord_bot_pass@localhost:5432/discord_bo
 DB_SCHEMA=local
 ```
 
-If you want AI chat, add `DEEPSEEK_API_KEY=...` and/or
-`GEMINI_API_KEY=...`. If you want stock trading, add
+If you want AI chat, add `DEEPSEEK_API_KEY=...`. It covers every
+default AI role, and `GEMINI_API_KEY` / `GROK_API_KEY` are optional
+fallbacks. If you want stock trading, add
 `FINNHUB_API_KEY=...`. Anything you leave unset just disables the
 corresponding feature; the bot still boots.
 
