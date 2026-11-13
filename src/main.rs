@@ -76,10 +76,11 @@ pub struct Data {
 	/// Replaces the old inline `ApiEndpoint { url, model, api_key }` literals
 	/// scattered through `ai/chat.rs`. See `src/ai/providers/mod.rs`.
 	pub ai_router: ai::providers::ProviderRouter,
-	/// Ordered provider names to try when the primary provider returns the
-	/// `CENSORED` sentinel. Resolved from `instance_config.ai.fallback.on_censored`
-	/// at startup. Empty = no cascade (snarky-reply canned behaviour preserved).
-	pub ai_fallback_on_censored: Vec<String>,
+	/// `[ai.fallback]` from instance config: the ordered cascade
+	/// (`on_censored`), whether to also cascade on errors, and the
+	/// soft-refusal check settings. Empty `on_censored` = no cascade
+	/// (snarky-reply canned behaviour preserved).
+	pub ai_fallback: crate::instance_config::AiFallbackConfig,
 	pub personality: String,
 	pub bot_name: String,
 	/// Resolved IANA timezone for the "current date / time" line in the AI
@@ -335,10 +336,20 @@ async fn main() {
 					&instance_cfg.ai,
 					|k| std::env::var(k).ok(),
 				);
-				let ai_fallback_on_censored = instance_cfg.ai.fallback.on_censored.clone();
+				let ai_fallback = instance_cfg.ai.fallback.clone();
 				// Resolve once at startup so unknown / unconfigured names log a
 				// warning here, not on every CENSORED-cascade attempt.
-				let _ = ai_router.cascade_for(&ai_fallback_on_censored);
+				let startup_cascade = ai_router.cascade_for(&ai_fallback.on_censored);
+				tracing::info!(
+					"AI routing: chat={} vision={} reasoner={} fast={} fallback=[{}] on_error={} refusal_check={}",
+					ai_router.chat().map(|p| p.name()).unwrap_or("-"),
+					ai_router.vision().map(|p| p.name()).unwrap_or("-"),
+					ai_router.reasoner().map(|p| p.name()).unwrap_or("-"),
+					ai_router.fast().map(|p| p.name()).unwrap_or("-"),
+					startup_cascade.iter().map(|p| p.name()).collect::<Vec<_>>().join(", "),
+					ai_fallback.on_error,
+					ai_fallback.refusal_check,
+				);
 				// Welcome pre-flight: warn if the welcome feature is configured but no
 				// provider is available that member_join.rs can route to (it uses
 				// ai_router.chat().or_else(|| ai_router.vision())). With config-driven
@@ -366,7 +377,7 @@ async fn main() {
 					wordle_games: Arc::new(DashMap::new()),
 					config,
 					ai_router,
-					ai_fallback_on_censored,
+					ai_fallback,
 					personality,
 					bot_name: instance_cfg.bot_name.clone(),
 					timezone,

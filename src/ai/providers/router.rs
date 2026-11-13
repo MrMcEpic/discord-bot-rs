@@ -1,179 +1,156 @@
 //! Role-based provider routing ([`ProviderRouter`]) and startup validation.
 
+use std::collections::{HashMap, HashSet};
+
+use super::registry::{alias_target, defaults};
 use super::{default_provider_registry, AiProvider, ConfiguredProvider, ProviderDef};
 
 /// Resolved AI provider stack for a single bot instance.
 ///
-/// Built once at startup from the merged registry (defaults + user `[ai.providers]`)
-/// and the resolved role map (defaults + user `[ai.routing]`). Holds only
-/// AVAILABLE providers — definitions whose `api_key_env` resolved to an unset
-/// or empty env var are NOT in the map. Callers look up by role name; missing
-/// names return `None` so the existing chat.rs `Option<&dyn AiProvider>`
-/// handling keeps working (silent disable when the relevant env var is unset).
+/// Built once at startup from the merged registry (defaults + user
+/// `[ai.providers]`) and the resolved role map (defaults + user
+/// `[ai.routing]`). Holds only AVAILABLE providers — definitions whose
+/// `api_key_env` resolved to an unset or empty env var are NOT in the map.
+/// Callers look up by role; missing providers return `None` so chat.rs's
+/// `Option<&dyn AiProvider>` handling degrades silently when a key is unset.
 #[derive(Debug, Default)]
 pub struct ProviderRouter {
-	/// All available providers, keyed by name.
-	providers: std::collections::HashMap<String, ConfiguredProvider>,
-	/// Role → provider-name lookups. `chat_role` is always set after
-	/// construction (defaulted to `"deepseek_chat"` if the user didn't
-	/// override). `vision_role` / `reasoner_role` are `None` when the user
-	/// explicitly opted out by setting `[ai.routing]` without those keys.
+	/// All available providers, keyed by canonical name.
+	providers: HashMap<String, ConfiguredProvider>,
+	/// Role → canonical provider name (aliases already resolved).
+	/// `chat_role` is always set. `vision_role` / `reasoner_role` are `None`
+	/// when the user set `[ai.routing]` without those keys ("graceful
+	/// degrade"); `fast_role` `None` means "use chat".
 	chat_role: String,
 	vision_role: Option<String>,
 	reasoner_role: Option<String>,
+	fast_role: Option<String>,
 }
 
-/// Default routing matrix when `[ai.routing]` is absent from instance config.
-const DEFAULT_CHAT_ROLE: &str = "deepseek_chat";
-const DEFAULT_VISION_ROLE: &str = "gemini_flash";
-const DEFAULT_REASONER_ROLE: &str = "deepseek_reasoner";
+/// Merge the baked default registry with user `[ai.providers]` (user wins on
+/// name collision — whole-definition replace, no field-level merge).
+fn merged_registry(ai_cfg: &crate::instance_config::AiConfig) -> HashMap<String, ProviderDef> {
+	let mut merged: HashMap<String, ProviderDef> =
+		default_provider_registry().into_iter().collect();
+	for (name, def) in &ai_cfg.providers {
+		merged.insert(name.clone(), def.clone());
+	}
+	merged
+}
+
+/// Resolve a user-facing name to a canonical key in `defs`. A key defined
+/// under the literal name wins; otherwise default-registry aliases apply
+/// (e.g. `deepseek_chat` → `deepseek_flash`). `None` = unknown name.
+fn resolve_name<V>(name: &str, defs: &HashMap<String, V>) -> Option<String> {
+	if defs.contains_key(name) {
+		return Some(name.to_string());
+	}
+	alias_target(name)
+		.filter(|t| defs.contains_key(*t))
+		.map(str::to_string)
+}
+
+/// Role names before alias resolution: `[ai.routing]` if present, else the
+/// defaults file's `[routing]` table.
+fn requested_roles(
+	ai_cfg: &crate::instance_config::AiConfig,
+	strict: bool,
+) -> (String, Option<String>, Option<String>, Option<String>) {
+	match &ai_cfg.routing {
+		Some(r) => {
+			// Layer 2: section present, only user-set keys take effect.
+			let chat = r.chat.clone().unwrap_or_else(|| {
+				if strict {
+					panic!(
+						"[ai.routing] requires 'chat' to be set. Either set it (e.g. \
+						 chat = \"deepseek_flash\") or remove the [ai.routing] section \
+						 entirely to use defaults."
+					)
+				}
+				defaults().routing.chat.clone()
+			});
+			(chat, r.vision.clone(), r.reasoner.clone(), r.fast.clone())
+		}
+		None => {
+			// Layer 1: section absent, full default matrix.
+			let d = &defaults().routing;
+			(
+				d.chat.clone(),
+				Some(d.vision.clone()),
+				Some(d.reasoner.clone()),
+				Some(d.fast.clone()),
+			)
+		}
+	}
+}
 
 impl ProviderRouter {
-	/// Build a router from the default registry only — used by the no-config
-	/// path and by tests that don't need to exercise user definitions.
+	/// Build a router from the default registry + default routing only —
+	/// used by tests that don't need to exercise user definitions.
 	///
 	/// `env_lookup` is injected so tests can pass a fake without touching
 	/// the process env. Production callers pass `|k| std::env::var(k).ok()`.
+	#[allow(dead_code)] // test-only; called from mod tests — not reachable from bin
 	pub fn from_defaults(env_lookup: impl Fn(&str) -> Option<String>) -> Self {
-		let mut providers = std::collections::HashMap::new();
-		for (name, def) in default_provider_registry() {
-			if let Some(p) = ConfiguredProvider::from_def(name, def, &env_lookup) {
-				providers.insert(p.name().to_string(), p);
-			}
-		}
-		Self {
-			providers,
-			chat_role: DEFAULT_CHAT_ROLE.to_string(),
-			vision_role: Some(DEFAULT_VISION_ROLE.to_string()),
-			reasoner_role: Some(DEFAULT_REASONER_ROLE.to_string()),
-		}
+		Self::from_instance_config(&crate::instance_config::AiConfig::default(), env_lookup)
 	}
 
-	/// Build the router from instance config + env. Merges the baked default
-	/// registry with user `[ai.providers]` (user wins on name collision),
-	/// resolves each definition into a [`ConfiguredProvider`] via env lookup,
-	/// then resolves routing roles per Layer 2 rules from the spec
-	/// (section absent → default matrix; section present → only user-set
-	/// keys take effect, omitted vision/reasoner mean "graceful degrade").
-	///
-	/// Validation (panic on typos, warn on unavailable, capability sanity) is
-	/// handled by `from_instance_config_strict`; this constructor just builds
-	/// the state without validation and is intended for test use only.
+	/// Build the router from instance config + env, without validation.
+	/// Unknown role names silently resolve to "no provider". Test-only; the
+	/// bot uses [`Self::from_instance_config_strict`].
 	#[allow(dead_code)] // test-only; called from mod tests — not reachable from bin
 	pub(crate) fn from_instance_config(
 		ai_cfg: &crate::instance_config::AiConfig,
 		env_lookup: impl Fn(&str) -> Option<String>,
 	) -> Self {
-		// Build the merged registry: defaults first, then user definitions
-		// override on name collision.
-		let mut merged: std::collections::HashMap<String, ProviderDef> =
-			std::collections::HashMap::new();
-		for (name, def) in default_provider_registry() {
-			merged.insert(name.to_string(), def);
-		}
-		for (name, def) in &ai_cfg.providers {
-			merged.insert(name.clone(), def.clone());
-		}
+		let merged = merged_registry(ai_cfg);
+		let (chat, vision, reasoner, fast) = requested_roles(ai_cfg, false);
+		let resolve = |n: &str| resolve_name(n, &merged).unwrap_or_else(|| n.to_string());
 
-		// Resolve each definition; only the available ones make it into the
-		// providers HashMap.
-		let mut providers = std::collections::HashMap::new();
-		for (name, def) in merged {
-			if let Some(p) = ConfiguredProvider::from_def(name.clone(), def, &env_lookup) {
-				providers.insert(name, p);
+		let mut providers = HashMap::new();
+		for (name, def) in merged.iter() {
+			if let Some(p) = ConfiguredProvider::from_def(name.clone(), def.clone(), &env_lookup) {
+				providers.insert(name.clone(), p);
 			}
 		}
-
-		// Resolve routing roles per the spec's Layer 1 / Layer 2 rules.
-		let (chat_role, vision_role, reasoner_role) = match &ai_cfg.routing {
-			Some(r) => {
-				// Layer 2: section present, only user-set keys take effect.
-				// chat is required when [ai.routing] is present; validated in
-				// from_instance_config_strict. For now, fall back to the default
-				// if missing so the non-strict path remains well-defined.
-				let chat = r
-					.chat
-					.clone()
-					.unwrap_or_else(|| DEFAULT_CHAT_ROLE.to_string());
-				(chat, r.vision.clone(), r.reasoner.clone())
-			}
-			None => (
-				// Layer 1: section absent, full default matrix.
-				DEFAULT_CHAT_ROLE.to_string(),
-				Some(DEFAULT_VISION_ROLE.to_string()),
-				Some(DEFAULT_REASONER_ROLE.to_string()),
-			),
-		};
 
 		Self {
 			providers,
-			chat_role,
-			vision_role,
-			reasoner_role,
+			chat_role: resolve(&chat),
+			vision_role: vision.as_deref().map(resolve),
+			reasoner_role: reasoner.as_deref().map(resolve),
+			fast_role: fast.as_deref().map(resolve),
 		}
 	}
 
-	/// Same as [`Self::from_instance_config`] but with startup validation:
-	/// panics on unknown provider names referenced by `[ai.routing]`, on
-	/// `[ai.routing]` without `chat`, and on whitespace-bearing provider names.
-	/// Warns (non-fatal) on unavailable providers referenced by routing or
-	/// fallback, and on capability mismatches (vision role pointing at
-	/// `supports_vision = false`, etc.).
+	/// Production constructor. Same as [`Self::from_instance_config`] plus
+	/// startup validation:
 	///
-	/// This is the production constructor — `from_instance_config` exists
-	/// only so tests can build a router without exercising validation.
+	/// - **Panics** on whitespace-bearing provider names, bad header/auth
+	///   fields, `[ai.routing]` without `chat`, and role targets that are
+	///   neither a defined provider nor a known alias (typo case).
+	/// - **Warns** (non-fatal) on providers referenced by routing or fallback
+	///   whose API key env var is unset, and on capability mismatches
+	///   (vision role without `supports_vision`, etc.).
 	pub fn from_instance_config_strict(
 		ai_cfg: &crate::instance_config::AiConfig,
 		env_lookup: impl Fn(&str) -> Option<String>,
 	) -> Self {
-		// Validate provider names before building anything.
 		for name in ai_cfg.providers.keys() {
 			validate_provider_name(name);
 		}
-		// Build the merged definition map (defaults + user, user wins).
-		let mut merged: std::collections::HashMap<String, ProviderDef> =
-			std::collections::HashMap::new();
-		for (name, def) in default_provider_registry() {
-			merged.insert(name.to_string(), def);
-		}
-		for (name, def) in &ai_cfg.providers {
-			merged.insert(name.clone(), def.clone());
-		}
-
-		// Validate headers + auth fields on every (user + default) provider.
+		let merged = merged_registry(ai_cfg);
 		for (name, def) in &merged {
 			validate_provider_def_headers_and_auth(name, def);
 		}
 
-		// Resolve routing roles + validate they reference known names.
-		let (chat_role, vision_role, reasoner_role) = match &ai_cfg.routing {
-			Some(r) => {
-				let chat = r.chat.clone().unwrap_or_else(|| {
-					panic!(
-						"[ai.routing] requires 'chat' to be set. Either set it (e.g. \
-						 chat = \"deepseek_chat\") or remove the [ai.routing] section \
-						 entirely to use defaults."
-					)
-				});
-				validate_role_target("chat", &chat, &merged);
-				if let Some(v) = &r.vision {
-					validate_role_target("vision", v, &merged);
-				}
-				if let Some(rs) = &r.reasoner {
-					validate_role_target("reasoner", rs, &merged);
-				}
-				(chat, r.vision.clone(), r.reasoner.clone())
-			}
-			None => (
-				DEFAULT_CHAT_ROLE.to_string(),
-				Some(DEFAULT_VISION_ROLE.to_string()),
-				Some(DEFAULT_REASONER_ROLE.to_string()),
-			),
-		};
+		let (chat, vision, reasoner, fast) = requested_roles(ai_cfg, true);
+		let chat_role = validate_role_target("chat", &chat, &merged);
+		let vision_role = vision.map(|v| validate_role_target("vision", &v, &merged));
+		let reasoner_role = reasoner.map(|r| validate_role_target("reasoner", &r, &merged));
+		let fast_role = fast.map(|f| validate_role_target("fast", &f, &merged));
 
-		// Resolve definitions into available providers; warn for any
-		// referenced-but-unavailable name.
-		let mut providers = std::collections::HashMap::new();
+		let mut providers = HashMap::new();
 		let mut unavailable: Vec<String> = Vec::new();
 		for (name, def) in merged.iter() {
 			match ConfiguredProvider::from_def(name.clone(), def.clone(), &env_lookup) {
@@ -185,11 +162,19 @@ impl ProviderRouter {
 		}
 
 		// Warn on unavailable providers REFERENCED by routing or fallback.
-		let referenced: std::collections::HashSet<String> = std::iter::once(chat_role.clone())
+		let referenced: HashSet<String> = std::iter::once(chat_role.clone())
 			.chain(vision_role.clone())
 			.chain(reasoner_role.clone())
-			.chain(ai_cfg.fallback.on_censored.iter().cloned())
+			.chain(fast_role.clone())
+			.chain(
+				ai_cfg
+					.fallback
+					.on_censored
+					.iter()
+					.map(|n| resolve_name(n, &merged).unwrap_or_else(|| n.clone())),
+			)
 			.collect();
+		unavailable.sort_unstable();
 		for name in &unavailable {
 			if referenced.contains(name) {
 				let env_var = merged
@@ -204,24 +189,22 @@ impl ProviderRouter {
 		}
 
 		// Capability sanity warnings (non-fatal).
-		if let Some(v) = &vision_role {
-			if let Some(p) = providers.get(v) {
-				if !p.supports_vision {
-					tracing::warn!(
-						"[ai.routing] vision = '{v}' but provider has supports_vision=false; \
-						 image messages may not be handled correctly"
-					);
-				}
+		if let Some(p) = vision_role.as_ref().and_then(|v| providers.get(v)) {
+			if !p.supports_vision {
+				tracing::warn!(
+					"[ai.routing] vision = '{}' but provider has supports_vision=false; \
+					 image messages may not be handled correctly",
+					p.name()
+				);
 			}
 		}
-		if let Some(rs) = &reasoner_role {
-			if let Some(p) = providers.get(rs) {
-				if !p.is_reasoner {
-					tracing::warn!(
-						"[ai.routing] reasoner = '{rs}' but provider has is_reasoner=false; \
-						 the slow-thinking model routing may not behave as intended"
-					);
-				}
+		if let Some(p) = reasoner_role.as_ref().and_then(|r| providers.get(r)) {
+			if !p.is_reasoner {
+				tracing::warn!(
+					"[ai.routing] reasoner = '{}' but provider has is_reasoner=false; \
+					 the slow-thinking model routing may not behave as intended",
+					p.name()
+				);
 			}
 		}
 
@@ -230,67 +213,62 @@ impl ProviderRouter {
 			chat_role,
 			vision_role,
 			reasoner_role,
+			fast_role,
 		}
 	}
 
-	/// Pick a vision-capable provider (None if no vision role configured OR
+	fn get(&self, name: &str) -> Option<&dyn AiProvider> {
+		self.providers.get(name).map(|p| p as &dyn AiProvider)
+	}
+
+	/// The vision-capable provider (None if no vision role configured OR the
 	/// configured provider is unavailable).
 	pub fn vision(&self) -> Option<&dyn AiProvider> {
-		self.providers
-			.get(self.vision_role.as_deref()?)
-			.map(|p| p as &dyn AiProvider)
+		self.get(self.vision_role.as_deref()?)
 	}
 
-	/// Pick the default text-chat provider (None if unavailable).
+	/// The default text-chat provider (None if unavailable).
 	pub fn chat(&self) -> Option<&dyn AiProvider> {
-		self.providers
-			.get(&self.chat_role)
-			.map(|p| p as &dyn AiProvider)
+		self.get(&self.chat_role)
 	}
 
-	/// Pick the reasoning-class provider (None if no reasoner role configured
-	/// OR configured provider is unavailable).
+	/// The reasoning-class provider (None if no reasoner role configured OR
+	/// the configured provider is unavailable).
 	pub fn reasoner(&self) -> Option<&dyn AiProvider> {
-		self.providers
-			.get(self.reasoner_role.as_deref()?)
-			.map(|p| p as &dyn AiProvider)
+		self.get(self.reasoner_role.as_deref()?)
+	}
+
+	/// The cheap utility provider for classifier / refusal-check calls.
+	/// Falls back to [`Self::chat`] when no fast role is configured or the
+	/// configured one is unavailable.
+	pub fn fast(&self) -> Option<&dyn AiProvider> {
+		self.fast_role
+			.as_deref()
+			.and_then(|f| self.get(f))
+			.or_else(|| self.chat())
 	}
 
 	/// Look up a provider by name. Returns `None` for unknown names AND
-	/// unavailable providers (used by `cascade_for` and external direct access).
-	///
-	/// Accepts the canonical default-registry names (`deepseek_chat`,
-	/// `deepseek_reasoner`, `gemini_flash`, `grok`) plus these short aliases:
-	///
-	/// - 0.14.0: `"gemini"`, `"deepseek"`, `"deepseek-chat"`
-	/// - 0.18.0: `"deepseek-v4"`, `"deepseek-v4-flash"`, `"deepseek-v4-pro"`,
-	///   `"deepseek-reasoner"`
-	///
-	/// User-defined provider names always go through the canonical lookup
-	/// path; aliases only apply to the default registry.
+	/// unavailable providers. Accepts canonical names plus the aliases in
+	/// `defaults/providers.toml` `[aliases]` (e.g. `deepseek_chat`,
+	/// `gemini`, `deepseek-v4-flash`). A provider defined under the literal
+	/// name always wins over an alias.
 	pub fn named(&self, name: &str) -> Option<&dyn AiProvider> {
-		// Direct lookup wins (covers canonical default names + all user-defined).
-		if let Some(p) = self.providers.get(name) {
-			return Some(p as &dyn AiProvider);
-		}
-		// Then 0.14.0 aliases for default-registry providers.
-		let aliased = match name {
-			"gemini" => "gemini_flash",
-			"deepseek" | "deepseek-chat" | "deepseek-v4" | "deepseek-v4-flash" => "deepseek_chat",
-			"deepseek-reasoner" | "deepseek-v4-pro" => "deepseek_reasoner",
-			_ => return None,
-		};
-		self.providers.get(aliased).map(|p| p as &dyn AiProvider)
+		self.get(&resolve_name(name, &self.providers)?)
 	}
 
 	/// Resolve an ordered list of provider names into an ordered Vec of
-	/// `&dyn AiProvider`, skipping unknown / unavailable names with a
+	/// available providers, skipping unknown / unavailable names with a
 	/// `tracing::warn!`.
 	pub fn cascade_for(&self, names: &[String]) -> Vec<&dyn AiProvider> {
-		let mut out = Vec::with_capacity(names.len());
+		let mut out: Vec<&dyn AiProvider> = Vec::with_capacity(names.len());
 		for n in names {
 			match self.named(n) {
-				Some(p) => out.push(p),
+				Some(p) => {
+					if !out.iter().any(|q| q.name() == p.name()) {
+						out.push(p);
+					}
+				}
 				None => tracing::warn!(
 					"ai.fallback.on_censored: provider '{n}' is not configured (missing API key or unknown name); skipping"
 				),
@@ -337,18 +315,19 @@ pub(super) fn validate_provider_name(name: &str) {
 	}
 }
 
+/// Validate a role target and return its canonical provider name. Accepts
+/// defined provider names and default-registry aliases; panics on anything
+/// else (typo case) so a bad config fails loudly at startup.
 pub(super) fn validate_role_target(
 	role: &str,
 	target_name: &str,
-	merged: &std::collections::HashMap<String, ProviderDef>,
-) {
-	if !merged.contains_key(target_name) {
+	merged: &HashMap<String, ProviderDef>,
+) -> String {
+	resolve_name(target_name, merged).unwrap_or_else(|| {
 		let mut known: Vec<&str> = merged.keys().map(|s| s.as_str()).collect();
 		known.sort_unstable();
 		panic!(
-			"[ai.routing] {role} = '{target_name}' is an unknown provider name. \
-			 Configured names: {known:?}. Add a [ai.providers.{target_name}] section \
-			 or fix the typo."
-		);
-	}
+			"[ai.routing] {role} = '{target_name}' is an unknown provider name. 			 Configured names: {known:?}. Add a [ai.providers.{target_name}] section 			 or fix the typo."
+		)
+	})
 }

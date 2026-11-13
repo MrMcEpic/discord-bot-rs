@@ -30,10 +30,10 @@ pub async fn complete(
 		"max_tokens": clamped_tokens,
 	});
 
-	// Reasoner models don't accept tools regardless of caller intent.
-	if use_tools && provider.supports_tools() && !provider.is_reasoner() {
+	if use_tools && provider.supports_tools() {
 		body["tools"] = Value::Array(tool_definitions());
 	}
+	merge_extra_body(&mut body, provider.extra_body());
 
 	let mut req = client
 		.post(provider.url())
@@ -58,7 +58,7 @@ pub async fn complete(
 		let status = response.status();
 		let err_body = response.text().await.unwrap_or_default();
 		tracing::error!("{} API {status}: {err_body}", provider.model());
-		if crate::ai::chat::is_censored_body(&err_body) {
+		if is_censored_error(provider, &err_body) {
 			return Err("CENSORED".to_string());
 		}
 		return Err(format!("API returned {status}"));
@@ -69,6 +69,11 @@ pub async fn complete(
 		.await
 		.map_err(|e| format!("Failed to parse API response: {e}"))?;
 
+	let finish_reason = data["choices"][0]["finish_reason"].as_str().unwrap_or("");
+	if finish_reason == "content_filter" {
+		tracing::info!("{} finished with content_filter", provider.name());
+		return Err("CENSORED".to_string());
+	}
 	let choice = &data["choices"][0]["message"];
 
 	// OpenAI-shape native tool calls.
@@ -108,8 +113,93 @@ pub async fn complete(
 		};
 	}
 
+	// Thinking models count reasoning tokens against max_tokens. If the
+	// budget ran out before any visible output, say so instead of returning
+	// an empty response that callers would read as "no answer".
+	if content.is_none() && tool_calls.is_empty() && finish_reason == "length" {
+		return Err(format!(
+			"{} hit max_tokens before producing output (finish_reason=length)",
+			provider.name()
+		));
+	}
+
 	Ok(ApiResponse {
 		content,
 		tool_calls,
 	})
+}
+
+/// Merge a provider's `extra_body` into a request body. Top-level keys
+/// overwrite; nested objects are replaced wholesale (not deep-merged).
+pub(super) fn merge_extra_body(body: &mut Value, extra: &serde_json::Map<String, Value>) {
+	if let Some(obj) = body.as_object_mut() {
+		for (k, v) in extra {
+			obj.insert(k.clone(), v.clone());
+		}
+	}
+}
+
+/// Does a non-2xx error body mean "blocked by the content filter"? True for
+/// DeepSeek's long-standing `Content Exists Risk` sentinel (kept global so
+/// user-defined DeepSeek providers without `refusal_markers` still match)
+/// and for any of the provider's configured `refusal_markers`.
+pub(super) fn is_censored_error(provider: &dyn AiProvider, err_body: &str) -> bool {
+	crate::ai::chat::is_censored_body(err_body)
+		|| provider
+			.refusal_markers()
+			.iter()
+			.any(|m| !m.is_empty() && err_body.contains(m.as_str()))
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::ai::providers::{ConfiguredProvider, ProviderDef};
+
+	fn provider(markers: &[&str]) -> ConfiguredProvider {
+		let def: ProviderDef = toml::from_str(&format!(
+			"url = \"u\"
+model = \"m\"
+api_key_env = \"K\"
+max_tokens = 1
+refusal_markers = {markers:?}
+"
+		))
+		.unwrap();
+		ConfiguredProvider::from_def("p", def, |_| Some("k".to_string())).unwrap()
+	}
+
+	#[test]
+	fn extra_body_merges_and_overrides_top_level_keys() {
+		let mut body = serde_json::json!({ "model": "a", "max_tokens": 10 });
+		let mut extra = serde_json::Map::new();
+		extra.insert("reasoning_effort".into(), "max".into());
+		extra.insert("max_tokens".into(), 99.into());
+		merge_extra_body(&mut body, &extra);
+		assert_eq!(body["reasoning_effort"], "max");
+		assert_eq!(body["max_tokens"], 99);
+		assert_eq!(body["model"], "a");
+	}
+
+	#[test]
+	fn censored_error_matches_legacy_sentinel_and_configured_markers() {
+		let none = provider(&[]);
+		assert!(is_censored_error(
+			&none,
+			r#"{"error":"Content Exists Risk"}"#
+		));
+		assert!(!is_censored_error(
+			&none,
+			r#"{"error":"blocked by policy"}"#
+		));
+		let custom = provider(&["blocked by policy"]);
+		assert!(is_censored_error(
+			&custom,
+			r#"{"error":"blocked by policy"}"#
+		));
+		assert!(!is_censored_error(&custom, r#"{"error":"rate limited"}"#));
+		// An empty marker must not match every body.
+		let empty = provider(&[""]);
+		assert!(!is_censored_error(&empty, "anything"));
+	}
 }

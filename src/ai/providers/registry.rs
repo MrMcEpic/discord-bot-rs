@@ -1,83 +1,90 @@
-//! Baked-in default provider registry.
+//! Baked-in default provider registry, routing matrix, and name aliases.
+//!
+//! All of it lives in `defaults/providers.toml`, compiled into the binary via
+//! `include_str!` and parsed once on first use. Keeping the defaults as data
+//! (not Rust literals) means a model bump is a one-line TOML edit, and the
+//! file doubles as a copy-paste reference for instance `config.toml`
+//! overrides, which use the exact same schema.
 
-use super::{ProviderDef, ProviderSpec};
+use std::collections::BTreeMap;
+use std::sync::LazyLock;
 
-/// The four providers the bot ships with. Used as the base registry when no
-/// `[ai.providers]` section is in instance config; user-defined providers
-/// merge on top (user wins on name collision).
-///
-/// Field values here are pinned by `default_registry_*_matches_v0_18_0`
-/// snapshot tests in this module. Drift breaks the test.
-pub fn default_provider_registry() -> Vec<(&'static str, ProviderDef)> {
-	vec![
-		(
-			"deepseek_chat",
-			ProviderDef {
-				url: "https://api.deepseek.com/chat/completions".to_string(),
-				model: "deepseek-v4-flash".to_string(),
-				api_key_env: "DEEPSEEK_API_KEY".to_string(),
-				max_tokens: 8192,
-				timeout_secs: 30,
-				supports_vision: false,
-				supports_tools: true,
-				is_reasoner: false,
-				spec: ProviderSpec::OpenAi,
-				headers: std::collections::HashMap::new(),
-				auth_header: "Authorization".to_string(),
-				auth_scheme: "Bearer ".to_string(),
-			},
-		),
-		(
-			"deepseek_reasoner",
-			ProviderDef {
-				url: "https://api.deepseek.com/chat/completions".to_string(),
-				model: "deepseek-v4-pro".to_string(),
-				api_key_env: "DEEPSEEK_API_KEY".to_string(),
-				max_tokens: 65536,
-				timeout_secs: 300,
-				supports_vision: false,
-				supports_tools: false,
-				is_reasoner: true,
-				spec: ProviderSpec::OpenAi,
-				headers: std::collections::HashMap::new(),
-				auth_header: "Authorization".to_string(),
-				auth_scheme: "Bearer ".to_string(),
-			},
-		),
-		(
-			"gemini_flash",
-			ProviderDef {
-				url: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
-					.to_string(),
-				model: "gemini-3-flash-preview".to_string(),
-				api_key_env: "GEMINI_API_KEY".to_string(),
-				max_tokens: 16384,
-				timeout_secs: 30,
-				supports_vision: true,
-				supports_tools: true,
-				is_reasoner: false,
-				spec: ProviderSpec::OpenAi,
-				headers: std::collections::HashMap::new(),
-				auth_header: "Authorization".to_string(),
-				auth_scheme: "Bearer ".to_string(),
-			},
-		),
-		(
-			"grok",
-			ProviderDef {
-				url: "https://api.x.ai/v1/chat/completions".to_string(),
-				model: "grok-3".to_string(),
-				api_key_env: "GROK_API_KEY".to_string(),
-				max_tokens: 16384,
-				timeout_secs: 30,
-				supports_vision: false,
-				supports_tools: true,
-				is_reasoner: false,
-				spec: ProviderSpec::OpenAi,
-				headers: std::collections::HashMap::new(),
-				auth_header: "Authorization".to_string(),
-				auth_scheme: "Bearer ".to_string(),
-			},
-		),
-	]
+use serde::Deserialize;
+
+use super::ProviderDef;
+
+/// Raw contents of `defaults/providers.toml`.
+pub const DEFAULTS_TOML: &str = include_str!("../../../defaults/providers.toml");
+
+/// Parsed shape of `defaults/providers.toml`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Defaults {
+	pub routing: DefaultRouting,
+	#[serde(default)]
+	pub aliases: BTreeMap<String, String>,
+	pub providers: BTreeMap<String, ProviderDef>,
+}
+
+/// Default role → provider-name matrix (used when an instance has no
+/// `[ai.routing]` section).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DefaultRouting {
+	pub chat: String,
+	pub vision: String,
+	pub reasoner: String,
+	pub fast: String,
+}
+
+static DEFAULTS: LazyLock<Defaults> = LazyLock::new(|| {
+	let d: Defaults = toml::from_str(DEFAULTS_TOML)
+		.unwrap_or_else(|e| panic!("defaults/providers.toml is invalid: {e}"));
+	// Internal consistency: every role and alias target must name a provider
+	// defined in the same file. Pinned by a unit test, so a bad edit fails CI
+	// rather than the bot at startup.
+	for (role, target) in [
+		("chat", &d.routing.chat),
+		("vision", &d.routing.vision),
+		("reasoner", &d.routing.reasoner),
+		("fast", &d.routing.fast),
+	] {
+		assert!(
+			d.providers.contains_key(target),
+			"defaults/providers.toml: routing.{role} = '{target}' is not a defined provider"
+		);
+	}
+	for (alias, target) in &d.aliases {
+		assert!(
+			d.providers.contains_key(target),
+			"defaults/providers.toml: alias '{alias}' → '{target}' is not a defined provider"
+		);
+		assert!(
+			!d.providers.contains_key(alias),
+			"defaults/providers.toml: alias '{alias}' shadows a provider of the same name"
+		);
+	}
+	d
+});
+
+/// The parsed defaults (providers + routing + aliases).
+pub fn defaults() -> &'static Defaults {
+	&DEFAULTS
+}
+
+/// The providers the bot ships with, as `(name, definition)` pairs. Used as
+/// the base registry; user-defined `[ai.providers]` merge on top (user wins
+/// on name collision).
+pub fn default_provider_registry() -> Vec<(String, ProviderDef)> {
+	DEFAULTS
+		.providers
+		.iter()
+		.map(|(k, v)| (k.clone(), v.clone()))
+		.collect()
+}
+
+/// Resolve a default-registry alias (e.g. `"deepseek_chat"` →
+/// `"deepseek_flash"`). Returns `None` for names that aren't aliases.
+pub fn alias_target(name: &str) -> Option<&'static str> {
+	DEFAULTS.aliases.get(name).map(String::as_str)
 }

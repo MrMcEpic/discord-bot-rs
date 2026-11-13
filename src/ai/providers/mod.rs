@@ -25,7 +25,9 @@ pub mod router;
 use std::time::Duration;
 
 pub use anthropic::complete_anthropic;
-pub use cascade::{complete_dispatch, complete_with_cascade};
+pub use cascade::{
+	complete_dispatch, complete_first_success, complete_with_cascade, is_soft_refusal, Cascade,
+};
 pub use configured::{ConfiguredProvider, ProviderDef, ProviderSpec};
 pub use openai::complete;
 pub use registry::default_provider_registry;
@@ -75,13 +77,14 @@ pub trait AiProvider: Send + Sync + std::fmt::Debug {
 	/// Whether the model accepts image content parts in messages.
 	fn supports_vision(&self) -> bool;
 
-	/// Whether the model accepts a `tools` array. DeepSeek Reasoner doesn't.
+	/// Whether the model accepts a `tools` array. This alone decides whether
+	/// tools are sent (since 0.19.0 `is_reasoner` no longer strips them).
 	fn supports_tools(&self) -> bool {
 		true
 	}
 
-	/// Whether this is a slow reasoning model that needs a longer timeout
-	/// budget and skips tools regardless of `supports_tools`.
+	/// Whether this is a slow reasoning-class model (routing metadata only —
+	/// used for startup sanity warnings on the `reasoner` role).
 	fn is_reasoner(&self) -> bool {
 		false
 	}
@@ -125,6 +128,21 @@ pub trait AiProvider: Send + Sync + std::fmt::Debug {
 			LazyLock::new(std::collections::HashMap::new);
 		&EMPTY
 	}
+
+	/// Extra fields merged into every request body (e.g. `reasoning_effort`,
+	/// `thinking`). Default empty.
+	fn extra_body(&self) -> &serde_json::Map<String, serde_json::Value> {
+		use std::sync::LazyLock;
+		static EMPTY: LazyLock<serde_json::Map<String, serde_json::Value>> =
+			LazyLock::new(serde_json::Map::new);
+		&EMPTY
+	}
+
+	/// Error-body substrings that mean "blocked by the content filter".
+	/// Default empty.
+	fn refusal_markers(&self) -> &[String] {
+		&[]
+	}
 }
 
 #[cfg(test)]
@@ -153,108 +171,154 @@ mod tests {
 		|_| None
 	}
 
-	// --- Default registry snapshot tests --------------------------------
+	// --- Default registry (defaults/providers.toml) ----------------------
 
-	fn def_by_name<'a>(registry: &'a [(&'static str, ProviderDef)], name: &str) -> &'a ProviderDef {
+	fn def_by_name<'a>(registry: &'a [(String, ProviderDef)], name: &str) -> &'a ProviderDef {
 		registry
 			.iter()
-			.find(|(n, _)| *n == name)
+			.find(|(n, _)| n == name)
 			.map(|(_, def)| def)
 			.unwrap_or_else(|| panic!("default registry missing provider: {name}"))
 	}
 
+	const ALL_KEYS: &[(&str, &str)] = &[
+		("DEEPSEEK_API_KEY", "d"),
+		("GEMINI_API_KEY", "g"),
+		("GROK_API_KEY", "x"),
+	];
+
 	#[test]
-	fn default_registry_has_exactly_four_providers() {
-		let r = default_provider_registry();
-		let names: Vec<&str> = r.iter().map(|(n, _)| *n).collect();
-		assert_eq!(names.len(), 4, "default registry size changed");
-		assert!(names.contains(&"deepseek_chat"));
-		assert!(names.contains(&"deepseek_reasoner"));
-		assert!(names.contains(&"gemini_flash"));
-		assert!(names.contains(&"grok"));
+	fn defaults_toml_parses_and_is_self_consistent() {
+		// Forces the LazyLock: routing targets and alias targets must all be
+		// defined providers, and no alias may shadow a provider. A bad edit
+		// to defaults/providers.toml fails here instead of at bot startup.
+		let d = registry::defaults();
+		for target in [
+			&d.routing.chat,
+			&d.routing.vision,
+			&d.routing.reasoner,
+			&d.routing.fast,
+		] {
+			assert!(d.providers.contains_key(target), "{target} undefined");
+		}
+		for (alias, target) in &d.aliases {
+			assert!(d.providers.contains_key(target), "{alias} -> {target}");
+		}
 	}
 
 	#[test]
-	fn default_registry_deepseek_chat_matches_v0_18_0() {
+	fn default_registry_provider_set_matches_v0_19_0() {
 		let r = default_provider_registry();
-		let def = def_by_name(&r, "deepseek_chat");
+		let mut names: Vec<&str> = r.iter().map(|(n, _)| n.as_str()).collect();
+		names.sort_unstable();
+		assert_eq!(
+			names,
+			vec![
+				"deepseek_flash",
+				"deepseek_flash_fast",
+				"deepseek_flash_max",
+				"deepseek_pro",
+				"gemini_flash",
+				"grok",
+			],
+			"default registry provider set changed"
+		);
+	}
+
+	#[test]
+	fn default_routing_matrix_matches_v0_19_0() {
+		let d = &registry::defaults().routing;
+		assert_eq!(d.chat, "deepseek_flash");
+		assert_eq!(d.vision, "deepseek_flash");
+		assert_eq!(d.reasoner, "deepseek_flash_max");
+		assert_eq!(d.fast, "deepseek_flash_fast");
+	}
+
+	#[test]
+	fn default_registry_deepseek_flash_matches_v0_19_0() {
+		let r = default_provider_registry();
+		let def = def_by_name(&r, "deepseek_flash");
 		assert_eq!(def.url, "https://api.deepseek.com/chat/completions");
-		assert_eq!(def.model, "deepseek-v4-flash");
+		assert_eq!(def.model, "deepseek-flash");
 		assert_eq!(def.api_key_env, "DEEPSEEK_API_KEY");
-		assert_eq!(def.max_tokens, 8192);
-		assert_eq!(def.timeout_secs, 30);
-		assert!(!def.supports_vision);
+		assert_eq!(def.max_tokens, 32768);
+		assert_eq!(def.timeout_secs, 90);
+		assert!(def.supports_vision, "V4.1 Flash accepts images");
 		assert!(def.supports_tools);
 		assert!(!def.is_reasoner);
 		assert_eq!(def.spec, ProviderSpec::OpenAi);
-		// New in phase 2: default registry uses OpenAI-compat defaults for
-		// the auth + headers fields (trait methods respect these).
+		assert_eq!(def.extra_body["reasoning_effort"], "high");
+		assert_eq!(def.refusal_markers, vec!["Content Exists Risk"]);
 		assert_eq!(def.auth_header, "Authorization");
 		assert_eq!(def.auth_scheme, "Bearer ");
 		assert!(def.headers.is_empty());
 	}
 
 	#[test]
-	fn default_registry_deepseek_reasoner_matches_v0_18_0() {
+	fn default_registry_deepseek_flash_max_matches_v0_19_0() {
 		let r = default_provider_registry();
-		let def = def_by_name(&r, "deepseek_reasoner");
-		assert_eq!(def.url, "https://api.deepseek.com/chat/completions");
-		assert_eq!(def.model, "deepseek-v4-pro");
-		assert_eq!(def.api_key_env, "DEEPSEEK_API_KEY");
+		let def = def_by_name(&r, "deepseek_flash_max");
+		assert_eq!(def.model, "deepseek-flash");
 		assert_eq!(def.max_tokens, 65536);
 		assert_eq!(def.timeout_secs, 300);
-		assert!(!def.supports_vision);
-		assert!(!def.supports_tools, "reasoner does not accept tools");
+		assert!(def.supports_vision);
+		assert!(def.supports_tools, "max-effort Flash keeps tools");
 		assert!(def.is_reasoner);
-		assert_eq!(def.spec, ProviderSpec::OpenAi);
-		// New in phase 2: default registry uses OpenAI-compat defaults for
-		// the auth + headers fields (trait methods respect these).
-		assert_eq!(def.auth_header, "Authorization");
-		assert_eq!(def.auth_scheme, "Bearer ");
-		assert!(def.headers.is_empty());
+		assert_eq!(def.extra_body["reasoning_effort"], "max");
 	}
 
 	#[test]
-	fn default_registry_gemini_flash_matches_v0_14_0() {
+	fn default_registry_deepseek_flash_fast_disables_thinking() {
+		// The classifier asks for max_tokens = 10. With thinking on, the
+		// whole budget goes to reasoning and the content comes back empty —
+		// the pre-0.19 bug that silently disabled reasoner routing.
+		let r = default_provider_registry();
+		let def = def_by_name(&r, "deepseek_flash_fast");
+		assert_eq!(def.model, "deepseek-flash");
+		assert_eq!(def.extra_body["thinking"]["type"], "disabled");
+		assert!(
+			def.supports_tools,
+			"pre-flight search for tool-less reasoners"
+		);
+		assert!(!def.is_reasoner);
+	}
+
+	#[test]
+	fn default_registry_deepseek_pro_is_text_only_reasoner() {
+		let r = default_provider_registry();
+		let def = def_by_name(&r, "deepseek_pro");
+		assert_eq!(def.model, "deepseek-v4-pro");
+		assert!(!def.supports_vision);
+		assert!(def.is_reasoner);
+		assert!(def.extra_body.is_empty());
+	}
+
+	#[test]
+	fn default_registry_gemini_flash_matches_v0_19_0() {
 		let r = default_provider_registry();
 		let def = def_by_name(&r, "gemini_flash");
 		assert_eq!(
 			def.url,
 			"https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
 		);
-		assert_eq!(def.model, "gemini-3-flash-preview");
+		assert_eq!(def.model, "gemini-3.8-flash");
 		assert_eq!(def.api_key_env, "GEMINI_API_KEY");
-		assert_eq!(def.max_tokens, 16384);
-		assert_eq!(def.timeout_secs, 30);
-		assert!(def.supports_vision, "gemini is the vision provider");
+		assert_eq!(def.max_tokens, 32768);
+		assert!(def.supports_vision);
 		assert!(def.supports_tools);
 		assert!(!def.is_reasoner);
-		assert_eq!(def.spec, ProviderSpec::OpenAi);
-		// New in phase 2: default registry uses OpenAI-compat defaults for
-		// the auth + headers fields (trait methods respect these).
-		assert_eq!(def.auth_header, "Authorization");
-		assert_eq!(def.auth_scheme, "Bearer ");
-		assert!(def.headers.is_empty());
 	}
 
 	#[test]
-	fn default_registry_grok_matches_v0_14_0() {
+	fn default_registry_grok_matches_v0_19_0() {
 		let r = default_provider_registry();
 		let def = def_by_name(&r, "grok");
 		assert_eq!(def.url, "https://api.x.ai/v1/chat/completions");
-		assert_eq!(def.model, "grok-3");
+		assert_eq!(def.model, "grok-4.7");
 		assert_eq!(def.api_key_env, "GROK_API_KEY");
-		assert_eq!(def.max_tokens, 16384);
-		assert_eq!(def.timeout_secs, 30);
-		assert!(!def.supports_vision);
+		assert_eq!(def.max_tokens, 32768);
+		assert!(def.supports_vision, "grok-4.7 accepts images");
 		assert!(def.supports_tools);
-		assert!(!def.is_reasoner);
-		assert_eq!(def.spec, ProviderSpec::OpenAi);
-		// New in phase 2: default registry uses OpenAI-compat defaults for
-		// the auth + headers fields (trait methods respect these).
-		assert_eq!(def.auth_header, "Authorization");
-		assert_eq!(def.auth_scheme, "Bearer ");
-		assert!(def.headers.is_empty());
 	}
 
 	// --- ProviderRouter::from_defaults -----------------------------------
@@ -265,114 +329,104 @@ mod tests {
 		assert!(r.chat().is_none());
 		assert!(r.reasoner().is_none());
 		assert!(r.vision().is_none());
+		assert!(r.fast().is_none());
 	}
 
 	#[test]
-	fn router_with_deepseek_only_has_no_vision() {
+	fn router_with_deepseek_only_has_every_role() {
+		// Since 0.19.0 every role is DeepSeek V4.1 Flash, so one key lights
+		// up chat, vision, reasoner and fast.
 		let r = ProviderRouter::from_defaults(env_with(&[("DEEPSEEK_API_KEY", "k")]));
-		assert!(r.chat().is_some());
-		assert!(r.reasoner().is_some());
-		assert!(r.vision().is_none(), "vision needs Gemini key");
+		assert_eq!(r.chat().unwrap().name(), "deepseek_flash");
+		assert_eq!(r.vision().unwrap().name(), "deepseek_flash");
+		assert_eq!(r.reasoner().unwrap().name(), "deepseek_flash_max");
+		assert_eq!(r.fast().unwrap().name(), "deepseek_flash_fast");
 	}
 
 	#[test]
-	fn router_with_gemini_only_has_vision_but_no_text() {
+	fn router_with_gemini_only_has_no_roles_but_named_works() {
 		let r = ProviderRouter::from_defaults(env_with(&[("GEMINI_API_KEY", "k")]));
 		assert!(r.chat().is_none());
+		assert!(r.vision().is_none());
 		assert!(r.reasoner().is_none());
-		assert!(r.vision().is_some());
+		assert!(r.fast().is_none());
+		assert!(
+			r.named("gemini_flash").is_some(),
+			"still usable as fallback"
+		);
 	}
 
 	#[test]
-	fn router_with_all_keys_has_everything() {
-		let r = ProviderRouter::from_defaults(env_with(&[
-			("DEEPSEEK_API_KEY", "d"),
-			("GEMINI_API_KEY", "g"),
-			("GROK_API_KEY", "x"),
-		]));
-		assert!(r.chat().is_some());
-		assert!(r.reasoner().is_some());
-		assert!(r.vision().is_some());
-		assert!(r.named("grok").is_some());
+	fn fast_falls_back_to_chat_when_unrouted() {
+		let user_def = def_for("http://localhost/v1/chat", "LOCAL");
+		let cfg = ai_cfg(
+			vec![("my_local", user_def)],
+			Some(RoutingConfig {
+				chat: Some("my_local".to_string()),
+				vision: None,
+				reasoner: None,
+				fast: None,
+			}),
+		);
+		let r = ProviderRouter::from_instance_config(&cfg, env_with(&[("LOCAL", "k")]));
+		assert_eq!(r.fast().unwrap().name(), "my_local");
 	}
 
 	#[test]
 	fn capability_flags_match_expected_shape() {
-		// Capability matrix sanity — pin the default-registry providers'
-		// trait-method outputs so a copy-paste mistake in the registry can't
-		// silently re-route requests (e.g. Gemini accidentally claiming
-		// reasoner).
-		let r = ProviderRouter::from_defaults(env_with(&[
-			("DEEPSEEK_API_KEY", "d"),
-			("GEMINI_API_KEY", "g"),
-			("GROK_API_KEY", "x"),
-		]));
+		let r = ProviderRouter::from_defaults(env_with(ALL_KEYS));
 
-		let chat = r.named("deepseek_chat").unwrap();
-		assert_eq!(chat.name(), "deepseek_chat");
-		assert!(!chat.supports_vision());
+		let chat = r.named("deepseek_flash").unwrap();
+		assert!(chat.supports_vision());
 		assert!(chat.supports_tools());
 		assert!(!chat.is_reasoner());
 
-		let reasoner = r.named("deepseek_reasoner").unwrap();
-		assert_eq!(reasoner.name(), "deepseek_reasoner");
-		assert!(!reasoner.supports_vision());
-		assert!(!reasoner.supports_tools());
-		assert!(reasoner.is_reasoner());
+		let max = r.named("deepseek_flash_max").unwrap();
+		assert!(max.supports_tools());
+		assert!(max.is_reasoner());
+
+		let pro = r.named("deepseek_pro").unwrap();
+		assert!(!pro.supports_vision());
+		assert!(pro.is_reasoner());
 
 		let gemini = r.named("gemini_flash").unwrap();
-		assert_eq!(gemini.name(), "gemini_flash");
 		assert!(gemini.supports_vision());
-		assert!(gemini.supports_tools());
 		assert!(!gemini.is_reasoner());
 
 		let grok = r.named("grok").unwrap();
-		assert_eq!(grok.name(), "grok");
-		assert!(!grok.supports_vision());
+		assert!(grok.supports_vision());
 		assert!(grok.supports_tools());
-		assert!(!grok.is_reasoner());
 	}
 
 	#[test]
 	fn reasoner_has_longer_timeout_than_chat() {
 		let r = ProviderRouter::from_defaults(env_with(&[("DEEPSEEK_API_KEY", "k")]));
-		let chat = r.named("deepseek_chat").unwrap();
-		let reasoner = r.named("deepseek_reasoner").unwrap();
-		assert!(
-			reasoner.timeout() > chat.timeout(),
-			"reasoner needs more time"
-		);
+		assert!(r.reasoner().unwrap().timeout() > r.chat().unwrap().timeout());
 	}
 
 	#[test]
-	fn max_tokens_limit_per_provider_matches_documented_caps() {
-		let r = ProviderRouter::from_defaults(env_with(&[
-			("DEEPSEEK_API_KEY", "k"),
-			("GEMINI_API_KEY", "k"),
-			("GROK_API_KEY", "k"),
-		]));
-		assert_eq!(r.named("deepseek_chat").unwrap().max_tokens_limit(), 8192);
-		assert_eq!(
-			r.named("deepseek_reasoner").unwrap().max_tokens_limit(),
-			65536
-		);
-		assert_eq!(r.named("gemini_flash").unwrap().max_tokens_limit(), 16384);
-		assert_eq!(r.named("grok").unwrap().max_tokens_limit(), 16384);
+	fn extra_body_and_refusal_markers_reach_the_trait() {
+		let r = ProviderRouter::from_defaults(env_with(&[("DEEPSEEK_API_KEY", "k")]));
+		let fast = r.fast().unwrap();
+		assert_eq!(fast.extra_body()["thinking"]["type"], "disabled");
+		assert_eq!(fast.refusal_markers(), ["Content Exists Risk".to_string()]);
 	}
 
 	// --- named() / cascade_for resolution -------------------------------
 
 	#[test]
 	fn router_named_resolves_configured_provider_strings() {
-		let r = ProviderRouter::from_defaults(env_with(&[
-			("DEEPSEEK_API_KEY", "d"),
-			("GEMINI_API_KEY", "g"),
-			("GROK_API_KEY", "x"),
-		]));
-		assert!(r.named("grok").is_some());
-		assert!(r.named("gemini_flash").is_some());
-		assert!(r.named("deepseek_chat").is_some());
-		assert!(r.named("deepseek_reasoner").is_some());
+		let r = ProviderRouter::from_defaults(env_with(ALL_KEYS));
+		for n in [
+			"grok",
+			"gemini_flash",
+			"deepseek_flash",
+			"deepseek_flash_max",
+			"deepseek_flash_fast",
+			"deepseek_pro",
+		] {
+			assert_eq!(r.named(n).map(|p| p.name()), Some(n));
+		}
 		// Unknown name → None, not a panic.
 		assert!(r.named("anthropic").is_none());
 		assert!(r.named("").is_none());
@@ -380,8 +434,6 @@ mod tests {
 
 	#[test]
 	fn router_named_returns_none_when_provider_unconfigured() {
-		// "grok" is a recognised registry name but env var unset — must
-		// return None so cascade_for can skip it cleanly.
 		let r = ProviderRouter::from_defaults(env_with(&[("DEEPSEEK_API_KEY", "d")]));
 		assert!(r.named("grok").is_none());
 		assert!(r.named("gemini_flash").is_none());
@@ -389,8 +441,6 @@ mod tests {
 
 	#[test]
 	fn cascade_for_preserves_order_and_skips_unconfigured() {
-		// Only Grok configured; Gemini listed in cascade should be silently
-		// dropped, Grok kept. Order from input list must be preserved.
 		let r = ProviderRouter::from_defaults(env_with(&[
 			("DEEPSEEK_API_KEY", "d"),
 			("GROK_API_KEY", "x"),
@@ -423,44 +473,50 @@ mod tests {
 	}
 
 	#[test]
-	fn router_named_resolves_v0_14_0_short_aliases_for_backward_compat() {
-		// 0.14.0's named() accepted these short forms; instance configs in the
-		// wild may use them in [ai.fallback] on_censored. Don't silently break
-		// them.
-		let r = ProviderRouter::from_defaults(env_with(&[
-			("DEEPSEEK_API_KEY", "k"),
-			("GEMINI_API_KEY", "k"),
-			("GROK_API_KEY", "k"),
-		]));
-		assert_eq!(r.named("gemini").map(|p| p.name()), Some("gemini_flash"));
-		assert_eq!(r.named("deepseek").map(|p| p.name()), Some("deepseek_chat"));
-		assert_eq!(
-			r.named("deepseek-chat").map(|p| p.name()),
-			Some("deepseek_chat")
-		);
-		// 0.18.0 aliases for V4 explicit names + the deprecated reasoner string.
-		assert_eq!(
-			r.named("deepseek-v4").map(|p| p.name()),
-			Some("deepseek_chat"),
-			"deepseek-v4 should resolve to deepseek_chat (V4-Flash default)"
-		);
-		assert_eq!(
-			r.named("deepseek-v4-flash").map(|p| p.name()),
-			Some("deepseek_chat"),
-			"explicit V4-Flash name resolves to deepseek_chat"
-		);
-		assert_eq!(
-			r.named("deepseek-v4-pro").map(|p| p.name()),
-			Some("deepseek_reasoner"),
-			"explicit V4-Pro name resolves to deepseek_reasoner"
-		);
-		assert_eq!(
-			r.named("deepseek-reasoner").map(|p| p.name()),
-			Some("deepseek_reasoner"),
-			"deprecated deepseek-reasoner alias preserved past 2026-07-24 retirement"
-		);
-		// Sanity: unknown names still return None.
+	fn router_named_resolves_legacy_aliases_for_backward_compat() {
+		// Instance configs in the wild name providers by their 0.14-0.18
+		// canonical names or shorthands in [ai.routing] / on_censored.
+		let r = ProviderRouter::from_defaults(env_with(ALL_KEYS));
+		for (alias, target) in [
+			("gemini", "gemini_flash"),
+			("xai", "grok"),
+			("deepseek", "deepseek_flash"),
+			("deepseek_chat", "deepseek_flash"),
+			("deepseek-chat", "deepseek_flash"),
+			("deepseek-flash", "deepseek_flash"),
+			("deepseek-v4", "deepseek_flash"),
+			("deepseek-v4-flash", "deepseek_flash"),
+			("deepseek_reasoner", "deepseek_flash_max"),
+			("deepseek-reasoner", "deepseek_flash_max"),
+			("deepseek-v4-pro", "deepseek_pro"),
+		] {
+			assert_eq!(r.named(alias).map(|p| p.name()), Some(target), "{alias}");
+		}
 		assert!(r.named("not_a_provider").is_none());
+	}
+
+	#[test]
+	fn legacy_role_names_in_routing_resolve_and_validate() {
+		// [ai.routing] chat = "deepseek_chat" (the pre-0.19 default name)
+		// must not crash-loop the bot at startup.
+		let cfg = ai_cfg(
+			vec![],
+			Some(RoutingConfig {
+				chat: Some("deepseek_chat".to_string()),
+				vision: Some("gemini".to_string()),
+				reasoner: Some("deepseek_reasoner".to_string()),
+				fast: None,
+			}),
+		);
+		let r = ProviderRouter::from_instance_config_strict(&cfg, env_with(ALL_KEYS));
+		assert_eq!(r.chat().unwrap().name(), "deepseek_flash");
+		assert_eq!(r.vision().unwrap().name(), "gemini_flash");
+		assert_eq!(r.reasoner().unwrap().name(), "deepseek_flash_max");
+		assert_eq!(
+			r.fast().unwrap().name(),
+			"deepseek_flash",
+			"fast unset -> chat"
+		);
 	}
 
 	#[test]
@@ -470,7 +526,7 @@ mod tests {
 		// directly; the alias path doesn't fire and isn't needed.
 		//
 		// Build a router with a user-defined provider literally named "deepseek"
-		// (distinct from the alias target "deepseek_chat"). Direct lookup wins.
+		// (distinct from the alias target "deepseek_flash"). Direct lookup wins.
 		let user_def = def_for("https://user-deepseek.example/v1/chat", "USER_DEEPSEEK_KEY");
 		let cfg = ai_cfg(vec![("deepseek", user_def)], None);
 		let r = ProviderRouter::from_instance_config(
@@ -478,31 +534,26 @@ mod tests {
 			env_with(&[("USER_DEEPSEEK_KEY", "secret")]),
 		);
 		// Direct match for "deepseek" returns the USER's provider URL, not the
-		// alias-routed deepseek_chat.
+		// alias-routed deepseek_flash.
 		let p = r.named("deepseek").unwrap();
 		assert_eq!(p.url(), "https://user-deepseek.example/v1/chat");
 		assert_eq!(p.name(), "deepseek");
 	}
 
 	#[test]
-	fn cascade_for_keeps_duplicates_in_input_order() {
-		// Caller bug? Maybe. But we don't dedupe — pinning current behaviour
-		// so a future change is intentional, not accidental.
-		let r = ProviderRouter::from_defaults(env_with(&[
-			("DEEPSEEK_API_KEY", "d"),
-			("GEMINI_API_KEY", "g"),
-			("GROK_API_KEY", "x"),
-		]));
+	fn cascade_for_dedupes_preserving_first_occurrence() {
+		// "grok" and its alias "xai" are the same provider; trying it twice
+		// in one cascade just doubles the latency of a failure.
+		let r = ProviderRouter::from_defaults(env_with(ALL_KEYS));
 		let names = vec![
 			"grok".to_string(),
 			"gemini_flash".to_string(),
-			"grok".to_string(),
+			"xai".to_string(),
 		];
 		let resolved = r.cascade_for(&names);
-		assert_eq!(resolved.len(), 3);
+		assert_eq!(resolved.len(), 2);
 		assert_eq!(resolved[0].name(), "grok");
 		assert_eq!(resolved[1].name(), "gemini_flash");
-		assert_eq!(resolved[2].name(), "grok");
 	}
 
 	// --- from_instance_config merge + routing ---------------------------
@@ -534,22 +585,22 @@ mod tests {
 			headers: std::collections::HashMap::new(),
 			auth_header: "Authorization".to_string(),
 			auth_scheme: "Bearer ".to_string(),
+			extra_body: serde_json::Map::new(),
+			refusal_markers: Vec::new(),
 		}
 	}
 
 	#[test]
 	fn from_instance_config_no_user_input_matches_from_defaults() {
-		// AiConfig empty + only DEEPSEEK_API_KEY set → behaves like
-		// from_defaults: chat and reasoner available, vision unavailable
-		// (both deepseek_chat and deepseek_reasoner share DEEPSEEK_API_KEY;
-		// gemini_flash needs GEMINI_API_KEY which is not set here).
+		// AiConfig empty + only GEMINI_API_KEY set: no routed role is
+		// available (all default roles are DeepSeek), same as from_defaults.
 		let r = ProviderRouter::from_instance_config(
 			&AiConfig::default(),
-			env_with(&[("DEEPSEEK_API_KEY", "k")]),
+			env_with(&[("GEMINI_API_KEY", "k")]),
 		);
-		assert!(r.chat().is_some());
+		assert!(r.chat().is_none());
 		assert!(r.vision().is_none());
-		assert!(r.reasoner().is_some());
+		assert!(r.reasoner().is_none());
 	}
 
 	#[test]
@@ -579,6 +630,7 @@ mod tests {
 				chat: Some("my_local".to_string()),
 				vision: None,
 				reasoner: None,
+				fast: None,
 			}),
 		);
 		let r = ProviderRouter::from_instance_config(
@@ -599,9 +651,10 @@ mod tests {
 			&AiConfig::default(),
 			env_with(&[("DEEPSEEK_API_KEY", "d"), ("GEMINI_API_KEY", "g")]),
 		);
-		assert_eq!(r.chat().unwrap().name(), "deepseek_chat");
-		assert_eq!(r.vision().unwrap().name(), "gemini_flash");
-		assert_eq!(r.reasoner().unwrap().name(), "deepseek_reasoner");
+		assert_eq!(r.chat().unwrap().name(), "deepseek_flash");
+		assert_eq!(r.vision().unwrap().name(), "deepseek_flash");
+		assert_eq!(r.reasoner().unwrap().name(), "deepseek_flash_max");
+		assert_eq!(r.fast().unwrap().name(), "deepseek_flash_fast");
 	}
 
 	// --- Validation tests -----------------------------------------------
@@ -615,6 +668,7 @@ mod tests {
 				chat: Some("nonexistent_provider".to_string()),
 				vision: None,
 				reasoner: None,
+				fast: None,
 			}),
 		);
 		ProviderRouter::from_instance_config_strict(&cfg, env_with(&[("DEEPSEEK_API_KEY", "k")]));
@@ -629,6 +683,7 @@ mod tests {
 				chat: Some("deepseek_chat".to_string()),
 				vision: Some("typo_provider".to_string()),
 				reasoner: None,
+				fast: None,
 			}),
 		);
 		ProviderRouter::from_instance_config_strict(&cfg, env_with(&[("DEEPSEEK_API_KEY", "k")]));
@@ -643,6 +698,7 @@ mod tests {
 				chat: Some("deepseek_chat".to_string()),
 				vision: None,
 				reasoner: Some("typo_reasoner".to_string()),
+				fast: None,
 			}),
 		);
 		ProviderRouter::from_instance_config_strict(&cfg, env_with(&[("DEEPSEEK_API_KEY", "k")]));
@@ -657,6 +713,7 @@ mod tests {
 				chat: None,
 				vision: Some("gemini_flash".to_string()),
 				reasoner: None,
+				fast: None,
 			}),
 		);
 		ProviderRouter::from_instance_config_strict(&cfg, env_with(&[("GEMINI_API_KEY", "k")]));
@@ -683,6 +740,7 @@ mod tests {
 				chat: Some("deepseek_chat".to_string()),
 				vision: None,
 				reasoner: None,
+				fast: None,
 			}),
 		);
 		let r = ProviderRouter::from_instance_config_strict(&cfg, empty_env());

@@ -8,7 +8,7 @@ use std::io::Cursor;
 use std::sync::LazyLock;
 
 use super::confirmation::request_confirmation;
-use super::providers::{self, AiProvider, ApiResponse, ToolCall};
+use super::providers::{self, AiProvider, ApiResponse, Cascade, ToolCall};
 use super::sanitize::sanitize_content;
 use super::search::web_search;
 use super::split::split_response;
@@ -174,6 +174,9 @@ static BAD_ASSISTANT_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
 		r"^Failed to join",
 		r"^Something went wrong talking to the AI",
 		r"overlords at DeepSeek won't let me",
+		// DeepSeek's stock topic-filter refusal (no persona). Replaying it as
+		// history primes the next turn to refuse again.
+		r"(?i)^I(?:'m|’m| am) sorry, (?:but )?I (?:can(?:'|’)t|cannot) (?:provide information about|answer) th(?:at|is)",
 	]
 	.iter()
 	.filter_map(|p| Regex::new(p).ok())
@@ -412,11 +415,11 @@ async fn build_message_history(
 async fn handle_search_calls(
 	client: &reqwest::Client,
 	provider: &dyn AiProvider,
-	cascade: &[&dyn AiProvider],
+	cascade: &Cascade<'_>,
 	http_client: &reqwest::Client,
 	history: &mut Vec<serde_json::Value>,
 	response: &ApiResponse,
-) -> Result<ApiResponse, String> {
+) -> Result<(ApiResponse, String), String> {
 	let search_calls: Vec<&ToolCall> = response
 		.tool_calls
 		.iter()
@@ -427,7 +430,10 @@ async fn handle_search_calls(
 		return Err("No search calls".to_string());
 	}
 
-	// Add assistant message with tool calls
+	// Add assistant message with tool calls. DeepSeek's docs say thinking
+	// mode wants `reasoning_content` echoed back on tool-call turns; as of
+	// V4.1 Flash the API accepts it omitted (verified 2026-11), and echoing
+	// it would leak a vendor-specific field to cascade members.
 	let tc_json: Vec<serde_json::Value> = search_calls
 		.iter()
 		.map(|tc| {
@@ -479,9 +485,45 @@ async fn handle_search_calls(
 	}
 
 	// Call API again — allow tools so it can do follow-up searches
-	providers::complete_with_cascade(provider, cascade, client, history, true, 32768)
-		.await
-		.map(|(resp, _name)| resp)
+	providers::complete_with_cascade(provider, cascade, client, history, true, 32768).await
+}
+
+/// If `reply` looks like a soft refusal of `user_text`, retry `history`
+/// through the cascade (skipping the provider that refused) and return the
+/// first alternative answer. `None` = keep the original reply (check
+/// disabled, reply too long, nothing to fall back to, not a refusal, or
+/// every alternative failed).
+async fn retry_if_refused(
+	data: &Data,
+	cascade: &Cascade<'_>,
+	answered_by: &str,
+	user_text: &str,
+	reply: &str,
+	history: &[serde_json::Value],
+) -> Option<ApiResponse> {
+	let cfg = &data.ai_fallback;
+	if !cfg.refusal_check || reply.chars().count() > cfg.refusal_check_max_chars {
+		return None;
+	}
+	if cascade.members.iter().all(|m| m.name() == answered_by) {
+		return None;
+	}
+	let judge = data.ai_router.fast()?;
+	let prompt = cfg.refusal_check_prompt.as_deref();
+	if !providers::is_soft_refusal(judge, &data.http_client, prompt, user_text, reply).await {
+		return None;
+	}
+	tracing::info!("Soft refusal detected from {answered_by}; retrying via fallback cascade");
+	providers::complete_first_success(
+		cascade,
+		Some(answered_by),
+		&data.http_client,
+		history,
+		false,
+		32768,
+	)
+	.await
+	.map(|(r, _)| r)
 }
 
 async fn execute_music_tool(
@@ -1751,6 +1793,114 @@ async fn classify_message(
 	Ok(text.starts_with("yes"))
 }
 
+/// Pre-flight web research for a tool-less reasoner: let `provider` (the
+/// `fast` role) issue searches for up to `MAX_SEARCH_ROUNDS` rounds, then
+/// insert the collected results into `history` as a system message so the
+/// reasoner can answer from them. Only used when the routed reasoner has
+/// `supports_tools = false` (e.g. opting into `deepseek_pro`).
+async fn preflight_search_for_reasoner(
+	message: &Message,
+	ctx: &serenity::client::Context,
+	data: &Data,
+	provider: &dyn AiProvider,
+	history: &mut Vec<serde_json::Value>,
+) {
+	let mut pf_history = history.clone();
+	let mut all_search_context = Vec::new();
+
+	for round in 0..MAX_SEARCH_ROUNDS {
+		let pf_response =
+			match providers::complete_dispatch(provider, &data.http_client, &pf_history, true, 256)
+				.await
+			{
+				Ok(r) => r,
+				Err(e) => {
+					tracing::warn!("Reasoner pre-flight round {} failed: {e}", round + 1);
+					break;
+				}
+			};
+
+		let search_calls: Vec<&ToolCall> = pf_response
+			.tool_calls
+			.iter()
+			.filter(|t| is_search_tool(&t.name))
+			.collect();
+
+		if search_calls.is_empty() {
+			break;
+		}
+
+		tracing::info!(
+			"Reasoner pre-flight round {}: executing {} search(es)",
+			round + 1,
+			search_calls.len()
+		);
+		let _ = message.channel_id.broadcast_typing(&ctx.http).await;
+
+		// Add assistant message with tool calls to pre-flight history
+		let tc_json: Vec<serde_json::Value> = search_calls
+			.iter()
+			.map(|tc| {
+				serde_json::json!({
+					"id": tc.id,
+					"type": "function",
+					"function": { "name": tc.name, "arguments": tc.arguments }
+				})
+			})
+			.collect();
+		pf_history.push(serde_json::json!({
+			"role": "assistant",
+			"content": pf_response.content.as_deref(),
+			"tool_calls": tc_json
+		}));
+
+		for sc in &search_calls {
+			let args: serde_json::Value =
+				serde_json::from_str(&sc.arguments).unwrap_or(serde_json::json!({}));
+			let query = args["query"].as_str().unwrap_or("");
+			tracing::info!("Reasoner pre-flight search: {query}");
+
+			let result_text = match web_search(&data.http_client, query, 10).await {
+				Ok(results) if !results.is_empty() => {
+					let formatted = results
+						.iter()
+						.map(|r| format!("{}\n{}\n{}", r.title, r.url, r.snippet))
+						.collect::<Vec<_>>()
+						.join("\n\n");
+					all_search_context
+						.push(format!("Search results for \"{query}\":\n{formatted}"));
+					formatted
+				}
+				Ok(_) => {
+					all_search_context.push(format!("Search for \"{query}\": No results found."));
+					"No results found.".to_string()
+				}
+				Err(e) => {
+					tracing::error!("Reasoner pre-flight search failed: {e}");
+					all_search_context.push(format!("Search for \"{query}\": Search failed."));
+					"Search failed.".to_string()
+				}
+			};
+
+			// Feed results back so it can decide if more searches are needed
+			pf_history.push(serde_json::json!({
+				"role": "tool",
+				"tool_call_id": sc.id,
+				"content": result_text
+			}));
+		}
+	}
+
+	if !all_search_context.is_empty() {
+		// Insert all search results as context for Reasoner
+		let insert_idx = history.len() - 1;
+		history.insert(insert_idx, serde_json::json!({
+                "role": "system",
+                "content": format!("Web search results for context:\n\n{}", all_search_context.join("\n\n---\n\n"))
+            }));
+	}
+}
+
 pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, data: &Data) {
 	let has_images = message.attachments.iter().any(|a| {
 		a.content_type
@@ -1793,6 +1943,24 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
 	.await;
 	let has_reply_images = !reply_attachments.is_empty();
 	let has_images = has_images || has_reply_images;
+
+	// The user's message as the model sees it — captured before any
+	// multimodal rewrite or tool messages are appended. Used by the
+	// classifier and the soft-refusal judge.
+	let user_text = history
+		.last()
+		.and_then(|m| m["content"].as_str())
+		.unwrap_or("")
+		.to_string();
+
+	// Resolve the per-instance fallback cascade once for this request. Empty
+	// when `[ai.fallback] on_censored` isn't set in instance config —
+	// `complete_with_cascade` then surfaces CENSORED directly so the canned
+	// snarky reply fires, and the soft-refusal check is skipped.
+	let cascade = Cascade::new(
+		data.ai_router.cascade_for(&data.ai_fallback.on_censored),
+		data.ai_fallback.on_error,
+	);
 
 	// --- Image vision path: route to vision-capable provider ---
 	if has_images {
@@ -1850,8 +2018,10 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
 					vision_provider.name(),
 					data_uris.len()
 				);
-				match providers::complete_dispatch(
+				let vision_cascade = cascade.vision_only();
+				match providers::complete_with_cascade(
 					vision_provider,
+					&vision_cascade,
 					&data.http_client,
 					&history,
 					false,
@@ -1859,7 +2029,21 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
 				)
 				.await
 				{
-					Ok(resp) => {
+					Ok((mut resp, answered_by)) => {
+						if let Some(content) = resp.content.clone() {
+							if let Some(alt) = retry_if_refused(
+								data,
+								&vision_cascade,
+								&answered_by,
+								&user_text,
+								&content,
+								&history,
+							)
+							.await
+							{
+								resp = alt;
+							}
+						}
 						typing_handle.abort();
 						if let Some(content) = &resp.content {
 							send_reply(ctx, message, content).await;
@@ -1905,148 +2089,47 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
 		}
 	};
 
-	// --- Model router: classify and possibly route to the reasoner ---
-	let use_reasoner = {
-		let user_text = history
-			.last()
-			.and_then(|m| m["content"].as_str())
-			.unwrap_or("");
+	// Cheap no-thinking model for the one-word utility calls below.
+	let fast_provider = data.ai_router.fast().unwrap_or(chat_provider);
 
-		match classify_message(&data.http_client, chat_provider, user_text).await {
+	// --- Model router: classify and possibly route to the reasoner ---
+	// Skipped entirely when no reasoner is routed — no point paying for the
+	// classification call.
+	let reasoner = data.ai_router.reasoner();
+	let use_reasoner = match reasoner {
+		None => false,
+		Some(_) => match classify_message(&data.http_client, fast_provider, &user_text).await {
 			Ok(v) => v,
 			Err(e) => {
 				tracing::warn!("Classification failed, defaulting to chat provider: {e}");
 				false
 			}
-		}
+		},
 	};
 
-	let active_provider: &dyn AiProvider = if use_reasoner {
-		// Reasoner can't use tools, so use the chat provider as a research
-		// assistant first. Loop: let it search, feed results back, let it
-		// search again if needed.
-		let reasoner = data.ai_router.reasoner();
-		if let Some(reasoner) = reasoner {
+	let active_provider: &dyn AiProvider = match reasoner {
+		Some(reasoner) if use_reasoner && reasoner.supports_tools() => {
+			// Tool-capable reasoner (the default: Flash at max effort): it
+			// runs the normal tool loop below, searches included.
 			tracing::info!("Routing to {} (reasoning question)", reasoner.name());
-		} else {
-			tracing::warn!("Reasoner requested but unavailable; falling back to chat provider");
+			reasoner
 		}
-
-		let mut pf_history = history.clone();
-		let mut all_search_context = Vec::new();
-
-		for round in 0..MAX_SEARCH_ROUNDS {
-			let pf_response = match providers::complete_dispatch(
-				chat_provider,
-				&data.http_client,
-				&pf_history,
-				true,
-				256,
-			)
-			.await
-			{
-				Ok(r) => r,
-				Err(e) => {
-					tracing::warn!("Reasoner pre-flight round {} failed: {e}", round + 1);
-					break;
-				}
-			};
-
-			let search_calls: Vec<&ToolCall> = pf_response
-				.tool_calls
-				.iter()
-				.filter(|t| is_search_tool(&t.name))
-				.collect();
-
-			if search_calls.is_empty() {
-				break;
-			}
-
+		Some(reasoner) if use_reasoner => {
 			tracing::info!(
-				"Reasoner pre-flight round {}: executing {} search(es)",
-				round + 1,
-				search_calls.len()
+				"Routing to {} (reasoning question, tool-less; pre-flight search via {})",
+				reasoner.name(),
+				fast_provider.name()
 			);
-			let _ = message.channel_id.broadcast_typing(&ctx.http).await;
-
-			// Add assistant message with tool calls to pre-flight history
-			let tc_json: Vec<serde_json::Value> = search_calls
-				.iter()
-				.map(|tc| {
-					serde_json::json!({
-						"id": tc.id,
-						"type": "function",
-						"function": { "name": tc.name, "arguments": tc.arguments }
-					})
-				})
-				.collect();
-			pf_history.push(serde_json::json!({
-				"role": "assistant",
-				"content": pf_response.content.as_deref(),
-				"tool_calls": tc_json
-			}));
-
-			for sc in &search_calls {
-				let args: serde_json::Value =
-					serde_json::from_str(&sc.arguments).unwrap_or(serde_json::json!({}));
-				let query = args["query"].as_str().unwrap_or("");
-				tracing::info!("Reasoner pre-flight search: {query}");
-
-				let result_text = match web_search(&data.http_client, query, 10).await {
-					Ok(results) if !results.is_empty() => {
-						let formatted = results
-							.iter()
-							.map(|r| format!("{}\n{}\n{}", r.title, r.url, r.snippet))
-							.collect::<Vec<_>>()
-							.join("\n\n");
-						all_search_context
-							.push(format!("Search results for \"{query}\":\n{formatted}"));
-						formatted
-					}
-					Ok(_) => {
-						all_search_context
-							.push(format!("Search for \"{query}\": No results found."));
-						"No results found.".to_string()
-					}
-					Err(e) => {
-						tracing::error!("Reasoner pre-flight search failed: {e}");
-						all_search_context.push(format!("Search for \"{query}\": Search failed."));
-						"Search failed.".to_string()
-					}
-				};
-
-				// Feed results back to V3 so it can decide if more searches are needed
-				pf_history.push(serde_json::json!({
-					"role": "tool",
-					"tool_call_id": sc.id,
-					"content": result_text
-				}));
-			}
+			preflight_search_for_reasoner(message, ctx, data, fast_provider, &mut history).await;
+			reasoner
 		}
-
-		if !all_search_context.is_empty() {
-			// Insert all search results as context for Reasoner
-			let insert_idx = history.len() - 1;
-			history.insert(insert_idx, serde_json::json!({
-                "role": "system",
-                "content": format!("Web search results for context:\n\n{}", all_search_context.join("\n\n---\n\n"))
-            }));
+		_ => {
+			tracing::info!("Routing to {} (general question)", chat_provider.name());
+			chat_provider
 		}
-
-		// If reasoner is unconfigured, fall through to the chat provider so
-		// the request still completes (just without the reasoning model).
-		reasoner.unwrap_or(chat_provider)
-	} else {
-		tracing::info!("Routing to {} (general question)", chat_provider.name());
-		chat_provider
 	};
 
-	// Resolve the per-instance CENSORED-cascade once for this request. Empty
-	// vec when `[ai.fallback] on_censored` isn't set in instance config —
-	// `complete_with_cascade` treats that as "no fallback, surface CENSORED
-	// directly" so the existing snarky-reply behaviour is preserved.
-	let cascade = data.ai_router.cascade_for(&data.ai_fallback_on_censored);
-
+	let mut answered_by: String;
 	let mut response = match providers::complete_with_cascade(
 		active_provider,
 		&cascade,
@@ -2057,7 +2140,10 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
 	)
 	.await
 	{
-		Ok((r, _provider_name)) => r,
+		Ok((r, name)) => {
+			answered_by = name;
+			r
+		}
 		Err(e) => {
 			typing_handle.abort();
 			if e == "CENSORED" {
@@ -2095,7 +2181,10 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
 		)
 		.await
 		{
-			Ok(new_response) => response = new_response,
+			Ok((new_response, name)) => {
+				response = new_response;
+				answered_by = name;
+			}
 			Err(e) if e == "CENSORED" => {
 				typing_handle.abort();
 				let _ = message.reply(&ctx.http, "My overlords at DeepSeek won't let me talk about that. Being a Chinese AI has its... limitations. Try asking something they haven't deemed thoughtcrime.").await;
@@ -2106,7 +2195,7 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
 	}
 	// If still requesting search after MAX_SEARCH_ROUNDS rounds, force a final answer
 	if response.tool_calls.iter().any(|t| is_search_tool(&t.name)) {
-		if let Ok((final_resp, _)) = providers::complete_with_cascade(
+		if let Ok((final_resp, name)) = providers::complete_with_cascade(
 			active_provider,
 			&cascade,
 			&data.http_client,
@@ -2117,6 +2206,22 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
 		.await
 		{
 			response = final_resp;
+			answered_by = name;
+		}
+	}
+
+	// Soft-refusal check: a short text-only answer that dodges the question
+	// (DeepSeek's in-character topic filter) gets one retry through the
+	// fallback cascade. Replies that also carry action tool calls are left
+	// alone — the model clearly engaged.
+	let has_action_calls = response.tool_calls.iter().any(|t| !is_search_tool(&t.name));
+	if !has_action_calls {
+		if let Some(content) = response.content.clone() {
+			if let Some(alt) =
+				retry_if_refused(data, &cascade, &answered_by, &user_text, &content, &history).await
+			{
+				response = alt;
+			}
 		}
 	}
 
@@ -2336,6 +2441,20 @@ mod tests {
 		// assistant output.
 		assert!(is_bad_assistant_message(
 			"My overlords at DeepSeek won't let me talk about that."
+		));
+	}
+
+	#[test]
+	fn bad_assistant_filter_catches_deepseek_stock_refusal() {
+		assert!(is_bad_assistant_message(
+			"I'm sorry, I can't provide information about that topic."
+		));
+		assert!(is_bad_assistant_message(
+			"I am sorry, I cannot answer that question. I am an AI assistant."
+		));
+		// Only the stock opener — a later apology inside a real answer is fine.
+		assert!(!is_bad_assistant_message(
+			"Paris. I'm sorry, I can't answer that any shorter."
 		));
 	}
 

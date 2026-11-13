@@ -259,11 +259,12 @@ pub async fn complete_anthropic(
 		body["system"] = serde_json::Value::String(sys);
 	}
 
-	if use_tools && provider.supports_tools() && !provider.is_reasoner() {
+	if use_tools && provider.supports_tools() {
 		let openai_tool_defs = tool_definitions();
 		body["tools"] =
 			serde_json::Value::Array(translate_tool_defs_to_anthropic(&openai_tool_defs));
 	}
+	super::openai::merge_extra_body(&mut body, provider.extra_body());
 
 	// Build the request with provider-configured auth + headers.
 	let auth_value = format!("{}{}", provider.auth_scheme(), provider.api_key());
@@ -287,6 +288,9 @@ pub async fn complete_anthropic(
 		let status = response.status();
 		let err_body = response.text().await.unwrap_or_default();
 		tracing::error!("{} API {status}: {err_body}", provider.model());
+		if super::openai::is_censored_error(provider, &err_body) {
+			return Err("CENSORED".to_string());
+		}
 		return Err(format!("API returned {status}"));
 	}
 
@@ -294,6 +298,12 @@ pub async fn complete_anthropic(
 		.json()
 		.await
 		.map_err(|e| format!("Failed to parse API response: {e}"))?;
+
+	// Claude's safety stop: no usable answer, cascade like any other filter.
+	if data["stop_reason"].as_str() == Some("refusal") {
+		tracing::info!("{} stopped with stop_reason=refusal", provider.name());
+		return Err("CENSORED".to_string());
+	}
 
 	parse_anthropic_response(&data)
 }
