@@ -111,6 +111,21 @@ pub struct AiFallbackConfig {
 	/// "yes" (refusal) or "no". Unset = built-in prompt.
 	#[serde(default)]
 	pub refusal_check_prompt: Option<String>,
+
+	/// Reply sent when the content filter blocks a request and no cascade
+	/// member could answer. Defaults to the classic DeepSeek quip; change it
+	/// if your chat model isn't DeepSeek.
+	#[serde(default = "default_censored_reply")]
+	pub censored_reply: String,
+}
+
+/// Matched by `BAD_ASSISTANT_PATTERNS` in chat.rs so it's never replayed
+/// into history; keep the "overlords at DeepSeek won't let me" phrase.
+pub const DEFAULT_CENSORED_REPLY: &str = "My overlords at DeepSeek won't let me talk about that. \
+	Being a Chinese AI has its... limitations. Try asking something they haven't deemed thoughtcrime.";
+
+fn default_censored_reply() -> String {
+	DEFAULT_CENSORED_REPLY.to_string()
 }
 
 impl Default for AiFallbackConfig {
@@ -121,6 +136,7 @@ impl Default for AiFallbackConfig {
 			refusal_check: true,
 			refusal_check_max_chars: default_refusal_check_max_chars(),
 			refusal_check_prompt: None,
+			censored_reply: default_censored_reply(),
 		}
 	}
 }

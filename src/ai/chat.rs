@@ -523,7 +523,17 @@ async fn retry_if_refused(
 		32768,
 	)
 	.await
-	.map(|(r, _)| r)
+	.and_then(|(mut r, name)| {
+		// The retry ran with use_tools=false; ignore any DSML-embedded
+		// calls the model emitted anyway.
+		r.tool_calls.clear();
+		if r.content.as_deref().is_some_and(|c| !c.trim().is_empty()) {
+			Some(r)
+		} else {
+			tracing::info!("Refusal retry via {name} returned no text; keeping original reply");
+			None
+		}
+	})
 }
 
 async fn execute_music_tool(
@@ -2059,6 +2069,24 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
 					}
 					Err(e) => {
 						tracing::error!("Vision provider failed: {e}");
+						// Retrying text-only on the SAME model only makes sense
+						// when the image itself tripped the filter; for a plain
+						// failure (timeout, 5xx, no credits) it just doubles the
+						// wait before the same error.
+						let chat_is_vision = data
+							.ai_router
+							.chat()
+							.is_some_and(|c| c.name() == vision_provider.name());
+						if e != "CENSORED" && chat_is_vision && cascade.members.is_empty() {
+							typing_handle.abort();
+							let _ = message
+								.reply(
+									&ctx.http,
+									"Something went wrong talking to the AI. Try again in a sec.",
+								)
+								.await;
+							return;
+						}
 						// Fall through to text-only chat path (strip multimodal content back)
 						history[last_idx]["content"] = serde_json::Value::String(
 							history[last_idx]["content"]
@@ -2147,7 +2175,9 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
 		Err(e) => {
 			typing_handle.abort();
 			if e == "CENSORED" {
-				let _ = message.reply(&ctx.http, "My overlords at DeepSeek won't let me talk about that. Being a Chinese AI has its... limitations. Try asking something they haven't deemed thoughtcrime.").await;
+				let _ = message
+					.reply(&ctx.http, &data.ai_fallback.censored_reply)
+					.await;
 			} else {
 				tracing::error!("AI chat failed: {e}");
 				let _ = message
@@ -2187,7 +2217,9 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
 			}
 			Err(e) if e == "CENSORED" => {
 				typing_handle.abort();
-				let _ = message.reply(&ctx.http, "My overlords at DeepSeek won't let me talk about that. Being a Chinese AI has its... limitations. Try asking something they haven't deemed thoughtcrime.").await;
+				let _ = message
+					.reply(&ctx.http, &data.ai_fallback.censored_reply)
+					.await;
 				return;
 			}
 			Err(_) => break,

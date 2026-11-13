@@ -2,8 +2,9 @@
 #
 # This file is compiled into the binary (`include_str!` in
 # src/ai/providers/registry.rs), so editing it needs a rebuild. To change
-# models WITHOUT a rebuild, override any of this from an instance's
-# config.toml instead — every key below is also valid there:
+# models WITHOUT a rebuild, override it from an instance's config.toml
+# instead, using the same schema under an `ai.` prefix (`[aliases]` is
+# built-in only; to add a new name, define `[ai.providers.<name>]`):
 #
 #   [ai.providers.deepseek_flash]     # same name = replaces the default def
 #   [ai.routing]                      # pick which provider plays each role
@@ -103,6 +104,7 @@ api_key_env = "DEEPSEEK_API_KEY"
 max_tokens = 65536
 timeout_secs = 300
 is_reasoner = true
+supports_tools = false   # text-only: `fast` runs web searches for it first
 refusal_markers = ["Content Exists Risk"]
 
 [providers.gemini_flash]

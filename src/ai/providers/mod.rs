@@ -289,6 +289,7 @@ mod tests {
 		let def = def_by_name(&r, "deepseek_pro");
 		assert_eq!(def.model, "deepseek-v4-pro");
 		assert!(!def.supports_vision);
+		assert!(!def.supports_tools, "text-only: pre-flight search path");
 		assert!(def.is_reasoner);
 		assert!(def.extra_body.is_empty());
 	}
@@ -387,6 +388,7 @@ mod tests {
 
 		let pro = r.named("deepseek_pro").unwrap();
 		assert!(!pro.supports_vision());
+		assert!(!pro.supports_tools());
 		assert!(pro.is_reasoner());
 
 		let gemini = r.named("gemini_flash").unwrap();
@@ -514,8 +516,8 @@ mod tests {
 		assert_eq!(r.reasoner().unwrap().name(), "deepseek_flash_max");
 		assert_eq!(
 			r.fast().unwrap().name(),
-			"deepseek_flash",
-			"fast unset -> chat"
+			"deepseek_flash_fast",
+			"fast unset, chat on DeepSeek -> thinking-free default"
 		);
 	}
 
@@ -554,6 +556,70 @@ mod tests {
 		assert_eq!(resolved.len(), 2);
 		assert_eq!(resolved[0].name(), "grok");
 		assert_eq!(resolved[1].name(), "gemini_flash");
+	}
+
+	#[test]
+	fn partial_routing_without_fast_gets_thinking_free_default() {
+		// Pre-0.19 configs set [ai.routing] without `fast`. Falling back to
+		// the thinking-on chat model would make every 10-token classifier /
+		// judge call come back empty.
+		let cfg = ai_cfg(
+			vec![],
+			Some(RoutingConfig {
+				chat: Some("deepseek_chat".to_string()),
+				vision: None,
+				reasoner: Some("deepseek_reasoner".to_string()),
+				fast: None,
+			}),
+		);
+		let r = ProviderRouter::from_instance_config_strict(&cfg, env_with(ALL_KEYS));
+		assert_eq!(r.fast().unwrap().name(), "deepseek_flash_fast");
+	}
+
+	#[test]
+	fn partial_routing_on_other_vendor_does_not_borrow_deepseek_fast() {
+		let user_def = def_for("http://localhost/v1/chat", "LOCAL");
+		let cfg = ai_cfg(
+			vec![("my_local", user_def)],
+			Some(RoutingConfig {
+				chat: Some("my_local".to_string()),
+				vision: None,
+				reasoner: None,
+				fast: None,
+			}),
+		);
+		let r = ProviderRouter::from_instance_config_strict(
+			&cfg,
+			env_with(&[("LOCAL", "k"), ("DEEPSEEK_API_KEY", "d")]),
+		);
+		assert_eq!(r.fast().unwrap().name(), "my_local");
+	}
+
+	#[test]
+	fn user_override_of_legacy_default_name_is_still_routed() {
+		// 0.18 docs: "override a default by redefining it under its name".
+		let user_def = def_for("https://my-proxy.example/v1/chat", "DEEPSEEK_API_KEY");
+		let cfg = ai_cfg(vec![("deepseek_chat", user_def)], None);
+		let r = ProviderRouter::from_instance_config_strict(
+			&cfg,
+			env_with(&[("DEEPSEEK_API_KEY", "d")]),
+		);
+		assert_eq!(r.chat().unwrap().name(), "deepseek_chat");
+		assert_eq!(r.chat().unwrap().url(), "https://my-proxy.example/v1/chat");
+		// Roles the user didn't override keep the new defaults.
+		assert_eq!(r.vision().unwrap().name(), "deepseek_flash");
+	}
+
+	#[test]
+	fn defined_but_keyless_name_shadows_its_alias_target() {
+		// A user-defined provider literally named "gemini" with no key must
+		// NOT silently resolve to the default gemini_flash at runtime —
+		// startup validation treats the literal name as authoritative too.
+		let user_def = def_for("https://x.example/v1/chat", "UNSET_KEY");
+		let cfg = ai_cfg(vec![("gemini", user_def)], None);
+		let r = ProviderRouter::from_instance_config(&cfg, env_with(ALL_KEYS));
+		assert!(r.named("gemini").is_none());
+		assert!(r.named("gemini_flash").is_some());
 	}
 
 	// --- from_instance_config merge + routing ---------------------------

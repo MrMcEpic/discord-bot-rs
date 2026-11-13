@@ -17,6 +17,10 @@ use super::{default_provider_registry, AiProvider, ConfiguredProvider, ProviderD
 pub struct ProviderRouter {
 	/// All available providers, keyed by canonical name.
 	providers: HashMap<String, ConfiguredProvider>,
+	/// Every DEFINED provider name (available or not). Alias resolution
+	/// checks this, so a literally-defined-but-keyless provider shadows its
+	/// alias target exactly as it does in startup validation.
+	defined: HashSet<String>,
 	/// Role → canonical provider name (aliases already resolved).
 	/// `chat_role` is always set. `vision_role` / `reasoner_role` are `None`
 	/// when the user set `[ai.routing]` without those keys ("graceful
@@ -38,24 +42,70 @@ fn merged_registry(ai_cfg: &crate::instance_config::AiConfig) -> HashMap<String,
 	merged
 }
 
-/// Resolve a user-facing name to a canonical key in `defs`. A key defined
-/// under the literal name wins; otherwise default-registry aliases apply
-/// (e.g. `deepseek_chat` → `deepseek_flash`). `None` = unknown name.
-fn resolve_name<V>(name: &str, defs: &HashMap<String, V>) -> Option<String> {
-	if defs.contains_key(name) {
+/// Resolve a user-facing name to a canonical key. A key defined under the
+/// literal name wins; otherwise default-registry aliases apply (e.g.
+/// `deepseek_chat` → `deepseek_flash`). `None` = unknown name.
+fn resolve_with(name: &str, is_defined: impl Fn(&str) -> bool) -> Option<String> {
+	if is_defined(name) {
 		return Some(name.to_string());
 	}
 	alias_target(name)
-		.filter(|t| defs.contains_key(*t))
+		.filter(|t| is_defined(t))
 		.map(str::to_string)
 }
 
-/// Role names before alias resolution: `[ai.routing]` if present, else the
-/// defaults file's `[routing]` table.
+fn resolve_name<V>(name: &str, defs: &HashMap<String, V>) -> Option<String> {
+	resolve_with(name, |n| defs.contains_key(n))
+}
+
+/// Role names before alias resolution.
+struct RequestedRoles {
+	chat: String,
+	vision: Option<String>,
+	reasoner: Option<String>,
+	fast: Option<String>,
+	/// `fast` was filled in by us, not named by the user — don't warn if
+	/// it's unavailable (fast() quietly falls back to chat).
+	fast_implicit: bool,
+}
+
+/// Default `fast` for an `[ai.routing]` section that omits it: the
+/// thinking-disabled default, but only when chat runs on the same API key
+/// (i.e. both DeepSeek). Otherwise `None` → fast() uses chat, so a user who
+/// routed chat to e.g. a local model never has utility calls silently sent
+/// to a different vendor. Without this, a partial `[ai.routing]` would put
+/// the thinking-on chat model on the 10-token classifier / judge calls,
+/// which always come back empty.
+fn implicit_fast(chat: &str, merged: &HashMap<String, ProviderDef>) -> Option<String> {
+	let default_fast = &defaults().routing.fast;
+	let fast_def = merged.get(default_fast)?;
+	let chat_def = merged.get(&resolve_name(chat, merged)?)?;
+	(chat_def.api_key_env == fast_def.api_key_env).then(|| default_fast.clone())
+}
+
+/// For a default role target `T`, prefer a user-defined provider whose name
+/// is a legacy alias of `T` (e.g. `[ai.providers.deepseek_chat]` overriding
+/// what used to be the default chat provider). Keeps pre-0.19 "override a
+/// default by name" configs routed instead of silently ignored.
+fn default_or_user_override(target: &str, ai_cfg: &crate::instance_config::AiConfig) -> String {
+	let mut overrides: Vec<&String> = ai_cfg
+		.providers
+		.keys()
+		.filter(|k| alias_target(k) == Some(target))
+		.collect();
+	overrides.sort_unstable();
+	match overrides.first() {
+		Some(k) => (*k).clone(),
+		None => target.to_string(),
+	}
+}
+
+/// `[ai.routing]` if present, else the defaults file's `[routing]` table.
 fn requested_roles(
 	ai_cfg: &crate::instance_config::AiConfig,
+	merged: &HashMap<String, ProviderDef>,
 	strict: bool,
-) -> (String, Option<String>, Option<String>, Option<String>) {
+) -> RequestedRoles {
 	match &ai_cfg.routing {
 		Some(r) => {
 			// Layer 2: section present, only user-set keys take effect.
@@ -69,17 +119,30 @@ fn requested_roles(
 				}
 				defaults().routing.chat.clone()
 			});
-			(chat, r.vision.clone(), r.reasoner.clone(), r.fast.clone())
+			let (fast, fast_implicit) = match &r.fast {
+				Some(f) => (Some(f.clone()), false),
+				None => (implicit_fast(&chat, merged), true),
+			};
+			RequestedRoles {
+				chat,
+				vision: r.vision.clone(),
+				reasoner: r.reasoner.clone(),
+				fast,
+				fast_implicit,
+			}
 		}
 		None => {
 			// Layer 1: section absent, full default matrix.
 			let d = &defaults().routing;
-			(
-				d.chat.clone(),
-				Some(d.vision.clone()),
-				Some(d.reasoner.clone()),
-				Some(d.fast.clone()),
-			)
+			RequestedRoles {
+				chat: default_or_user_override(&d.chat, ai_cfg),
+				// Vision was Gemini before 0.19, so a user override of the old
+				// chat name is not a vision override.
+				vision: Some(d.vision.clone()),
+				reasoner: Some(default_or_user_override(&d.reasoner, ai_cfg)),
+				fast: Some(d.fast.clone()),
+				fast_implicit: false,
+			}
 		}
 	}
 }
@@ -104,7 +167,7 @@ impl ProviderRouter {
 		env_lookup: impl Fn(&str) -> Option<String>,
 	) -> Self {
 		let merged = merged_registry(ai_cfg);
-		let (chat, vision, reasoner, fast) = requested_roles(ai_cfg, false);
+		let roles = requested_roles(ai_cfg, &merged, false);
 		let resolve = |n: &str| resolve_name(n, &merged).unwrap_or_else(|| n.to_string());
 
 		let mut providers = HashMap::new();
@@ -116,10 +179,11 @@ impl ProviderRouter {
 
 		Self {
 			providers,
-			chat_role: resolve(&chat),
-			vision_role: vision.as_deref().map(resolve),
-			reasoner_role: reasoner.as_deref().map(resolve),
-			fast_role: fast.as_deref().map(resolve),
+			defined: merged.keys().cloned().collect(),
+			chat_role: resolve(&roles.chat),
+			vision_role: roles.vision.as_deref().map(resolve),
+			reasoner_role: roles.reasoner.as_deref().map(resolve),
+			fast_role: roles.fast.as_deref().map(resolve),
 		}
 	}
 
@@ -144,11 +208,22 @@ impl ProviderRouter {
 			validate_provider_def_headers_and_auth(name, def);
 		}
 
-		let (chat, vision, reasoner, fast) = requested_roles(ai_cfg, true);
-		let chat_role = validate_role_target("chat", &chat, &merged);
-		let vision_role = vision.map(|v| validate_role_target("vision", &v, &merged));
-		let reasoner_role = reasoner.map(|r| validate_role_target("reasoner", &r, &merged));
-		let fast_role = fast.map(|f| validate_role_target("fast", &f, &merged));
+		let roles = requested_roles(ai_cfg, &merged, true);
+		let chat_role = validate_role_target("chat", &roles.chat, &merged);
+		let vision_role = roles
+			.vision
+			.map(|v| validate_role_target("vision", &v, &merged));
+		let reasoner_role = roles
+			.reasoner
+			.map(|r| validate_role_target("reasoner", &r, &merged));
+		let fast_role = roles
+			.fast
+			.map(|f| validate_role_target("fast", &f, &merged));
+		if ai_cfg.routing.is_none() && chat_role != defaults().routing.chat {
+			tracing::info!(
+				"[ai.providers.{chat_role}] overrides a pre-0.19 default name; routing it as chat"
+			);
+		}
 
 		let mut providers = HashMap::new();
 		let mut unavailable: Vec<String> = Vec::new();
@@ -165,7 +240,7 @@ impl ProviderRouter {
 		let referenced: HashSet<String> = std::iter::once(chat_role.clone())
 			.chain(vision_role.clone())
 			.chain(reasoner_role.clone())
-			.chain(fast_role.clone())
+			.chain(fast_role.clone().filter(|_| !roles.fast_implicit))
 			.chain(
 				ai_cfg
 					.fallback
@@ -206,10 +281,17 @@ impl ProviderRouter {
 					p.name()
 				);
 			}
+			if p.is_reasoner && p.supports_tools && ai_cfg.providers.contains_key(p.name()) {
+				tracing::warn!(
+					"Reasoner '{}' has is_reasoner=true and supports_tools=true. Since 0.19 					 is_reasoner no longer strips tools; set supports_tools = false if the 					 model rejects them (that also restores the pre-flight search path)",
+					p.name()
+				);
+			}
 		}
 
 		Self {
 			providers,
+			defined: merged.keys().cloned().collect(),
 			chat_role,
 			vision_role,
 			reasoner_role,
@@ -254,7 +336,7 @@ impl ProviderRouter {
 	/// `gemini`, `deepseek-v4-flash`). A provider defined under the literal
 	/// name always wins over an alias.
 	pub fn named(&self, name: &str) -> Option<&dyn AiProvider> {
-		self.get(&resolve_name(name, &self.providers)?)
+		self.get(&resolve_with(name, |n| self.defined.contains(n))?)
 	}
 
 	/// Resolve an ordered list of provider names into an ordered Vec of
