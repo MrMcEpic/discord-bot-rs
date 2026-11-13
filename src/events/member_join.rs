@@ -62,10 +62,6 @@ pub async fn handle_member_join(ctx: &Context, member: &Member, data: &Data) {
 			return;
 		};
 
-		let key = provider.api_key().to_string();
-		let url = provider.url().to_string();
-		let model = provider.model().to_string();
-
 		let system_prompt = format!(
 			"{}\n\n## Welcome Message Instructions\n{}",
 			data.personality, welcome_prompt
@@ -88,45 +84,32 @@ pub async fn handle_member_join(ctx: &Context, member: &Member, data: &Data) {
 			}),
 		];
 
-		let body = serde_json::json!({
-			"model": model,
-			"messages": messages,
-			"max_tokens": 512,
-		});
-
-		match data
-			.http_client
-			.post(url)
-			.header("Content-Type", "application/json")
-			.header("Authorization", format!("Bearer {}", key))
-			.timeout(std::time::Duration::from_secs(30))
-			.json(&body)
-			.send()
-			.await
+		// Through the shared dispatcher so the provider's extra_body (effort /
+		// thinking), auth, headers and spec all apply. The budget covers the
+		// reasoning tokens a thinking model spends before the visible text.
+		match crate::ai::providers::complete_dispatch(
+			provider,
+			&data.http_client,
+			&messages,
+			false,
+			4096,
+		)
+		.await
 		{
-			Ok(response) if response.status().is_success() => {
-				if let Ok(json) = response.json::<serde_json::Value>().await {
-					if let Some(content) = json["choices"][0]["message"]["content"].as_str() {
-						let content = content.trim();
-						if !content.is_empty() {
-							if let Err(e) = channel_id
-								.send_message(&ctx.http, CreateMessage::new().content(content))
-								.await
-							{
-								tracing::warn!("Failed to send welcome message: {e}");
-							}
+			Ok(resp) => {
+				if let Some(content) = resp.content.as_deref().map(str::trim) {
+					if !content.is_empty() {
+						if let Err(e) = channel_id
+							.send_message(&ctx.http, CreateMessage::new().content(content))
+							.await
+						{
+							tracing::warn!("Failed to send welcome message: {e}");
 						}
 					}
 				}
 			}
-			Ok(response) => {
-				tracing::warn!(
-					"Welcome AI request failed with status {}",
-					response.status()
-				);
-			}
 			Err(e) => {
-				tracing::warn!("Welcome AI request error: {e}");
+				tracing::warn!("Welcome AI request via {} failed: {e}", provider.name());
 			}
 		}
 	}

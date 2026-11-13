@@ -1,0 +1,124 @@
+# Baked-in AI provider defaults.
+#
+# This file is compiled into the binary (`include_str!` in
+# src/ai/providers/registry.rs), so editing it needs a rebuild. To change
+# models WITHOUT a rebuild, override it from an instance's config.toml
+# instead, using the same schema under an `ai.` prefix (`[aliases]` is
+# built-in only; to add a new name, define `[ai.providers.<name>]`):
+#
+#   [ai.providers.deepseek_flash]     # same name = replaces the default def
+#   [ai.routing]                      # pick which provider plays each role
+#   [ai.fallback]                     # what to try when the primary refuses
+#
+# See docs/configuration/ai-providers.md for the full schema.
+
+# --- Roles -----------------------------------------------------------------
+#
+# chat     — default text model. Gets tools (search, music, moderation, ...).
+# vision   — used when the message (or the one it replies to) has images.
+# reasoner — used when the `fast` classifier flags a message as needing deep
+#            reasoning (math, code, analysis). If it supports tools it runs the
+#            normal tool loop; if not, `fast` does web searches for it first.
+# fast     — cheap, no-thinking model for one-word utility calls: the reasoner
+#            classifier and the refusal check. Falls back to `chat` if unset.
+#
+# Today all four roles are DeepSeek V4.1 Flash with a different effort level:
+# Flash is multimodal, tool-capable, and cheap, and its `max` effort level
+# stands in for the older text-only V4-Pro.
+[routing]
+chat = "deepseek_flash"
+vision = "deepseek_flash"
+reasoner = "deepseek_flash_max"
+fast = "deepseek_flash_fast"
+
+# --- Aliases ---------------------------------------------------------------
+#
+# Old / shorthand names that still resolve, so existing instance configs
+# (`[ai.routing]`, `[ai.fallback] on_censored`) keep working across model
+# migrations. A provider defined under the alias name itself always wins.
+[aliases]
+deepseek = "deepseek_flash"
+deepseek_chat = "deepseek_flash"          # pre-0.19 canonical name
+"deepseek-chat" = "deepseek_flash"
+"deepseek-flash" = "deepseek_flash"
+"deepseek-v4" = "deepseek_flash"
+"deepseek-v4-flash" = "deepseek_flash"
+deepseek_reasoner = "deepseek_flash_max"  # pre-0.19 canonical name
+"deepseek-reasoner" = "deepseek_flash_max"
+"deepseek-v4-pro" = "deepseek_pro"
+gemini = "gemini_flash"
+xai = "grok"
+
+# --- Providers -------------------------------------------------------------
+#
+# Fields: url, model, api_key_env, max_tokens (hard cap; callers are clamped),
+# timeout_secs, supports_vision, supports_tools, is_reasoner, spec
+# ("openai" | "anthropic"), headers, auth_header, auth_scheme,
+# extra_body (merged verbatim into every request body — use it for
+# vendor-specific knobs like thinking / reasoning_effort), and
+# refusal_markers (substrings that, in an error body, mean "the provider's
+# content filter blocked this" → triggers the [ai.fallback] cascade).
+#
+# A provider is only live when its api_key_env is set and non-empty.
+
+[providers.deepseek_flash]
+url = "https://api.deepseek.com/chat/completions"
+model = "deepseek-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+max_tokens = 32768
+timeout_secs = 90
+supports_vision = true
+refusal_markers = ["Content Exists Risk"]
+extra_body = { reasoning_effort = "high" }
+
+[providers.deepseek_flash_max]
+url = "https://api.deepseek.com/chat/completions"
+model = "deepseek-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+max_tokens = 65536
+timeout_secs = 300
+supports_vision = true
+is_reasoner = true
+refusal_markers = ["Content Exists Risk"]
+extra_body = { reasoning_effort = "max" }
+
+# Thinking disabled: answers in ~1 token, so a 10-token budget is enough for
+# yes/no classification. (With thinking on, the budget is spent on reasoning
+# and the content comes back empty.)
+[providers.deepseek_flash_fast]
+url = "https://api.deepseek.com/chat/completions"
+model = "deepseek-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+max_tokens = 4096
+timeout_secs = 30
+supports_vision = true
+refusal_markers = ["Content Exists Risk"]
+extra_body = { thinking = { type = "disabled" } }
+
+# Defined but not routed by default (V4.1 Flash at `max` effort covers it).
+# Opt in with `[ai.routing] reasoner = "deepseek_pro"`. Text-only.
+[providers.deepseek_pro]
+url = "https://api.deepseek.com/chat/completions"
+model = "deepseek-v4-pro"
+api_key_env = "DEEPSEEK_API_KEY"
+max_tokens = 65536
+timeout_secs = 300
+is_reasoner = true
+supports_tools = false   # text-only: `fast` runs web searches for it first
+refusal_markers = ["Content Exists Risk"]
+
+[providers.gemini_flash]
+url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+model = "gemini-3.8-flash"
+api_key_env = "GEMINI_API_KEY"
+max_tokens = 32768
+timeout_secs = 60
+supports_vision = true
+
+[providers.grok]
+url = "https://api.x.ai/v1/chat/completions"
+model = "grok-4.7"
+api_key_env = "GROK_API_KEY"
+max_tokens = 32768
+timeout_secs = 90
+supports_vision = true

@@ -70,11 +70,14 @@ welcome = false       # AI-generated welcome message on join
 
 # ----- AI Provider Definitions (CONFIG-DRIVEN, OPTIONAL) -------------------
 #
-# Define your own AI providers. Default registry (deepseek_chat,
-# deepseek_reasoner, gemini_flash, grok) is preserved when this section is
-# absent — see docs/configuration/ai-providers.md for the field reference
-# and defaults/example-providers.toml for copy-paste examples (Mistral,
-# OpenAI, OpenRouter, Ollama localhost, etc.).
+# Define your own AI providers. The baked-in defaults live in
+# defaults/providers.toml (deepseek_flash, deepseek_flash_max,
+# deepseek_flash_fast, deepseek_pro, gemini_flash, grok) and only need
+# DEEPSEEK_API_KEY. A block here with the same name as a default replaces
+# that default wholesale (no field merge). See
+# docs/configuration/ai-providers.md for the field reference and
+# defaults/example-providers.toml for copy-paste examples (Mistral, OpenAI,
+# OpenRouter, Ollama localhost, etc.).
 
 # [ai.providers.my_local]
 # url = "http://localhost:11434/v1/chat/completions"
@@ -84,57 +87,74 @@ welcome = false       # AI-generated welcome message on join
 # # Optional fields with defaults shown:
 # # timeout_secs = 30
 # # supports_vision = false
-# # supports_tools = true
+# # supports_tools = true          # the only switch for tool use
 # # is_reasoner = false
+# # extra_body = {}                # merged into every request body
+# # refusal_markers = []           # error-body substrings meaning "filtered"
 
 
 # ----- AI Routing (OPTIONAL) -----------------------------------------------
 #
 # Override which configured provider plays which role. Section absent =
-# default matrix (chat=deepseek_chat / vision=gemini_flash /
-# reasoner=deepseek_reasoner). Section present = only the keys you write
-# take effect — omitted vision/reasoner means "graceful degrade".
+# default matrix:
+#   chat = "deepseek_flash"           (V4.1 Flash, reasoning_effort = high)
+#   vision = "deepseek_flash"
+#   reasoner = "deepseek_flash_max"   (same model, reasoning_effort = max)
+#   fast = "deepseek_flash_fast"      (thinking off: classifier + refusal judge)
+# Section present = only the keys you write take effect: `chat` is required,
+# omitted vision / reasoner are disabled, and omitted `fast` becomes
+# deepseek_flash_fast if chat is on DeepSeek, otherwise chat itself.
+# Old names (deepseek_chat, deepseek_reasoner, gemini, ...) still resolve.
 #
-# Single-model setup example (just `chat`, vision/reasoner omitted):
+# Single-model setup example (just `chat`):
 
 # [ai.routing]
 # chat = "my_local"
 
-# Disabling V4-Pro flagship reasoner. The default reasoner provider routes
-# to DeepSeek V4-Pro, the 1.6T-parameter flagship — output is ~12x V4-Flash
-# per token. To skip V4-Pro entirely, point the reasoner role at the
-# cheaper V4-Flash provider (canonical name `deepseek_chat`):
+# Opting into DeepSeek V4-Pro (text-only, no tools; the fast provider runs
+# web searches for it first) as the reasoner:
 #
 # [ai.routing]
-# reasoner = "deepseek_chat"
+# chat = "deepseek_flash"
+# vision = "deepseek_flash"
+# reasoner = "deepseek_pro"
+# fast = "deepseek_flash_fast"
 #
-# Or disable the reasoner role altogether — the bot then never invokes any
-# reasoner provider, and every chat goes through the chat role:
+# Or disable the reasoner role altogether (the classifier call is skipped
+# and every chat goes through the chat role):
 #
 # [ai.routing]
-# chat = "deepseek_chat"
-# vision = "gemini_flash"
-# # reasoner intentionally omitted — graceful degrade
+# chat = "deepseek_flash"
+# vision = "deepseek_flash"
+# fast = "deepseek_flash_fast"
+# # reasoner intentionally omitted
 
 
-# ----- AI Fallback (CENSORED cascade) ---------------------------------------
+# ----- AI Fallback (cascade) ------------------------------------------------
 #
-# Optional. When the primary AI provider returns its content-moderation
-# refusal sentinel (DeepSeek's "Content Exists Risk" → CENSORED), retry the
-# same conversation through these providers in order. First non-CENSORED
-# success wins; if every entry also CENSORS, the bot falls back to its
-# existing snarky-reply canned message.
+# Optional. When the provider that was asked returns a filtered answer
+# (DeepSeek's "Content Exists Risk" error, finish_reason = content_filter,
+# or an HTTP 200 in-character dodge caught by the refusal check), retry the
+# same conversation through `on_censored` in order. First success wins. If
+# nothing can answer a hard-filtered request, the bot sends `censored_reply`
+# (an unanswered soft refusal is sent as-is). Image requests only use the
+# vision-capable members.
 #
-# Recognised names: "grok" (xAI, requires GROK_API_KEY), "gemini" (requires
-# GEMINI_API_KEY), "deepseek" (typically pointless as a fallback for
-# DeepSeek censorship, but available for completeness). Unknown names and
-# names whose API key isn't set are skipped at startup with a warning.
+# Names: "grok" (requires GROK_API_KEY), "gemini_flash" (requires
+# GEMINI_API_KEY), any [ai.providers.*] you defined, or an alias such as
+# "gemini" / "xai". Unknown names and names whose API key isn't set are
+# skipped with a startup warning.
 #
-# Default: empty (no cascade — strict-moderation servers keep the snarky
-# refusal behaviour).
+# Default: on_censored empty (no cascade; strict-moderation servers keep the
+# canned reply) and the refusal check then never runs.
 
 # [ai.fallback]
-# on_censored = ["grok", "gemini"]
+# on_censored = ["grok", "gemini_flash"]
+# on_error = false                 # true = also fail over on HTTP / timeout / credit errors
+# refusal_check = true             # catch soft (HTTP 200) refusals via the fast provider
+# refusal_check_max_chars = 1200   # longer replies skip the check
+# # refusal_check_prompt = "..."   # custom judge prompt; must ask for yes/no only
+# # censored_reply = "Can't talk about that one."
 
 
 # ----- Auto-Role Promotion --------------------------------------------------

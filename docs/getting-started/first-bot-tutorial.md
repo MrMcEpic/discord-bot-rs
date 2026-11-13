@@ -183,9 +183,9 @@ Change `bot_name` to whatever you want shown in help text. Leave
 `command_prefix` as `!` for now; the rest of the documentation assumes it.
 Save and close.
 
-If you want AI chat, also paste a `DEEPSEEK_API_KEY` or `GEMINI_API_KEY`
-into `.env`. Both are free to start with — see
-[Prerequisites](prerequisites.md) for signup links. You can add them later.
+If you want AI chat, also paste a `DEEPSEEK_API_KEY` into `.env`. It
+covers every default AI role. See
+[Prerequisites](prerequisites.md) for the signup link. You can add it later.
 
 One last required step: generate an MCP auth token. The bundled stack
 won't start without one, because the embedded MCP server and the
@@ -287,8 +287,8 @@ skipped that in Section 1, re-enable it and restart the bot with
 read and send messages in the channel you are typing in.
 
 **Bot replies to `!m help` but not to @mentions.** AI chat is disabled
-because no API key is set. Add `DEEPSEEK_API_KEY` or `GEMINI_API_KEY` to
-`.env`, then `docker compose restart bot`.
+because no API key is set. Add `DEEPSEEK_API_KEY` to `.env`, then
+`docker compose restart bot`.
 
 **Postgres keeps restarting.** Run `docker compose logs postgres`. Usually
 this is a disk space issue or a corrupted volume from an unclean shutdown.

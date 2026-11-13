@@ -41,9 +41,10 @@ pub struct AiConfig {
 	pub providers: std::collections::HashMap<String, crate::ai::providers::ProviderDef>,
 
 	/// Optional role overrides. When the entire section is absent, the
-	/// router uses defaults (chat = "deepseek_chat", vision = "gemini_flash",
-	/// reasoner = "deepseek_reasoner"). When present, only the keys you set
-	/// take effect — omitted vision/reasoner means "graceful degrade".
+	/// router uses the `[routing]` table from `defaults/providers.toml`
+	/// (DeepSeek V4.1 Flash for every role, at different effort levels).
+	/// When present, only the keys you set take effect — omitted
+	/// vision/reasoner means "graceful degrade", omitted fast means "use chat".
 	pub routing: Option<RoutingConfig>,
 
 	#[serde(default)]
@@ -60,24 +61,87 @@ pub struct RoutingConfig {
 	pub chat: Option<String>,
 	pub vision: Option<String>,
 	pub reasoner: Option<String>,
+	/// Cheap no-thinking model for one-word utility calls (reasoner
+	/// classifier, refusal check, pre-flight search for tool-less
+	/// reasoners). Omitted → `deepseek_flash_fast` when chat uses the same
+	/// API key (i.e. is DeepSeek), otherwise the chat provider.
+	pub fast: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Default, Clone)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct AiFallbackConfig {
-	/// Ordered provider names to retry through when the primary provider hits
-	/// a content-moderation refusal (DeepSeek's `"Content Exists Risk"` →
-	/// `Err("CENSORED")`). Recognised canonical names: `"grok"`, `"gemini_flash"`,
-	/// `"deepseek_chat"`. For backward compat with 0.14.0 instance configs, the
-	/// short aliases `"gemini"`, `"deepseek"`, and `"deepseek-chat"` also resolve
-	/// here at request time. See `docs/configuration/ai-providers.md` for the full
-	/// alias table. First non-CENSORED success wins; if every entry also CENSORS,
-	/// the bot falls back to its existing snarky-reply canned message.
+	/// Ordered provider names to retry through when the primary provider's
+	/// content filter blocks a request (error-body `refusal_markers`,
+	/// `finish_reason = "content_filter"`, or a soft refusal caught by
+	/// `refusal_check`). Accepts canonical names (`grok`, `gemini_flash`,
+	/// `deepseek_flash`, ...) and the aliases in `defaults/providers.toml`
+	/// (`gemini`, `xai`, `deepseek_chat`, ...). First success wins; if every
+	/// entry also fails, the bot sends `censored_reply`.
 	///
-	/// Default empty (opt-in) — strict-moderation servers want the snarky
-	/// reply behaviour preserved. Names that resolve to a missing API key or
-	/// an unknown name are skipped at startup with a warning.
+	/// Default empty (opt-in). Names whose API key is unset or that are
+	/// unknown are skipped with a startup warning.
 	#[serde(default)]
 	pub on_censored: Vec<String>,
+
+	/// Also walk the `on_censored` cascade when the primary provider fails
+	/// for a non-content reason (HTTP error, timeout, out of credits).
+	/// Default `false` — transient errors surface the "something went wrong"
+	/// reply as before.
+	#[serde(default)]
+	pub on_error: bool,
+
+	/// Detect *soft* refusals: the model answers with HTTP 200 but dodges
+	/// the question (DeepSeek does this in-character for politically
+	/// sensitive topics, so there is no fixed wording to match). When on,
+	/// short final replies are checked with one yes/no call to the `fast`
+	/// provider, and a refusal is retried through the `on_censored` cascade.
+	/// Only runs when the cascade has at least one available provider.
+	/// Default `true`.
+	#[serde(default = "default_true")]
+	pub refusal_check: bool,
+
+	/// Replies longer than this many characters skip the refusal check —
+	/// refusals are short, and long answers aren't worth a second call.
+	#[serde(default = "default_refusal_check_max_chars")]
+	pub refusal_check_max_chars: usize,
+
+	/// Override the refusal judge's system prompt (the built-in one lives in
+	/// `src/ai/providers/cascade.rs`). Must instruct the model to answer only
+	/// "yes" (refusal) or "no". Unset = built-in prompt.
+	#[serde(default)]
+	pub refusal_check_prompt: Option<String>,
+
+	/// Reply sent when the content filter blocks a request and no cascade
+	/// member could answer. Defaults to the classic DeepSeek quip; change it
+	/// if your chat model isn't DeepSeek.
+	#[serde(default = "default_censored_reply")]
+	pub censored_reply: String,
+}
+
+/// Matched by `BAD_ASSISTANT_PATTERNS` in chat.rs so it's never replayed
+/// into history; keep the "overlords at DeepSeek won't let me" phrase.
+pub const DEFAULT_CENSORED_REPLY: &str = "My overlords at DeepSeek won't let me talk about that. \
+	Being a Chinese AI has its... limitations. Try asking something they haven't deemed thoughtcrime.";
+
+fn default_censored_reply() -> String {
+	DEFAULT_CENSORED_REPLY.to_string()
+}
+
+impl Default for AiFallbackConfig {
+	fn default() -> Self {
+		Self {
+			on_censored: Vec::new(),
+			on_error: false,
+			refusal_check: true,
+			refusal_check_max_chars: default_refusal_check_max_chars(),
+			refusal_check_prompt: None,
+			censored_reply: default_censored_reply(),
+		}
+	}
+}
+
+fn default_refusal_check_max_chars() -> usize {
+	1200
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -445,6 +509,63 @@ on_censored = ["grok", "gemini_flash"]
 "#,
 		);
 		assert_eq!(ai.fallback.on_censored, vec!["grok", "gemini_flash"]);
+		// 0.19.0 knobs default sensibly when an old config omits them.
+		assert!(!ai.fallback.on_error);
+		assert!(ai.fallback.refusal_check);
+		assert_eq!(ai.fallback.refusal_check_max_chars, 1200);
+	}
+
+	#[test]
+	fn ai_fallback_v0_19_0_knobs_parse() {
+		let ai = parse_ai_config(
+			r#"
+[ai.fallback]
+on_censored = ["gemini_flash"]
+on_error = true
+refusal_check = false
+refusal_check_max_chars = 500
+refusal_check_prompt = "Is this a refusal? yes/no"
+"#,
+		);
+		assert_eq!(
+			ai.fallback.refusal_check_prompt.as_deref(),
+			Some("Is this a refusal? yes/no")
+		);
+		assert!(ai.fallback.on_error);
+		assert!(!ai.fallback.refusal_check);
+		assert_eq!(ai.fallback.refusal_check_max_chars, 500);
+	}
+
+	#[test]
+	fn ai_routing_fast_role_parses() {
+		let ai = parse_ai_config(
+			r#"
+[ai.routing]
+chat = "x"
+fast = "y"
+"#,
+		);
+		let routing = ai.routing.expect("routing section present");
+		assert_eq!(routing.fast.as_deref(), Some("y"));
+	}
+
+	#[test]
+	fn ai_providers_extra_body_and_refusal_markers_parse() {
+		let ai = parse_ai_config(
+			r#"
+[ai.providers.ds]
+url = "u"
+model = "m"
+api_key_env = "K"
+max_tokens = 1000
+refusal_markers = ["Content Exists Risk"]
+extra_body = { reasoning_effort = "max", thinking = { type = "enabled" } }
+"#,
+		);
+		let def = &ai.providers["ds"];
+		assert_eq!(def.refusal_markers, vec!["Content Exists Risk"]);
+		assert_eq!(def.extra_body["reasoning_effort"], "max");
+		assert_eq!(def.extra_body["thinking"]["type"], "enabled");
 	}
 
 	#[test]

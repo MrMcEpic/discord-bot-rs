@@ -15,96 +15,29 @@
 //! to retry through alt providers when the primary returns the `CENSORED`
 //! sentinel.
 
+pub mod anthropic;
+pub mod cascade;
 pub mod configured;
+pub mod openai;
+pub mod registry;
+pub mod router;
 
 use std::time::Duration;
 
-use serde_json::Value;
-
-use crate::ai::dsml::parse_dsml;
-use crate::ai::tools::tool_definitions;
-
+pub use anthropic::complete_anthropic;
+pub use cascade::{
+	complete_dispatch, complete_first_success, complete_with_cascade, is_soft_refusal, Cascade,
+};
 pub use configured::{ConfiguredProvider, ProviderDef, ProviderSpec};
+pub use openai::complete;
+pub use registry::default_provider_registry;
+pub use router::ProviderRouter;
 
-/// The four providers the bot ships with. Used as the base registry when no
-/// `[ai.providers]` section is in instance config; user-defined providers
-/// merge on top (user wins on name collision).
-///
-/// Field values here are pinned by `default_registry_*_matches_v0_18_0`
-/// snapshot tests in this module. Drift breaks the test.
-pub fn default_provider_registry() -> Vec<(&'static str, ProviderDef)> {
-	vec![
-		(
-			"deepseek_chat",
-			ProviderDef {
-				url: "https://api.deepseek.com/chat/completions".to_string(),
-				model: "deepseek-v4-flash".to_string(),
-				api_key_env: "DEEPSEEK_API_KEY".to_string(),
-				max_tokens: 8192,
-				timeout_secs: 30,
-				supports_vision: false,
-				supports_tools: true,
-				is_reasoner: false,
-				spec: ProviderSpec::OpenAi,
-				headers: std::collections::HashMap::new(),
-				auth_header: "Authorization".to_string(),
-				auth_scheme: "Bearer ".to_string(),
-			},
-		),
-		(
-			"deepseek_reasoner",
-			ProviderDef {
-				url: "https://api.deepseek.com/chat/completions".to_string(),
-				model: "deepseek-v4-pro".to_string(),
-				api_key_env: "DEEPSEEK_API_KEY".to_string(),
-				max_tokens: 65536,
-				timeout_secs: 300,
-				supports_vision: false,
-				supports_tools: false,
-				is_reasoner: true,
-				spec: ProviderSpec::OpenAi,
-				headers: std::collections::HashMap::new(),
-				auth_header: "Authorization".to_string(),
-				auth_scheme: "Bearer ".to_string(),
-			},
-		),
-		(
-			"gemini_flash",
-			ProviderDef {
-				url: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
-					.to_string(),
-				model: "gemini-3-flash-preview".to_string(),
-				api_key_env: "GEMINI_API_KEY".to_string(),
-				max_tokens: 16384,
-				timeout_secs: 30,
-				supports_vision: true,
-				supports_tools: true,
-				is_reasoner: false,
-				spec: ProviderSpec::OpenAi,
-				headers: std::collections::HashMap::new(),
-				auth_header: "Authorization".to_string(),
-				auth_scheme: "Bearer ".to_string(),
-			},
-		),
-		(
-			"grok",
-			ProviderDef {
-				url: "https://api.x.ai/v1/chat/completions".to_string(),
-				model: "grok-3".to_string(),
-				api_key_env: "GROK_API_KEY".to_string(),
-				max_tokens: 16384,
-				timeout_secs: 30,
-				supports_vision: false,
-				supports_tools: true,
-				is_reasoner: false,
-				spec: ProviderSpec::OpenAi,
-				headers: std::collections::HashMap::new(),
-				auth_header: "Authorization".to_string(),
-				auth_scheme: "Bearer ".to_string(),
-			},
-		),
-	]
-}
+#[cfg(test)]
+use anthropic::{
+	parse_anthropic_response, parse_data_url, translate_messages_to_anthropic,
+	translate_tool_defs_to_anthropic,
+};
 
 /// A single message returned by the model — text content plus any tool calls.
 #[derive(Debug, Default)]
@@ -144,13 +77,14 @@ pub trait AiProvider: Send + Sync + std::fmt::Debug {
 	/// Whether the model accepts image content parts in messages.
 	fn supports_vision(&self) -> bool;
 
-	/// Whether the model accepts a `tools` array. DeepSeek Reasoner doesn't.
+	/// Whether the model accepts a `tools` array. This alone decides whether
+	/// tools are sent (since 0.19.0 `is_reasoner` no longer strips them).
 	fn supports_tools(&self) -> bool {
 		true
 	}
 
-	/// Whether this is a slow reasoning model that needs a longer timeout
-	/// budget and skips tools regardless of `supports_tools`.
+	/// Whether this is a slow reasoning-class model (routing metadata only —
+	/// used for startup sanity warnings on the `reasoner` role).
 	fn is_reasoner(&self) -> bool {
 		false
 	}
@@ -194,832 +128,21 @@ pub trait AiProvider: Send + Sync + std::fmt::Debug {
 			LazyLock::new(std::collections::HashMap::new);
 		&EMPTY
 	}
-}
 
-/// Send an OpenAI-compatible chat-completions request and return the parsed
-/// response.
-///
-/// Reads provider metadata + capabilities from `provider`, builds the request,
-/// posts it, and parses the response into [`ApiResponse`]. Returns the
-/// dedicated `Err("CENSORED")` sentinel when the body matches DeepSeek's
-/// content-moderation refusal shape (see `is_censored_body` in the chat
-/// module). Non-OpenAI-compatible providers (e.g. future native Anthropic)
-/// would get their own dedicated free function alongside this one.
-pub async fn complete(
-	provider: &dyn AiProvider,
-	client: &reqwest::Client,
-	messages: &[Value],
-	use_tools: bool,
-	max_tokens: u32,
-) -> Result<ApiResponse, String> {
-	let clamped_tokens = max_tokens.min(provider.max_tokens_limit());
-
-	let mut body = serde_json::json!({
-		"model": provider.model(),
-		"messages": messages,
-		"max_tokens": clamped_tokens,
-	});
-
-	// Reasoner models don't accept tools regardless of caller intent.
-	if use_tools && provider.supports_tools() && !provider.is_reasoner() {
-		body["tools"] = Value::Array(tool_definitions());
+	/// Extra fields merged into every request body (e.g. `reasoning_effort`,
+	/// `thinking`). Default empty.
+	fn extra_body(&self) -> &serde_json::Map<String, serde_json::Value> {
+		use std::sync::LazyLock;
+		static EMPTY: LazyLock<serde_json::Map<String, serde_json::Value>> =
+			LazyLock::new(serde_json::Map::new);
+		&EMPTY
 	}
 
-	let mut req = client
-		.post(provider.url())
-		.header("Content-Type", "application/json")
-		.header(
-			provider.auth_header(),
-			format!("{}{}", provider.auth_scheme(), provider.api_key()),
-		)
-		.timeout(provider.timeout())
-		.json(&body);
-
-	for (k, v) in provider.extra_headers() {
-		req = req.header(k.as_str(), v.as_str());
+	/// Error-body substrings that mean "blocked by the content filter".
+	/// Default empty.
+	fn refusal_markers(&self) -> &[String] {
+		&[]
 	}
-
-	let response = req
-		.send()
-		.await
-		.map_err(|e| format!("API request failed: {e}"))?;
-
-	if !response.status().is_success() {
-		let status = response.status();
-		let err_body = response.text().await.unwrap_or_default();
-		tracing::error!("{} API {status}: {err_body}", provider.model());
-		if crate::ai::chat::is_censored_body(&err_body) {
-			return Err("CENSORED".to_string());
-		}
-		return Err(format!("API returned {status}"));
-	}
-
-	let data: Value = response
-		.json()
-		.await
-		.map_err(|e| format!("Failed to parse API response: {e}"))?;
-
-	let choice = &data["choices"][0]["message"];
-
-	// OpenAI-shape native tool calls.
-	let mut tool_calls: Vec<ToolCall> = choice["tool_calls"]
-		.as_array()
-		.unwrap_or(&vec![])
-		.iter()
-		.filter_map(|tc| {
-			Some(ToolCall {
-				id: tc["id"].as_str()?.to_string(),
-				name: tc["function"]["name"].as_str()?.to_string(),
-				arguments: tc["function"]["arguments"].as_str()?.to_string(),
-			})
-		})
-		.collect();
-
-	// DSML-embedded tool calls in the content string.
-	let mut content = choice["content"].as_str().map(|s| s.trim().to_string());
-	if let Some(ref text) = content {
-		let (dsml_calls, cleaned) = parse_dsml(text);
-		for dsml in dsml_calls {
-			let args_json = serde_json::to_string(&dsml.arguments).unwrap_or_default();
-			tool_calls.push(ToolCall {
-				id: format!(
-					"dsml_{}_{}",
-					chrono::Utc::now().timestamp_millis(),
-					rand::random::<u32>()
-				),
-				name: dsml.name,
-				arguments: args_json,
-			});
-		}
-		content = if cleaned.trim().is_empty() {
-			None
-		} else {
-			Some(cleaned)
-		};
-	}
-
-	Ok(ApiResponse {
-		content,
-		tool_calls,
-	})
-}
-
-/// Resolved AI provider stack for a single bot instance.
-///
-/// Built once at startup from the merged registry (defaults + user `[ai.providers]`)
-/// and the resolved role map (defaults + user `[ai.routing]`). Holds only
-/// AVAILABLE providers — definitions whose `api_key_env` resolved to an unset
-/// or empty env var are NOT in the map. Callers look up by role name; missing
-/// names return `None` so the existing chat.rs `Option<&dyn AiProvider>`
-/// handling keeps working (silent disable when the relevant env var is unset).
-#[derive(Debug, Default)]
-pub struct ProviderRouter {
-	/// All available providers, keyed by name.
-	providers: std::collections::HashMap<String, ConfiguredProvider>,
-	/// Role → provider-name lookups. `chat_role` is always set after
-	/// construction (defaulted to `"deepseek_chat"` if the user didn't
-	/// override). `vision_role` / `reasoner_role` are `None` when the user
-	/// explicitly opted out by setting `[ai.routing]` without those keys.
-	chat_role: String,
-	vision_role: Option<String>,
-	reasoner_role: Option<String>,
-}
-
-/// Default routing matrix when `[ai.routing]` is absent from instance config.
-const DEFAULT_CHAT_ROLE: &str = "deepseek_chat";
-const DEFAULT_VISION_ROLE: &str = "gemini_flash";
-const DEFAULT_REASONER_ROLE: &str = "deepseek_reasoner";
-
-impl ProviderRouter {
-	/// Build a router from the default registry only — used by the no-config
-	/// path and by tests that don't need to exercise user definitions.
-	///
-	/// `env_lookup` is injected so tests can pass a fake without touching
-	/// the process env. Production callers pass `|k| std::env::var(k).ok()`.
-	pub fn from_defaults(env_lookup: impl Fn(&str) -> Option<String>) -> Self {
-		let mut providers = std::collections::HashMap::new();
-		for (name, def) in default_provider_registry() {
-			if let Some(p) = ConfiguredProvider::from_def(name, def, &env_lookup) {
-				providers.insert(p.name().to_string(), p);
-			}
-		}
-		Self {
-			providers,
-			chat_role: DEFAULT_CHAT_ROLE.to_string(),
-			vision_role: Some(DEFAULT_VISION_ROLE.to_string()),
-			reasoner_role: Some(DEFAULT_REASONER_ROLE.to_string()),
-		}
-	}
-
-	/// Build the router from instance config + env. Merges the baked default
-	/// registry with user `[ai.providers]` (user wins on name collision),
-	/// resolves each definition into a [`ConfiguredProvider`] via env lookup,
-	/// then resolves routing roles per Layer 2 rules from the spec
-	/// (section absent → default matrix; section present → only user-set
-	/// keys take effect, omitted vision/reasoner mean "graceful degrade").
-	///
-	/// Validation (panic on typos, warn on unavailable, capability sanity) is
-	/// handled by `from_instance_config_strict`; this constructor just builds
-	/// the state without validation and is intended for test use only.
-	#[allow(dead_code)] // test-only; called from mod tests — not reachable from bin
-	pub(crate) fn from_instance_config(
-		ai_cfg: &crate::instance_config::AiConfig,
-		env_lookup: impl Fn(&str) -> Option<String>,
-	) -> Self {
-		// Build the merged registry: defaults first, then user definitions
-		// override on name collision.
-		let mut merged: std::collections::HashMap<String, ProviderDef> =
-			std::collections::HashMap::new();
-		for (name, def) in default_provider_registry() {
-			merged.insert(name.to_string(), def);
-		}
-		for (name, def) in &ai_cfg.providers {
-			merged.insert(name.clone(), def.clone());
-		}
-
-		// Resolve each definition; only the available ones make it into the
-		// providers HashMap.
-		let mut providers = std::collections::HashMap::new();
-		for (name, def) in merged {
-			if let Some(p) = ConfiguredProvider::from_def(name.clone(), def, &env_lookup) {
-				providers.insert(name, p);
-			}
-		}
-
-		// Resolve routing roles per the spec's Layer 1 / Layer 2 rules.
-		let (chat_role, vision_role, reasoner_role) = match &ai_cfg.routing {
-			Some(r) => {
-				// Layer 2: section present, only user-set keys take effect.
-				// chat is required when [ai.routing] is present; validated in
-				// from_instance_config_strict. For now, fall back to the default
-				// if missing so the non-strict path remains well-defined.
-				let chat = r
-					.chat
-					.clone()
-					.unwrap_or_else(|| DEFAULT_CHAT_ROLE.to_string());
-				(chat, r.vision.clone(), r.reasoner.clone())
-			}
-			None => (
-				// Layer 1: section absent, full default matrix.
-				DEFAULT_CHAT_ROLE.to_string(),
-				Some(DEFAULT_VISION_ROLE.to_string()),
-				Some(DEFAULT_REASONER_ROLE.to_string()),
-			),
-		};
-
-		Self {
-			providers,
-			chat_role,
-			vision_role,
-			reasoner_role,
-		}
-	}
-
-	/// Same as [`Self::from_instance_config`] but with startup validation:
-	/// panics on unknown provider names referenced by `[ai.routing]`, on
-	/// `[ai.routing]` without `chat`, and on whitespace-bearing provider names.
-	/// Warns (non-fatal) on unavailable providers referenced by routing or
-	/// fallback, and on capability mismatches (vision role pointing at
-	/// `supports_vision = false`, etc.).
-	///
-	/// This is the production constructor — `from_instance_config` exists
-	/// only so tests can build a router without exercising validation.
-	pub fn from_instance_config_strict(
-		ai_cfg: &crate::instance_config::AiConfig,
-		env_lookup: impl Fn(&str) -> Option<String>,
-	) -> Self {
-		// Validate provider names before building anything.
-		for name in ai_cfg.providers.keys() {
-			validate_provider_name(name);
-		}
-		// Build the merged definition map (defaults + user, user wins).
-		let mut merged: std::collections::HashMap<String, ProviderDef> =
-			std::collections::HashMap::new();
-		for (name, def) in default_provider_registry() {
-			merged.insert(name.to_string(), def);
-		}
-		for (name, def) in &ai_cfg.providers {
-			merged.insert(name.clone(), def.clone());
-		}
-
-		// Validate headers + auth fields on every (user + default) provider.
-		for (name, def) in &merged {
-			validate_provider_def_headers_and_auth(name, def);
-		}
-
-		// Resolve routing roles + validate they reference known names.
-		let (chat_role, vision_role, reasoner_role) = match &ai_cfg.routing {
-			Some(r) => {
-				let chat = r.chat.clone().unwrap_or_else(|| {
-					panic!(
-						"[ai.routing] requires 'chat' to be set. Either set it (e.g. \
-						 chat = \"deepseek_chat\") or remove the [ai.routing] section \
-						 entirely to use defaults."
-					)
-				});
-				validate_role_target("chat", &chat, &merged);
-				if let Some(v) = &r.vision {
-					validate_role_target("vision", v, &merged);
-				}
-				if let Some(rs) = &r.reasoner {
-					validate_role_target("reasoner", rs, &merged);
-				}
-				(chat, r.vision.clone(), r.reasoner.clone())
-			}
-			None => (
-				DEFAULT_CHAT_ROLE.to_string(),
-				Some(DEFAULT_VISION_ROLE.to_string()),
-				Some(DEFAULT_REASONER_ROLE.to_string()),
-			),
-		};
-
-		// Resolve definitions into available providers; warn for any
-		// referenced-but-unavailable name.
-		let mut providers = std::collections::HashMap::new();
-		let mut unavailable: Vec<String> = Vec::new();
-		for (name, def) in merged.iter() {
-			match ConfiguredProvider::from_def(name.clone(), def.clone(), &env_lookup) {
-				Some(p) => {
-					providers.insert(name.clone(), p);
-				}
-				None => unavailable.push(name.clone()),
-			}
-		}
-
-		// Warn on unavailable providers REFERENCED by routing or fallback.
-		let referenced: std::collections::HashSet<String> = std::iter::once(chat_role.clone())
-			.chain(vision_role.clone())
-			.chain(reasoner_role.clone())
-			.chain(ai_cfg.fallback.on_censored.iter().cloned())
-			.collect();
-		for name in &unavailable {
-			if referenced.contains(name) {
-				let env_var = merged
-					.get(name)
-					.map(|d| d.api_key_env.as_str())
-					.unwrap_or("?");
-				tracing::warn!(
-					"AI provider '{name}' is referenced by routing or fallback but its \
-					 API key env var '{env_var}' is unset; provider unavailable"
-				);
-			}
-		}
-
-		// Capability sanity warnings (non-fatal).
-		if let Some(v) = &vision_role {
-			if let Some(p) = providers.get(v) {
-				if !p.supports_vision {
-					tracing::warn!(
-						"[ai.routing] vision = '{v}' but provider has supports_vision=false; \
-						 image messages may not be handled correctly"
-					);
-				}
-			}
-		}
-		if let Some(rs) = &reasoner_role {
-			if let Some(p) = providers.get(rs) {
-				if !p.is_reasoner {
-					tracing::warn!(
-						"[ai.routing] reasoner = '{rs}' but provider has is_reasoner=false; \
-						 the slow-thinking model routing may not behave as intended"
-					);
-				}
-			}
-		}
-
-		Self {
-			providers,
-			chat_role,
-			vision_role,
-			reasoner_role,
-		}
-	}
-
-	/// Pick a vision-capable provider (None if no vision role configured OR
-	/// configured provider is unavailable).
-	pub fn vision(&self) -> Option<&dyn AiProvider> {
-		self.providers
-			.get(self.vision_role.as_deref()?)
-			.map(|p| p as &dyn AiProvider)
-	}
-
-	/// Pick the default text-chat provider (None if unavailable).
-	pub fn chat(&self) -> Option<&dyn AiProvider> {
-		self.providers
-			.get(&self.chat_role)
-			.map(|p| p as &dyn AiProvider)
-	}
-
-	/// Pick the reasoning-class provider (None if no reasoner role configured
-	/// OR configured provider is unavailable).
-	pub fn reasoner(&self) -> Option<&dyn AiProvider> {
-		self.providers
-			.get(self.reasoner_role.as_deref()?)
-			.map(|p| p as &dyn AiProvider)
-	}
-
-	/// Look up a provider by name. Returns `None` for unknown names AND
-	/// unavailable providers (used by `cascade_for` and external direct access).
-	///
-	/// Accepts the canonical default-registry names (`deepseek_chat`,
-	/// `deepseek_reasoner`, `gemini_flash`, `grok`) plus these short aliases:
-	///
-	/// - 0.14.0: `"gemini"`, `"deepseek"`, `"deepseek-chat"`
-	/// - 0.18.0: `"deepseek-v4"`, `"deepseek-v4-flash"`, `"deepseek-v4-pro"`,
-	///   `"deepseek-reasoner"`
-	///
-	/// User-defined provider names always go through the canonical lookup
-	/// path; aliases only apply to the default registry.
-	pub fn named(&self, name: &str) -> Option<&dyn AiProvider> {
-		// Direct lookup wins (covers canonical default names + all user-defined).
-		if let Some(p) = self.providers.get(name) {
-			return Some(p as &dyn AiProvider);
-		}
-		// Then 0.14.0 aliases for default-registry providers.
-		let aliased = match name {
-			"gemini" => "gemini_flash",
-			"deepseek" | "deepseek-chat" | "deepseek-v4" | "deepseek-v4-flash" => "deepseek_chat",
-			"deepseek-reasoner" | "deepseek-v4-pro" => "deepseek_reasoner",
-			_ => return None,
-		};
-		self.providers.get(aliased).map(|p| p as &dyn AiProvider)
-	}
-
-	/// Resolve an ordered list of provider names into an ordered Vec of
-	/// `&dyn AiProvider`, skipping unknown / unavailable names with a
-	/// `tracing::warn!`.
-	pub fn cascade_for(&self, names: &[String]) -> Vec<&dyn AiProvider> {
-		let mut out = Vec::with_capacity(names.len());
-		for n in names {
-			match self.named(n) {
-				Some(p) => out.push(p),
-				None => tracing::warn!(
-					"ai.fallback.on_censored: provider '{n}' is not configured (missing API key or unknown name); skipping"
-				),
-			}
-		}
-		out
-	}
-}
-
-/// Parse a `data:MEDIA_TYPE;base64,DATA` URL into `(media_type, data)`.
-///
-/// Returns `Err` on any input that isn't a base64 data URL with a media
-/// type. Used by `complete_anthropic` to translate OpenAI-shape image
-/// content parts (which are always base64 data URLs) into Anthropic's
-/// `image.source` block shape.
-fn parse_data_url(s: &str) -> Result<(String, String), String> {
-	let rest = s
-		.strip_prefix("data:")
-		.ok_or_else(|| format!("not a data URL: {s}"))?;
-	let (media_type, data) = rest
-		.split_once(";base64,")
-		.ok_or_else(|| format!("data URL missing ';base64,' separator: {s}"))?;
-	if media_type.is_empty() {
-		return Err(format!("data URL has empty media type: {s}"));
-	}
-	Ok((media_type.to_string(), data.to_string()))
-}
-
-/// Translate OpenAI-shape `messages` into `(system_prompt, anthropic_messages)`.
-///
-/// Extracts the first `role: "system"` message's content as the system prompt
-/// and omits it from the returned `messages` array. Transforms tool-result
-/// messages (`role: "tool"`) into Anthropic's user-content `tool_result`
-/// blocks. Translates `image_url` content parts (OpenAI shape) into
-/// Anthropic's `image.source.base64` shape. User/assistant text content
-/// passes through unchanged.
-///
-/// Returns `Err` on malformed input (e.g. non-data-URL image_url).
-fn translate_messages_to_anthropic(
-	messages: &[serde_json::Value],
-) -> Result<(Option<String>, Vec<serde_json::Value>), String> {
-	let mut system: Option<String> = None;
-	let mut out: Vec<serde_json::Value> = Vec::with_capacity(messages.len());
-
-	for msg in messages {
-		let role = msg["role"].as_str().unwrap_or("");
-		match role {
-			"system" => {
-				if system.is_none() {
-					system = msg["content"].as_str().map(|s| s.to_string());
-				}
-				// Subsequent system messages are dropped — Anthropic only
-				// accepts a single top-level system prompt. Callers that need
-				// multiple would need to concatenate themselves.
-			}
-			"tool" => {
-				let tool_call_id = msg["tool_call_id"].as_str().unwrap_or("");
-				let content = msg["content"].as_str().unwrap_or("");
-				out.push(serde_json::json!({
-					"role": "user",
-					"content": [{
-						"type": "tool_result",
-						"tool_use_id": tool_call_id,
-						"content": content,
-					}],
-				}));
-			}
-			"user" | "assistant" => {
-				let translated = translate_message_content(msg)?;
-				out.push(translated);
-			}
-			other => {
-				return Err(format!(
-					"translate_messages_to_anthropic: unexpected role '{other}'"
-				));
-			}
-		}
-	}
-
-	Ok((system, out))
-}
-
-/// Translate a single `user`/`assistant` message. The `content` field may be
-/// a string (pass-through) or an array of content parts (translate each).
-fn translate_message_content(msg: &serde_json::Value) -> Result<serde_json::Value, String> {
-	let role = msg["role"].as_str().unwrap_or("");
-	let content = &msg["content"];
-
-	if content.is_string() {
-		return Ok(serde_json::json!({
-			"role": role,
-			"content": content.clone(),
-		}));
-	}
-
-	let parts = content
-		.as_array()
-		.ok_or_else(|| format!("message content is neither string nor array: {content:?}"))?;
-
-	let mut translated_parts: Vec<serde_json::Value> = Vec::with_capacity(parts.len());
-	for part in parts {
-		let part_type = part["type"].as_str().unwrap_or("");
-		match part_type {
-			"text" => {
-				translated_parts.push(part.clone());
-			}
-			"image_url" => {
-				let url = part["image_url"]["url"].as_str().unwrap_or("");
-				let (media_type, data) = parse_data_url(url)?;
-				translated_parts.push(serde_json::json!({
-					"type": "image",
-					"source": {
-						"type": "base64",
-						"media_type": media_type,
-						"data": data,
-					},
-				}));
-			}
-			other => {
-				return Err(format!(
-					"translate_message_content: unexpected content part type '{other}'"
-				));
-			}
-		}
-	}
-
-	Ok(serde_json::json!({
-		"role": role,
-		"content": translated_parts,
-	}))
-}
-
-/// Translate OpenAI-shape tool definitions to Anthropic's flatter shape.
-///
-/// OpenAI: `{"type": "function", "function": {"name", "description", "parameters"}}`
-/// Anthropic: `{"name", "description", "input_schema"}`
-///
-/// Anything without a `function` sub-object is left as-is (defensive — we
-/// expect the input always to be OpenAI-shape today).
-fn translate_tool_defs_to_anthropic(openai_defs: &[serde_json::Value]) -> Vec<serde_json::Value> {
-	openai_defs
-		.iter()
-		.map(|def| {
-			let function = &def["function"];
-			if function.is_null() {
-				return def.clone();
-			}
-			serde_json::json!({
-				"name": function["name"].clone(),
-				"description": function["description"].clone(),
-				"input_schema": function["parameters"].clone(),
-			})
-		})
-		.collect()
-}
-
-/// Parse an Anthropic `/v1/messages` response JSON body into the uniform
-/// `ApiResponse` shape used by `chat.rs`.
-///
-/// Concatenates all `content[i].text` blocks into the returned `content`
-/// string. Flattens `tool_use` content blocks into `ToolCall { id, name,
-/// arguments }` where `arguments` is the stringified JSON of the structured
-/// `input` object (matching the shape `chat.rs` expects from the OpenAI
-/// path). DSML-embedded tool calls in the text content are also extracted
-/// via `parse_dsml`, and the DSML text is stripped from the returned
-/// content.
-fn parse_anthropic_response(body: &serde_json::Value) -> Result<ApiResponse, String> {
-	let content_blocks = body["content"]
-		.as_array()
-		.ok_or_else(|| format!("Anthropic response missing 'content' array: {body}"))?;
-
-	let mut text = String::new();
-	let mut tool_calls: Vec<ToolCall> = Vec::new();
-
-	for block in content_blocks {
-		let block_type = block["type"].as_str().unwrap_or("");
-		match block_type {
-			"text" => {
-				if let Some(t) = block["text"].as_str() {
-					text.push_str(t);
-				}
-			}
-			"tool_use" => {
-				let id = block["id"].as_str().unwrap_or("").to_string();
-				let name = block["name"].as_str().unwrap_or("").to_string();
-				let arguments = serde_json::to_string(&block["input"]).unwrap_or_default();
-				tool_calls.push(ToolCall {
-					id,
-					name,
-					arguments,
-				});
-			}
-			_ => {
-				// Unknown block types (future Anthropic additions) are ignored.
-			}
-		}
-	}
-
-	// Pull DSML-embedded tool calls out of the text content, same as the
-	// OpenAI path in `complete`.
-	let (dsml_calls, cleaned) = parse_dsml(&text);
-	for dsml in dsml_calls {
-		let args_json = serde_json::to_string(&dsml.arguments).unwrap_or_default();
-		tool_calls.push(ToolCall {
-			id: format!(
-				"dsml_{}_{}",
-				chrono::Utc::now().timestamp_millis(),
-				rand::random::<u32>()
-			),
-			name: dsml.name,
-			arguments: args_json,
-		});
-	}
-
-	let final_content = if cleaned.trim().is_empty() {
-		None
-	} else {
-		Some(cleaned)
-	};
-
-	Ok(ApiResponse {
-		content: final_content,
-		tool_calls,
-	})
-}
-
-/// Send a chat-completions-equivalent request to an Anthropic-spec provider
-/// (`POST /v1/messages`) and return the uniform `ApiResponse` shape.
-///
-/// Translates OpenAI-shape `messages` + tool definitions to Anthropic's
-/// wire shape on input; translates `content` blocks + `tool_use` blocks
-/// back into the flat `ApiResponse { content, tool_calls }` shape on
-/// output. See `translate_messages_to_anthropic`,
-/// `translate_tool_defs_to_anthropic`, and `parse_anthropic_response` for
-/// per-dimension translation details.
-///
-/// Uses `provider.auth_header()` / `provider.auth_scheme()` / `provider.extra_headers()`
-/// to configure auth + extra headers — Anthropic requires
-/// `x-api-key: <key>` with no scheme + `anthropic-version: 2023-06-01`.
-pub async fn complete_anthropic(
-	provider: &dyn AiProvider,
-	client: &reqwest::Client,
-	messages: &[serde_json::Value],
-	use_tools: bool,
-	max_tokens: u32,
-) -> Result<ApiResponse, String> {
-	let clamped_tokens = max_tokens.min(provider.max_tokens_limit());
-
-	let (system, translated_msgs) = translate_messages_to_anthropic(messages)?;
-
-	let mut body = serde_json::json!({
-		"model": provider.model(),
-		"messages": translated_msgs,
-		"max_tokens": clamped_tokens,
-	});
-
-	if let Some(sys) = system {
-		body["system"] = serde_json::Value::String(sys);
-	}
-
-	if use_tools && provider.supports_tools() && !provider.is_reasoner() {
-		let openai_tool_defs = tool_definitions();
-		body["tools"] =
-			serde_json::Value::Array(translate_tool_defs_to_anthropic(&openai_tool_defs));
-	}
-
-	// Build the request with provider-configured auth + headers.
-	let auth_value = format!("{}{}", provider.auth_scheme(), provider.api_key());
-	let mut req = client
-		.post(provider.url())
-		.header("Content-Type", "application/json")
-		.header(provider.auth_header(), auth_value)
-		.timeout(provider.timeout())
-		.json(&body);
-
-	for (k, v) in provider.extra_headers() {
-		req = req.header(k.as_str(), v.as_str());
-	}
-
-	let response = req
-		.send()
-		.await
-		.map_err(|e| format!("API request failed: {e}"))?;
-
-	if !response.status().is_success() {
-		let status = response.status();
-		let err_body = response.text().await.unwrap_or_default();
-		tracing::error!("{} API {status}: {err_body}", provider.model());
-		return Err(format!("API returned {status}"));
-	}
-
-	let data: serde_json::Value = response
-		.json()
-		.await
-		.map_err(|e| format!("Failed to parse API response: {e}"))?;
-
-	parse_anthropic_response(&data)
-}
-
-/// Dispatch to the right spec-specific completion function based on
-/// `provider.spec()`. This is the function every call site in `chat.rs`
-/// should use (directly or via `complete_with_cascade`), so that swapping
-/// an OpenAI-spec provider for an Anthropic-spec one at routing time is a
-/// single-line config change with no chat.rs code change required.
-pub async fn complete_dispatch(
-	provider: &dyn AiProvider,
-	client: &reqwest::Client,
-	messages: &[serde_json::Value],
-	use_tools: bool,
-	max_tokens: u32,
-) -> Result<ApiResponse, String> {
-	match provider.spec() {
-		ProviderSpec::OpenAi => complete(provider, client, messages, use_tools, max_tokens).await,
-		ProviderSpec::Anthropic => {
-			complete_anthropic(provider, client, messages, use_tools, max_tokens).await
-		}
-	}
-}
-
-fn validate_provider_def_headers_and_auth(name: &str, def: &ProviderDef) {
-	if def.auth_header.trim().is_empty() {
-		panic!(
-			"Provider '{name}' has auth_header = \"{}\" (empty or whitespace). \
-			 auth_header must be a non-empty header name like \"Authorization\" or \"x-api-key\".",
-			def.auth_header
-		);
-	}
-	for (key, value) in &def.headers {
-		if key.trim().is_empty() {
-			panic!(
-				"Provider '{name}' has an empty header key in its headers map. \
-				 HTTP header names must be non-empty."
-			);
-		}
-		if value.chars().any(|c| c.is_ascii_control() || !c.is_ascii()) {
-			panic!(
-				"Provider '{name}' header '{key}' has a value containing non-printable \
-				 or non-ASCII characters. HTTP header values must be printable ASCII."
-			);
-		}
-	}
-}
-
-fn validate_provider_name(name: &str) {
-	let trimmed = name.trim();
-	if trimmed.is_empty() {
-		panic!("Provider name must not be empty (after trim)");
-	}
-	if name.chars().any(|c| c.is_whitespace()) {
-		panic!(
-			"Provider name '{name}' contains whitespace. Use underscores or \
-			 hyphens for separators (e.g. 'my_local' or 'my-local')"
-		);
-	}
-}
-
-fn validate_role_target(
-	role: &str,
-	target_name: &str,
-	merged: &std::collections::HashMap<String, ProviderDef>,
-) {
-	if !merged.contains_key(target_name) {
-		let mut known: Vec<&str> = merged.keys().map(|s| s.as_str()).collect();
-		known.sort_unstable();
-		panic!(
-			"[ai.routing] {role} = '{target_name}' is an unknown provider name. \
-			 Configured names: {known:?}. Add a [ai.providers.{target_name}] section \
-			 or fix the typo."
-		);
-	}
-}
-
-/// Try `primary.complete(...)`. If it returns the `CENSORED` sentinel, replay
-/// the same `messages` through each provider in `cascade` in order. Returns
-/// the first non-CENSORED success along with the provider name that produced
-/// it (useful for log lines and optional debug footers).
-///
-/// Non-CENSORED errors from the primary short-circuit (per the issue brief:
-/// "Don't cascade on non-content errors — they're transient and a different
-/// provider may have the same problem"). Errors from cascade members are
-/// treated as best-effort — we try the next one rather than bail, since the
-/// fallback path is meant to maximise the chance of *some* answer.
-///
-/// Returns `Err("CENSORED")` if every provider in `[primary, ...cascade]` was
-/// CENSORED — callers fall back to the existing snarky-message behaviour in
-/// that case.
-pub async fn complete_with_cascade(
-	primary: &dyn AiProvider,
-	cascade: &[&dyn AiProvider],
-	client: &reqwest::Client,
-	messages: &[Value],
-	use_tools: bool,
-	max_tokens: u32,
-) -> Result<(ApiResponse, String), String> {
-	match complete_dispatch(primary, client, messages, use_tools, max_tokens).await {
-		Ok(r) => return Ok((r, primary.name().to_string())),
-		Err(e) if e != "CENSORED" => return Err(e),
-		Err(_) => {
-			if cascade.is_empty() {
-				return Err("CENSORED".to_string());
-			}
-			tracing::info!(
-				"Primary provider {} returned CENSORED; cascading through {} alt(s)",
-				primary.name(),
-				cascade.len()
-			);
-		}
-	}
-
-	for alt in cascade {
-		match complete_dispatch(*alt, client, messages, use_tools, max_tokens).await {
-			Ok(r) => {
-				tracing::info!("Cascade succeeded via {}", alt.name());
-				return Ok((r, alt.name().to_string()));
-			}
-			Err(e) if e == "CENSORED" => {
-				tracing::info!("Cascade member {} also CENSORED; trying next", alt.name());
-				continue;
-			}
-			Err(e) => {
-				tracing::warn!("Cascade member {} errored ({e}); trying next", alt.name());
-				continue;
-			}
-		}
-	}
-
-	Err("CENSORED".to_string())
 }
 
 #[cfg(test)]
@@ -1048,108 +171,155 @@ mod tests {
 		|_| None
 	}
 
-	// --- Default registry snapshot tests --------------------------------
+	// --- Default registry (defaults/providers.toml) ----------------------
 
-	fn def_by_name<'a>(registry: &'a [(&'static str, ProviderDef)], name: &str) -> &'a ProviderDef {
+	fn def_by_name<'a>(registry: &'a [(String, ProviderDef)], name: &str) -> &'a ProviderDef {
 		registry
 			.iter()
-			.find(|(n, _)| *n == name)
+			.find(|(n, _)| n == name)
 			.map(|(_, def)| def)
 			.unwrap_or_else(|| panic!("default registry missing provider: {name}"))
 	}
 
+	const ALL_KEYS: &[(&str, &str)] = &[
+		("DEEPSEEK_API_KEY", "d"),
+		("GEMINI_API_KEY", "g"),
+		("GROK_API_KEY", "x"),
+	];
+
 	#[test]
-	fn default_registry_has_exactly_four_providers() {
-		let r = default_provider_registry();
-		let names: Vec<&str> = r.iter().map(|(n, _)| *n).collect();
-		assert_eq!(names.len(), 4, "default registry size changed");
-		assert!(names.contains(&"deepseek_chat"));
-		assert!(names.contains(&"deepseek_reasoner"));
-		assert!(names.contains(&"gemini_flash"));
-		assert!(names.contains(&"grok"));
+	fn defaults_toml_parses_and_is_self_consistent() {
+		// Forces the LazyLock: routing targets and alias targets must all be
+		// defined providers, and no alias may shadow a provider. A bad edit
+		// to defaults/providers.toml fails here instead of at bot startup.
+		let d = registry::defaults();
+		for target in [
+			&d.routing.chat,
+			&d.routing.vision,
+			&d.routing.reasoner,
+			&d.routing.fast,
+		] {
+			assert!(d.providers.contains_key(target), "{target} undefined");
+		}
+		for (alias, target) in &d.aliases {
+			assert!(d.providers.contains_key(target), "{alias} -> {target}");
+		}
 	}
 
 	#[test]
-	fn default_registry_deepseek_chat_matches_v0_18_0() {
+	fn default_registry_provider_set_matches_v0_19_0() {
 		let r = default_provider_registry();
-		let def = def_by_name(&r, "deepseek_chat");
+		let mut names: Vec<&str> = r.iter().map(|(n, _)| n.as_str()).collect();
+		names.sort_unstable();
+		assert_eq!(
+			names,
+			vec![
+				"deepseek_flash",
+				"deepseek_flash_fast",
+				"deepseek_flash_max",
+				"deepseek_pro",
+				"gemini_flash",
+				"grok",
+			],
+			"default registry provider set changed"
+		);
+	}
+
+	#[test]
+	fn default_routing_matrix_matches_v0_19_0() {
+		let d = &registry::defaults().routing;
+		assert_eq!(d.chat, "deepseek_flash");
+		assert_eq!(d.vision, "deepseek_flash");
+		assert_eq!(d.reasoner, "deepseek_flash_max");
+		assert_eq!(d.fast, "deepseek_flash_fast");
+	}
+
+	#[test]
+	fn default_registry_deepseek_flash_matches_v0_19_0() {
+		let r = default_provider_registry();
+		let def = def_by_name(&r, "deepseek_flash");
 		assert_eq!(def.url, "https://api.deepseek.com/chat/completions");
-		assert_eq!(def.model, "deepseek-v4-flash");
+		assert_eq!(def.model, "deepseek-flash");
 		assert_eq!(def.api_key_env, "DEEPSEEK_API_KEY");
-		assert_eq!(def.max_tokens, 8192);
-		assert_eq!(def.timeout_secs, 30);
-		assert!(!def.supports_vision);
+		assert_eq!(def.max_tokens, 32768);
+		assert_eq!(def.timeout_secs, 90);
+		assert!(def.supports_vision, "V4.1 Flash accepts images");
 		assert!(def.supports_tools);
 		assert!(!def.is_reasoner);
 		assert_eq!(def.spec, ProviderSpec::OpenAi);
-		// New in phase 2: default registry uses OpenAI-compat defaults for
-		// the auth + headers fields (trait methods respect these).
+		assert_eq!(def.extra_body["reasoning_effort"], "high");
+		assert_eq!(def.refusal_markers, vec!["Content Exists Risk"]);
 		assert_eq!(def.auth_header, "Authorization");
 		assert_eq!(def.auth_scheme, "Bearer ");
 		assert!(def.headers.is_empty());
 	}
 
 	#[test]
-	fn default_registry_deepseek_reasoner_matches_v0_18_0() {
+	fn default_registry_deepseek_flash_max_matches_v0_19_0() {
 		let r = default_provider_registry();
-		let def = def_by_name(&r, "deepseek_reasoner");
-		assert_eq!(def.url, "https://api.deepseek.com/chat/completions");
-		assert_eq!(def.model, "deepseek-v4-pro");
-		assert_eq!(def.api_key_env, "DEEPSEEK_API_KEY");
+		let def = def_by_name(&r, "deepseek_flash_max");
+		assert_eq!(def.model, "deepseek-flash");
 		assert_eq!(def.max_tokens, 65536);
 		assert_eq!(def.timeout_secs, 300);
-		assert!(!def.supports_vision);
-		assert!(!def.supports_tools, "reasoner does not accept tools");
+		assert!(def.supports_vision);
+		assert!(def.supports_tools, "max-effort Flash keeps tools");
 		assert!(def.is_reasoner);
-		assert_eq!(def.spec, ProviderSpec::OpenAi);
-		// New in phase 2: default registry uses OpenAI-compat defaults for
-		// the auth + headers fields (trait methods respect these).
-		assert_eq!(def.auth_header, "Authorization");
-		assert_eq!(def.auth_scheme, "Bearer ");
-		assert!(def.headers.is_empty());
+		assert_eq!(def.extra_body["reasoning_effort"], "max");
 	}
 
 	#[test]
-	fn default_registry_gemini_flash_matches_v0_14_0() {
+	fn default_registry_deepseek_flash_fast_disables_thinking() {
+		// The classifier asks for max_tokens = 10. With thinking on, the
+		// whole budget goes to reasoning and the content comes back empty —
+		// the pre-0.19 bug that silently disabled reasoner routing.
+		let r = default_provider_registry();
+		let def = def_by_name(&r, "deepseek_flash_fast");
+		assert_eq!(def.model, "deepseek-flash");
+		assert_eq!(def.extra_body["thinking"]["type"], "disabled");
+		assert!(
+			def.supports_tools,
+			"pre-flight search for tool-less reasoners"
+		);
+		assert!(!def.is_reasoner);
+	}
+
+	#[test]
+	fn default_registry_deepseek_pro_is_text_only_reasoner() {
+		let r = default_provider_registry();
+		let def = def_by_name(&r, "deepseek_pro");
+		assert_eq!(def.model, "deepseek-v4-pro");
+		assert!(!def.supports_vision);
+		assert!(!def.supports_tools, "text-only: pre-flight search path");
+		assert!(def.is_reasoner);
+		assert!(def.extra_body.is_empty());
+	}
+
+	#[test]
+	fn default_registry_gemini_flash_matches_v0_19_0() {
 		let r = default_provider_registry();
 		let def = def_by_name(&r, "gemini_flash");
 		assert_eq!(
 			def.url,
 			"https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
 		);
-		assert_eq!(def.model, "gemini-3-flash-preview");
+		assert_eq!(def.model, "gemini-3.8-flash");
 		assert_eq!(def.api_key_env, "GEMINI_API_KEY");
-		assert_eq!(def.max_tokens, 16384);
-		assert_eq!(def.timeout_secs, 30);
-		assert!(def.supports_vision, "gemini is the vision provider");
+		assert_eq!(def.max_tokens, 32768);
+		assert!(def.supports_vision);
 		assert!(def.supports_tools);
 		assert!(!def.is_reasoner);
-		assert_eq!(def.spec, ProviderSpec::OpenAi);
-		// New in phase 2: default registry uses OpenAI-compat defaults for
-		// the auth + headers fields (trait methods respect these).
-		assert_eq!(def.auth_header, "Authorization");
-		assert_eq!(def.auth_scheme, "Bearer ");
-		assert!(def.headers.is_empty());
 	}
 
 	#[test]
-	fn default_registry_grok_matches_v0_14_0() {
+	fn default_registry_grok_matches_v0_19_0() {
 		let r = default_provider_registry();
 		let def = def_by_name(&r, "grok");
 		assert_eq!(def.url, "https://api.x.ai/v1/chat/completions");
-		assert_eq!(def.model, "grok-3");
+		assert_eq!(def.model, "grok-4.7");
 		assert_eq!(def.api_key_env, "GROK_API_KEY");
-		assert_eq!(def.max_tokens, 16384);
-		assert_eq!(def.timeout_secs, 30);
-		assert!(!def.supports_vision);
+		assert_eq!(def.max_tokens, 32768);
+		assert!(def.supports_vision, "grok-4.7 accepts images");
 		assert!(def.supports_tools);
-		assert!(!def.is_reasoner);
-		assert_eq!(def.spec, ProviderSpec::OpenAi);
-		// New in phase 2: default registry uses OpenAI-compat defaults for
-		// the auth + headers fields (trait methods respect these).
-		assert_eq!(def.auth_header, "Authorization");
-		assert_eq!(def.auth_scheme, "Bearer ");
-		assert!(def.headers.is_empty());
 	}
 
 	// --- ProviderRouter::from_defaults -----------------------------------
@@ -1160,114 +330,105 @@ mod tests {
 		assert!(r.chat().is_none());
 		assert!(r.reasoner().is_none());
 		assert!(r.vision().is_none());
+		assert!(r.fast().is_none());
 	}
 
 	#[test]
-	fn router_with_deepseek_only_has_no_vision() {
+	fn router_with_deepseek_only_has_every_role() {
+		// Since 0.19.0 every role is DeepSeek V4.1 Flash, so one key lights
+		// up chat, vision, reasoner and fast.
 		let r = ProviderRouter::from_defaults(env_with(&[("DEEPSEEK_API_KEY", "k")]));
-		assert!(r.chat().is_some());
-		assert!(r.reasoner().is_some());
-		assert!(r.vision().is_none(), "vision needs Gemini key");
+		assert_eq!(r.chat().unwrap().name(), "deepseek_flash");
+		assert_eq!(r.vision().unwrap().name(), "deepseek_flash");
+		assert_eq!(r.reasoner().unwrap().name(), "deepseek_flash_max");
+		assert_eq!(r.fast().unwrap().name(), "deepseek_flash_fast");
 	}
 
 	#[test]
-	fn router_with_gemini_only_has_vision_but_no_text() {
+	fn router_with_gemini_only_has_no_roles_but_named_works() {
 		let r = ProviderRouter::from_defaults(env_with(&[("GEMINI_API_KEY", "k")]));
 		assert!(r.chat().is_none());
+		assert!(r.vision().is_none());
 		assert!(r.reasoner().is_none());
-		assert!(r.vision().is_some());
+		assert!(r.fast().is_none());
+		assert!(
+			r.named("gemini_flash").is_some(),
+			"still usable as fallback"
+		);
 	}
 
 	#[test]
-	fn router_with_all_keys_has_everything() {
-		let r = ProviderRouter::from_defaults(env_with(&[
-			("DEEPSEEK_API_KEY", "d"),
-			("GEMINI_API_KEY", "g"),
-			("GROK_API_KEY", "x"),
-		]));
-		assert!(r.chat().is_some());
-		assert!(r.reasoner().is_some());
-		assert!(r.vision().is_some());
-		assert!(r.named("grok").is_some());
+	fn fast_falls_back_to_chat_when_unrouted() {
+		let user_def = def_for("http://localhost/v1/chat", "LOCAL");
+		let cfg = ai_cfg(
+			vec![("my_local", user_def)],
+			Some(RoutingConfig {
+				chat: Some("my_local".to_string()),
+				vision: None,
+				reasoner: None,
+				fast: None,
+			}),
+		);
+		let r = ProviderRouter::from_instance_config(&cfg, env_with(&[("LOCAL", "k")]));
+		assert_eq!(r.fast().unwrap().name(), "my_local");
 	}
 
 	#[test]
 	fn capability_flags_match_expected_shape() {
-		// Capability matrix sanity — pin the default-registry providers'
-		// trait-method outputs so a copy-paste mistake in the registry can't
-		// silently re-route requests (e.g. Gemini accidentally claiming
-		// reasoner).
-		let r = ProviderRouter::from_defaults(env_with(&[
-			("DEEPSEEK_API_KEY", "d"),
-			("GEMINI_API_KEY", "g"),
-			("GROK_API_KEY", "x"),
-		]));
+		let r = ProviderRouter::from_defaults(env_with(ALL_KEYS));
 
-		let chat = r.named("deepseek_chat").unwrap();
-		assert_eq!(chat.name(), "deepseek_chat");
-		assert!(!chat.supports_vision());
+		let chat = r.named("deepseek_flash").unwrap();
+		assert!(chat.supports_vision());
 		assert!(chat.supports_tools());
 		assert!(!chat.is_reasoner());
 
-		let reasoner = r.named("deepseek_reasoner").unwrap();
-		assert_eq!(reasoner.name(), "deepseek_reasoner");
-		assert!(!reasoner.supports_vision());
-		assert!(!reasoner.supports_tools());
-		assert!(reasoner.is_reasoner());
+		let max = r.named("deepseek_flash_max").unwrap();
+		assert!(max.supports_tools());
+		assert!(max.is_reasoner());
+
+		let pro = r.named("deepseek_pro").unwrap();
+		assert!(!pro.supports_vision());
+		assert!(!pro.supports_tools());
+		assert!(pro.is_reasoner());
 
 		let gemini = r.named("gemini_flash").unwrap();
-		assert_eq!(gemini.name(), "gemini_flash");
 		assert!(gemini.supports_vision());
-		assert!(gemini.supports_tools());
 		assert!(!gemini.is_reasoner());
 
 		let grok = r.named("grok").unwrap();
-		assert_eq!(grok.name(), "grok");
-		assert!(!grok.supports_vision());
+		assert!(grok.supports_vision());
 		assert!(grok.supports_tools());
-		assert!(!grok.is_reasoner());
 	}
 
 	#[test]
 	fn reasoner_has_longer_timeout_than_chat() {
 		let r = ProviderRouter::from_defaults(env_with(&[("DEEPSEEK_API_KEY", "k")]));
-		let chat = r.named("deepseek_chat").unwrap();
-		let reasoner = r.named("deepseek_reasoner").unwrap();
-		assert!(
-			reasoner.timeout() > chat.timeout(),
-			"reasoner needs more time"
-		);
+		assert!(r.reasoner().unwrap().timeout() > r.chat().unwrap().timeout());
 	}
 
 	#[test]
-	fn max_tokens_limit_per_provider_matches_documented_caps() {
-		let r = ProviderRouter::from_defaults(env_with(&[
-			("DEEPSEEK_API_KEY", "k"),
-			("GEMINI_API_KEY", "k"),
-			("GROK_API_KEY", "k"),
-		]));
-		assert_eq!(r.named("deepseek_chat").unwrap().max_tokens_limit(), 8192);
-		assert_eq!(
-			r.named("deepseek_reasoner").unwrap().max_tokens_limit(),
-			65536
-		);
-		assert_eq!(r.named("gemini_flash").unwrap().max_tokens_limit(), 16384);
-		assert_eq!(r.named("grok").unwrap().max_tokens_limit(), 16384);
+	fn extra_body_and_refusal_markers_reach_the_trait() {
+		let r = ProviderRouter::from_defaults(env_with(&[("DEEPSEEK_API_KEY", "k")]));
+		let fast = r.fast().unwrap();
+		assert_eq!(fast.extra_body()["thinking"]["type"], "disabled");
+		assert_eq!(fast.refusal_markers(), ["Content Exists Risk".to_string()]);
 	}
 
 	// --- named() / cascade_for resolution -------------------------------
 
 	#[test]
 	fn router_named_resolves_configured_provider_strings() {
-		let r = ProviderRouter::from_defaults(env_with(&[
-			("DEEPSEEK_API_KEY", "d"),
-			("GEMINI_API_KEY", "g"),
-			("GROK_API_KEY", "x"),
-		]));
-		assert!(r.named("grok").is_some());
-		assert!(r.named("gemini_flash").is_some());
-		assert!(r.named("deepseek_chat").is_some());
-		assert!(r.named("deepseek_reasoner").is_some());
+		let r = ProviderRouter::from_defaults(env_with(ALL_KEYS));
+		for n in [
+			"grok",
+			"gemini_flash",
+			"deepseek_flash",
+			"deepseek_flash_max",
+			"deepseek_flash_fast",
+			"deepseek_pro",
+		] {
+			assert_eq!(r.named(n).map(|p| p.name()), Some(n));
+		}
 		// Unknown name → None, not a panic.
 		assert!(r.named("anthropic").is_none());
 		assert!(r.named("").is_none());
@@ -1275,8 +436,6 @@ mod tests {
 
 	#[test]
 	fn router_named_returns_none_when_provider_unconfigured() {
-		// "grok" is a recognised registry name but env var unset — must
-		// return None so cascade_for can skip it cleanly.
 		let r = ProviderRouter::from_defaults(env_with(&[("DEEPSEEK_API_KEY", "d")]));
 		assert!(r.named("grok").is_none());
 		assert!(r.named("gemini_flash").is_none());
@@ -1284,8 +443,6 @@ mod tests {
 
 	#[test]
 	fn cascade_for_preserves_order_and_skips_unconfigured() {
-		// Only Grok configured; Gemini listed in cascade should be silently
-		// dropped, Grok kept. Order from input list must be preserved.
 		let r = ProviderRouter::from_defaults(env_with(&[
 			("DEEPSEEK_API_KEY", "d"),
 			("GROK_API_KEY", "x"),
@@ -1318,44 +475,50 @@ mod tests {
 	}
 
 	#[test]
-	fn router_named_resolves_v0_14_0_short_aliases_for_backward_compat() {
-		// 0.14.0's named() accepted these short forms; instance configs in the
-		// wild may use them in [ai.fallback] on_censored. Don't silently break
-		// them.
-		let r = ProviderRouter::from_defaults(env_with(&[
-			("DEEPSEEK_API_KEY", "k"),
-			("GEMINI_API_KEY", "k"),
-			("GROK_API_KEY", "k"),
-		]));
-		assert_eq!(r.named("gemini").map(|p| p.name()), Some("gemini_flash"));
-		assert_eq!(r.named("deepseek").map(|p| p.name()), Some("deepseek_chat"));
-		assert_eq!(
-			r.named("deepseek-chat").map(|p| p.name()),
-			Some("deepseek_chat")
-		);
-		// 0.18.0 aliases for V4 explicit names + the deprecated reasoner string.
-		assert_eq!(
-			r.named("deepseek-v4").map(|p| p.name()),
-			Some("deepseek_chat"),
-			"deepseek-v4 should resolve to deepseek_chat (V4-Flash default)"
-		);
-		assert_eq!(
-			r.named("deepseek-v4-flash").map(|p| p.name()),
-			Some("deepseek_chat"),
-			"explicit V4-Flash name resolves to deepseek_chat"
-		);
-		assert_eq!(
-			r.named("deepseek-v4-pro").map(|p| p.name()),
-			Some("deepseek_reasoner"),
-			"explicit V4-Pro name resolves to deepseek_reasoner"
-		);
-		assert_eq!(
-			r.named("deepseek-reasoner").map(|p| p.name()),
-			Some("deepseek_reasoner"),
-			"deprecated deepseek-reasoner alias preserved past 2026-07-24 retirement"
-		);
-		// Sanity: unknown names still return None.
+	fn router_named_resolves_legacy_aliases_for_backward_compat() {
+		// Instance configs in the wild name providers by their 0.14-0.18
+		// canonical names or shorthands in [ai.routing] / on_censored.
+		let r = ProviderRouter::from_defaults(env_with(ALL_KEYS));
+		for (alias, target) in [
+			("gemini", "gemini_flash"),
+			("xai", "grok"),
+			("deepseek", "deepseek_flash"),
+			("deepseek_chat", "deepseek_flash"),
+			("deepseek-chat", "deepseek_flash"),
+			("deepseek-flash", "deepseek_flash"),
+			("deepseek-v4", "deepseek_flash"),
+			("deepseek-v4-flash", "deepseek_flash"),
+			("deepseek_reasoner", "deepseek_flash_max"),
+			("deepseek-reasoner", "deepseek_flash_max"),
+			("deepseek-v4-pro", "deepseek_pro"),
+		] {
+			assert_eq!(r.named(alias).map(|p| p.name()), Some(target), "{alias}");
+		}
 		assert!(r.named("not_a_provider").is_none());
+	}
+
+	#[test]
+	fn legacy_role_names_in_routing_resolve_and_validate() {
+		// [ai.routing] chat = "deepseek_chat" (the pre-0.19 default name)
+		// must not crash-loop the bot at startup.
+		let cfg = ai_cfg(
+			vec![],
+			Some(RoutingConfig {
+				chat: Some("deepseek_chat".to_string()),
+				vision: Some("gemini".to_string()),
+				reasoner: Some("deepseek_reasoner".to_string()),
+				fast: None,
+			}),
+		);
+		let r = ProviderRouter::from_instance_config_strict(&cfg, env_with(ALL_KEYS));
+		assert_eq!(r.chat().unwrap().name(), "deepseek_flash");
+		assert_eq!(r.vision().unwrap().name(), "gemini_flash");
+		assert_eq!(r.reasoner().unwrap().name(), "deepseek_flash_max");
+		assert_eq!(
+			r.fast().unwrap().name(),
+			"deepseek_flash_fast",
+			"fast unset, chat on DeepSeek -> thinking-free default"
+		);
 	}
 
 	#[test]
@@ -1365,7 +528,7 @@ mod tests {
 		// directly; the alias path doesn't fire and isn't needed.
 		//
 		// Build a router with a user-defined provider literally named "deepseek"
-		// (distinct from the alias target "deepseek_chat"). Direct lookup wins.
+		// (distinct from the alias target "deepseek_flash"). Direct lookup wins.
 		let user_def = def_for("https://user-deepseek.example/v1/chat", "USER_DEEPSEEK_KEY");
 		let cfg = ai_cfg(vec![("deepseek", user_def)], None);
 		let r = ProviderRouter::from_instance_config(
@@ -1373,31 +536,90 @@ mod tests {
 			env_with(&[("USER_DEEPSEEK_KEY", "secret")]),
 		);
 		// Direct match for "deepseek" returns the USER's provider URL, not the
-		// alias-routed deepseek_chat.
+		// alias-routed deepseek_flash.
 		let p = r.named("deepseek").unwrap();
 		assert_eq!(p.url(), "https://user-deepseek.example/v1/chat");
 		assert_eq!(p.name(), "deepseek");
 	}
 
 	#[test]
-	fn cascade_for_keeps_duplicates_in_input_order() {
-		// Caller bug? Maybe. But we don't dedupe — pinning current behaviour
-		// so a future change is intentional, not accidental.
-		let r = ProviderRouter::from_defaults(env_with(&[
-			("DEEPSEEK_API_KEY", "d"),
-			("GEMINI_API_KEY", "g"),
-			("GROK_API_KEY", "x"),
-		]));
+	fn cascade_for_dedupes_preserving_first_occurrence() {
+		// "grok" and its alias "xai" are the same provider; trying it twice
+		// in one cascade just doubles the latency of a failure.
+		let r = ProviderRouter::from_defaults(env_with(ALL_KEYS));
 		let names = vec![
 			"grok".to_string(),
 			"gemini_flash".to_string(),
-			"grok".to_string(),
+			"xai".to_string(),
 		];
 		let resolved = r.cascade_for(&names);
-		assert_eq!(resolved.len(), 3);
+		assert_eq!(resolved.len(), 2);
 		assert_eq!(resolved[0].name(), "grok");
 		assert_eq!(resolved[1].name(), "gemini_flash");
-		assert_eq!(resolved[2].name(), "grok");
+	}
+
+	#[test]
+	fn partial_routing_without_fast_gets_thinking_free_default() {
+		// Pre-0.19 configs set [ai.routing] without `fast`. Falling back to
+		// the thinking-on chat model would make every 10-token classifier /
+		// judge call come back empty.
+		let cfg = ai_cfg(
+			vec![],
+			Some(RoutingConfig {
+				chat: Some("deepseek_chat".to_string()),
+				vision: None,
+				reasoner: Some("deepseek_reasoner".to_string()),
+				fast: None,
+			}),
+		);
+		let r = ProviderRouter::from_instance_config_strict(&cfg, env_with(ALL_KEYS));
+		assert_eq!(r.fast().unwrap().name(), "deepseek_flash_fast");
+	}
+
+	#[test]
+	fn partial_routing_on_other_vendor_does_not_borrow_deepseek_fast() {
+		let user_def = def_for("http://localhost/v1/chat", "LOCAL");
+		let cfg = ai_cfg(
+			vec![("my_local", user_def)],
+			Some(RoutingConfig {
+				chat: Some("my_local".to_string()),
+				vision: None,
+				reasoner: None,
+				fast: None,
+			}),
+		);
+		let r = ProviderRouter::from_instance_config_strict(
+			&cfg,
+			env_with(&[("LOCAL", "k"), ("DEEPSEEK_API_KEY", "d")]),
+		);
+		assert_eq!(r.fast().unwrap().name(), "my_local");
+	}
+
+	#[test]
+	fn user_override_of_legacy_default_name_is_still_routed() {
+		// 0.18 docs: "override a default by redefining it under its name".
+		let user_def = def_for("https://my-proxy.example/v1/chat", "DEEPSEEK_API_KEY");
+		let cfg = ai_cfg(vec![("deepseek_chat", user_def)], None);
+		let r = ProviderRouter::from_instance_config_strict(
+			&cfg,
+			env_with(&[("DEEPSEEK_API_KEY", "d")]),
+		);
+		assert_eq!(r.chat().unwrap().name(), "deepseek_chat");
+		assert_eq!(r.chat().unwrap().url(), "https://my-proxy.example/v1/chat");
+		// Roles the user didn't override keep the new defaults.
+		assert_eq!(r.vision().unwrap().name(), "deepseek_flash");
+	}
+
+	#[test]
+	fn defined_but_keyless_name_shadows_its_alias_target() {
+		// A user-defined provider literally named "gemini" with no key must
+		// NOT silently resolve to the default gemini_flash at runtime —
+		// startup validation treats the literal name as authoritative too.
+		let user_def = def_for("https://x.example/v1/chat", "UNSET_KEY");
+		let cfg = ai_cfg(vec![("gemini", user_def)], None);
+		let r = ProviderRouter::from_instance_config(&cfg, env_with(ALL_KEYS));
+		assert!(r.named("gemini").is_none());
+		assert!(r.named("gemini_flash").is_some());
 	}
 
 	// --- from_instance_config merge + routing ---------------------------
@@ -1429,22 +651,22 @@ mod tests {
 			headers: std::collections::HashMap::new(),
 			auth_header: "Authorization".to_string(),
 			auth_scheme: "Bearer ".to_string(),
+			extra_body: serde_json::Map::new(),
+			refusal_markers: Vec::new(),
 		}
 	}
 
 	#[test]
 	fn from_instance_config_no_user_input_matches_from_defaults() {
-		// AiConfig empty + only DEEPSEEK_API_KEY set → behaves like
-		// from_defaults: chat and reasoner available, vision unavailable
-		// (both deepseek_chat and deepseek_reasoner share DEEPSEEK_API_KEY;
-		// gemini_flash needs GEMINI_API_KEY which is not set here).
+		// AiConfig empty + only GEMINI_API_KEY set: no routed role is
+		// available (all default roles are DeepSeek), same as from_defaults.
 		let r = ProviderRouter::from_instance_config(
 			&AiConfig::default(),
-			env_with(&[("DEEPSEEK_API_KEY", "k")]),
+			env_with(&[("GEMINI_API_KEY", "k")]),
 		);
-		assert!(r.chat().is_some());
+		assert!(r.chat().is_none());
 		assert!(r.vision().is_none());
-		assert!(r.reasoner().is_some());
+		assert!(r.reasoner().is_none());
 	}
 
 	#[test]
@@ -1474,6 +696,7 @@ mod tests {
 				chat: Some("my_local".to_string()),
 				vision: None,
 				reasoner: None,
+				fast: None,
 			}),
 		);
 		let r = ProviderRouter::from_instance_config(
@@ -1494,9 +717,10 @@ mod tests {
 			&AiConfig::default(),
 			env_with(&[("DEEPSEEK_API_KEY", "d"), ("GEMINI_API_KEY", "g")]),
 		);
-		assert_eq!(r.chat().unwrap().name(), "deepseek_chat");
-		assert_eq!(r.vision().unwrap().name(), "gemini_flash");
-		assert_eq!(r.reasoner().unwrap().name(), "deepseek_reasoner");
+		assert_eq!(r.chat().unwrap().name(), "deepseek_flash");
+		assert_eq!(r.vision().unwrap().name(), "deepseek_flash");
+		assert_eq!(r.reasoner().unwrap().name(), "deepseek_flash_max");
+		assert_eq!(r.fast().unwrap().name(), "deepseek_flash_fast");
 	}
 
 	// --- Validation tests -----------------------------------------------
@@ -1510,6 +734,7 @@ mod tests {
 				chat: Some("nonexistent_provider".to_string()),
 				vision: None,
 				reasoner: None,
+				fast: None,
 			}),
 		);
 		ProviderRouter::from_instance_config_strict(&cfg, env_with(&[("DEEPSEEK_API_KEY", "k")]));
@@ -1524,6 +749,7 @@ mod tests {
 				chat: Some("deepseek_chat".to_string()),
 				vision: Some("typo_provider".to_string()),
 				reasoner: None,
+				fast: None,
 			}),
 		);
 		ProviderRouter::from_instance_config_strict(&cfg, env_with(&[("DEEPSEEK_API_KEY", "k")]));
@@ -1538,6 +764,7 @@ mod tests {
 				chat: Some("deepseek_chat".to_string()),
 				vision: None,
 				reasoner: Some("typo_reasoner".to_string()),
+				fast: None,
 			}),
 		);
 		ProviderRouter::from_instance_config_strict(&cfg, env_with(&[("DEEPSEEK_API_KEY", "k")]));
@@ -1552,6 +779,7 @@ mod tests {
 				chat: None,
 				vision: Some("gemini_flash".to_string()),
 				reasoner: None,
+				fast: None,
 			}),
 		);
 		ProviderRouter::from_instance_config_strict(&cfg, env_with(&[("GEMINI_API_KEY", "k")]));
@@ -1578,6 +806,7 @@ mod tests {
 				chat: Some("deepseek_chat".to_string()),
 				vision: None,
 				reasoner: None,
+				fast: None,
 			}),
 		);
 		let r = ProviderRouter::from_instance_config_strict(&cfg, empty_env());

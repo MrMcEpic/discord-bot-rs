@@ -140,13 +140,16 @@ Mention the bot, get nothing. The pipeline is in `src/ai/chat.rs`
 (look for `handle_mention`); the code logs at `info` when a request
 comes in and at `error` when it fails. Possible causes:
 
-- **No API key.** `DEEPSEEK_API_KEY` and `GEMINI_API_KEY` are both
-  unset. The pipeline silently returns. Set at least one.
+- **No API key.** No provider is available for the chat or vision
+  role. With the default routing that means `DEEPSEEK_API_KEY` is unset.
+  The pipeline silently returns. The startup line `AI routing: chat=...`
+  shows `-` for a missing role.
 - **Rate limit hit.** The bot allows 10 AI calls per user per 60s.
   Eleventh call drops silently. Wait or restart.
-- **DeepSeek/Gemini outage.** The logs will say so. The fallback
-  path (DeepSeek → Gemini) only fires when DeepSeek returns an
-  error response; if both are down, the bot is sad too.
+- **Provider outage.** The logs will say so. Failover to the
+  `[ai.fallback] on_censored` providers only happens on errors when
+  `on_error = true`. Otherwise only filtered answers cascade. If every
+  provider is down, the bot is sad too.
 - **A tool call hung.** Music searches via yt-dlp can stall when
   YouTube changes; the AI may be waiting on the tool. Tail
   `discord_bot::music=debug` and look for the offending track.

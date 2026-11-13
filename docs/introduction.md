@@ -13,8 +13,9 @@ The bot is built from independent feature modules that you enable or
 disable per instance in `config.toml`. Out of the box you get:
 
 - **AI chat** — @mention the bot and it replies in-character, using
-  DeepSeek V4 as the primary provider and Google Gemini as a fallback,
-  with a configurable personality prompt.
+  DeepSeek V4.1 Flash by default (text, images and reasoning), with
+  config-driven providers, an optional fallback cascade (e.g. Grok,
+  Gemini), and a configurable personality prompt.
 - **Music** — yt-dlp plus songbird plus ffmpeg, with a full queue, loop
   modes, shuffle, and interactive button controls on the now-playing
   embed.

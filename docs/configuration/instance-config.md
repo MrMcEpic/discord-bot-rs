@@ -113,7 +113,7 @@ See [Join Features](../features/join-features.md).
 
 ## `[welcome]` section
 
-Required when `features.welcome = true`. Posts an AI-generated welcome message to a designated channel when a new member joins. The bot needs at least one AI provider key (`DEEPSEEK_API_KEY` or `GEMINI_API_KEY`); without one, it logs a warning at startup and the feature stays inactive.
+Required when `features.welcome = true`. Posts an AI-generated welcome message to a designated channel when a new member joins. The bot needs an available provider for the AI `chat` or `vision` role. With the default routing, that means `DEEPSEEK_API_KEY`. Without one, it logs a warning at startup and the feature stays inactive.
 
 | Field         | Type   | Required | Default                | Description                                  |
 |---------------|--------|----------|------------------------|----------------------------------------------|
@@ -176,11 +176,15 @@ At startup the loader inspects each enabled feature flag and tries to find its s
 
 Validation strategy is "loud warnings, soft fail": misconfiguration of optional features doesn't crash the bot, but it does show up clearly in the logs. Run with `RUST_LOG=info,discord_bot=info` (or similar) to see the per-module enable/disable lines on startup.
 
-## AI Provider Configuration (`[ai.providers]` and `[ai.routing]`)
+## AI Provider Configuration (`[ai.providers]`, `[ai.routing]`, `[ai.fallback]`)
 
-Define custom AI providers and override role routing per-instance. Both sections are optional — when absent, the bot uses a baked-in default registry equivalent to all releases prior to 0.15.0.
+Define custom AI providers, override role routing, and configure the fallback cascade per-instance. All three sections are optional. When they are absent, the bot uses the baked-in defaults from `defaults/providers.toml`: DeepSeek V4.1 Flash for every role (chat, vision, reasoner, fast), with no fallback cascade.
 
-See **[AI Providers](ai-providers.md)** for the full schema reference, default registry contents, validation rules, and worked examples (one-model setup, three-provider setup with cascade, overriding a default).
+- `[ai.providers.<name>]` defines or replaces a provider (URL, model, key env var, token cap, capabilities, `extra_body`, `refusal_markers`, ...).
+- `[ai.routing]` picks which provider plays each role (`chat`, `vision`, `reasoner`, `fast`).
+- `[ai.fallback]` sets an ordered `on_censored` cascade for filtered answers, plus `on_error`, the soft-refusal check (`refusal_check`, `refusal_check_max_chars`, `refusal_check_prompt`), and `censored_reply`.
+
+See **[AI Providers](ai-providers.md)** for the full schema reference, default registry contents, alias table, validation rules, and worked examples (one-model setup, mixed providers with a cascade, opting into V4-Pro, overriding a default).
 
 ## Complete annotated example
 

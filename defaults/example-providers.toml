@@ -1,12 +1,19 @@
 # discord-bot-rs — example AI provider definitions
 #
 # This file is a copy-paste reference, NOT loaded by the bot at runtime. The
-# four default-registry providers (deepseek_chat, deepseek_reasoner,
-# gemini_flash, grok) live in src/ai/providers/mod.rs as `default_provider_registry()`.
+# baked-in defaults (deepseek_flash, deepseek_flash_max, deepseek_flash_fast,
+# deepseek_pro, gemini_flash, grok), the default role routing and the name
+# aliases live in defaults/providers.toml, which is compiled into the binary.
 #
 # To use any of the entries below, copy the relevant block into your
 # instances/<your-bot>/config.toml and set the corresponding env var in
-# instances/<your-bot>/.env.
+# instances/<your-bot>/.env. Then route a role to it in [ai.routing] or list
+# it in [ai.fallback] on_censored. Defining a provider alone doesn't route
+# anything to it.
+#
+# Every provider also accepts `extra_body` (a table merged into each request
+# body, for vendor knobs) and `refusal_markers` (error-body substrings that
+# mean "blocked by the content filter" and trigger the fallback cascade).
 #
 # Schema reference: docs/configuration/ai-providers.md
 
