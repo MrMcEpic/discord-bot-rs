@@ -416,7 +416,7 @@ async fn handle_search_calls(
 	client: &reqwest::Client,
 	provider: &dyn AiProvider,
 	cascade: &Cascade<'_>,
-	http_client: &reqwest::Client,
+	search: &super::search::SearchConfig,
 	history: &mut Vec<serde_json::Value>,
 	response: &ApiResponse,
 ) -> Result<(ApiResponse, String), String> {
@@ -458,7 +458,7 @@ async fn handle_search_calls(
 		let query = args["query"].as_str().unwrap_or("");
 
 		tracing::info!("Web search query: {query}");
-		let results = match web_search(http_client, query, 10).await {
+		let results = match web_search(client, search, query, 10).await {
 			Ok(results) if !results.is_empty() => {
 				tracing::info!("Web search returned {} results", results.len());
 				results
@@ -473,7 +473,9 @@ async fn handle_search_calls(
 			}
 			Err(e) => {
 				tracing::error!("Web search failed: {e}");
-				"Search failed.".to_string()
+				// Give the model the real reason so it can tell the user
+				// "search is blocked" rather than "nothing exists".
+				format!("Search failed: {e}")
 			}
 		};
 
@@ -1870,7 +1872,7 @@ async fn preflight_search_for_reasoner(
 			let query = args["query"].as_str().unwrap_or("");
 			tracing::info!("Reasoner pre-flight search: {query}");
 
-			let result_text = match web_search(&data.http_client, query, 10).await {
+			let result_text = match web_search(&data.http_client, &data.search, query, 10).await {
 				Ok(results) if !results.is_empty() => {
 					let formatted = results
 						.iter()
@@ -1887,8 +1889,8 @@ async fn preflight_search_for_reasoner(
 				}
 				Err(e) => {
 					tracing::error!("Reasoner pre-flight search failed: {e}");
-					all_search_context.push(format!("Search for \"{query}\": Search failed."));
-					"Search failed.".to_string()
+					all_search_context.push(format!("Search for \"{query}\": Search failed: {e}"));
+					format!("Search failed: {e}")
 				}
 			};
 
@@ -2205,7 +2207,7 @@ pub async fn handle_mention(ctx: &serenity::client::Context, message: &Message, 
 			&data.http_client,
 			active_provider,
 			&cascade,
-			&data.http_client,
+			&data.search,
 			&mut history,
 			&response,
 		)

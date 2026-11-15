@@ -16,6 +16,7 @@
 - [Environment Variables](configuration/environment-variables.md)
 - [Instance Config (config.toml)](configuration/instance-config.md)
 - [AI Providers](configuration/ai-providers.md)
+- [Web Search](configuration/web-search.md)
 - [Personality Files](configuration/personality.md)
 - [Secrets Management](configuration/secrets-management.md)
 - [Multiple Instances](configuration/multiple-instances.md)

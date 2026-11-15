@@ -160,6 +160,18 @@ Required when `minecraft.chargeback = true`. The bot exposes an HTTP endpoint th
 
 See [Minecraft Chargeback](../features/minecraft-chargeback.md).
 
+## `[search]` section
+
+Optional. Picks the backends for the AI's `web_search` tool and their order.
+
+| Key            | Type          | Default                       | Description |
+|----------------|---------------|-------------------------------|-------------|
+| `backends`     | array of str  | `["searxng", "duckduckgo"]`   | Backends to try, in order. `searxng` is skipped when no URL is set. |
+| `searxng_url`  | string        | `SEARXNG_URL` env var         | SearXNG base URL (JSON format must be enabled). |
+| `timeout_secs` | integer       | `10`                          | Per-backend request timeout. |
+
+See [Web Search](web-search.md).
+
 ## Validation
 
 At startup the loader inspects each enabled feature flag and tries to find its sub-section:

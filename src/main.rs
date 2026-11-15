@@ -81,6 +81,8 @@ pub struct Data {
 	/// soft-refusal check settings. Empty `on_censored` = no cascade
 	/// (snarky-reply canned behaviour preserved).
 	pub ai_fallback: crate::instance_config::AiFallbackConfig,
+	/// `[search]` from instance config with `SEARXNG_URL` resolved.
+	pub search: ai::search::SearchConfig,
 	pub personality: String,
 	pub bot_name: String,
 	/// Resolved IANA timezone for the "current date / time" line in the AI
@@ -337,6 +339,27 @@ async fn main() {
 					|k| std::env::var(k).ok(),
 				);
 				let ai_fallback = instance_cfg.ai.fallback.clone();
+				let search = instance_cfg
+					.search
+					.clone()
+					.resolve(|k| std::env::var(k).ok());
+				let search_backends = search.active_backends();
+				if search_backends.is_empty() {
+					tracing::warn!(
+						"Web search: no usable backend ([search] backends lists only searxng \
+						 but SEARXNG_URL / searxng_url is unset); the web_search tool will fail"
+					);
+				} else {
+					tracing::info!(
+						"Web search backends: {:?}{}",
+						search_backends,
+						search
+							.searxng_url
+							.as_deref()
+							.map(|u| format!(" (searxng at {u})"))
+							.unwrap_or_default()
+					);
+				}
 				// Resolve once at startup so unknown / unconfigured names log a
 				// warning here, not on every CENSORED-cascade attempt.
 				let startup_cascade = ai_router.cascade_for(&ai_fallback.on_censored);
@@ -378,6 +401,7 @@ async fn main() {
 					config,
 					ai_router,
 					ai_fallback,
+					search,
 					personality,
 					bot_name: instance_cfg.bot_name.clone(),
 					timezone,

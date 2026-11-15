@@ -84,6 +84,14 @@ Get one at [console.x.ai](https://console.x.ai/). Optional. Needed only if an in
 
 Required only if you use the virtual stock trading game. Free tier keys are available at [finnhub.io](https://finnhub.io/) and have generous limits. If unset, stocks-related commands return a not-configured message.
 
+## Web search (optional)
+
+| Name          | Required | Default | Description |
+|---------------|----------|---------|-------------|
+| `SEARXNG_URL` | no       | unset (the bundled compose sets `http://searxng:8080`) | Base URL of a SearXNG instance with the JSON format enabled, used as the first `web_search` backend |
+
+Without it, the AI's `web_search` tool falls back to scraping DuckDuckGo, which now blocks most server IPs. See [Web Search](web-search.md).
+
 ## Minecraft integration (optional)
 
 | Name               | Required                            | Default | Description                                  |

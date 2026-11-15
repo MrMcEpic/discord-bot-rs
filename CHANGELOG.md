@@ -82,7 +82,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   user-defined reasoners with `is_reasoner = true` and
   `supports_tools = true`.
 
+- **Pluggable web search with a bundled SearXNG.** New `[search]` section
+  (`backends`, `searxng_url`, `timeout_secs`) and `SEARXNG_URL` env var. The
+  default order is SearXNG (JSON API), then DuckDuckGo. `docker-compose.yml`
+  now ships an internal-only `searxng` service (pinned image,
+  `searxng/settings.yml`). See
+  [`docs/configuration/web-search.md`](docs/configuration/web-search.md).
+
 ### Fixed
+- **Web search silently returned nothing.** DuckDuckGo now answers server
+  traffic with an HTTP 202 bot-challenge page; the scraper found no result
+  links and reported "No results found", so the model told users nothing
+  existed. The challenge page is now reported as an error, search falls
+  through to SearXNG, and the model receives the real failure reason
+  (`Search failed: ...`) instead of a bare "Search failed.".
 - **Reasoner routing never fired.** The classifier ran on the thinking-on
   chat model with `max_tokens = 10`, so reasoning consumed the budget and
   the content came back empty. It now runs on the no-thinking `fast`
@@ -125,6 +138,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   chat = "gemini_flash"
   vision = "gemini_flash"
   ```
+- **Web search** needs a SearXNG instance to be reliable. With the bundled
+  compose it is automatic (`docker compose up -d` pulls the `searxng`
+  service). Other setups should set `SEARXNG_URL`; see
+  [`docs/configuration/web-search.md`](docs/configuration/web-search.md).
 - **To redirect filtered answers instead of sending the canned reply**, set
   a cascade. The soft-refusal check only runs when one is configured:
   ```toml

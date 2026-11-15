@@ -211,9 +211,12 @@ than the files.
   can't trivially inject prompts.
 - **`split.rs`** — splits responses over Discord's 2000-character
   message limit without breaking code fences or multi-byte chars.
-- **`search.rs`** — DuckDuckGo scraper, implemented via `curl` rather
-  than `reqwest` because DDG returns a non-result page when it sees
-  `reqwest`'s default headers.
+- **`search.rs`** — the `web_search` backends, tried in `[search]
+  backends` order: SearXNG (JSON API via `reqwest`) and a DuckDuckGo
+  HTML scraper (via `curl`, because DDG returns a non-result page for
+  `reqwest`'s default headers). DDG's bot-challenge page is reported as
+  an error rather than "no results". See
+  [Web Search](../configuration/web-search.md).
 - **`confirmation.rs`** — wraps moderation tool calls with a "react to
   confirm" button flow, with a 30-second timeout, so the AI can't
   tempban someone without explicit human sign-off.

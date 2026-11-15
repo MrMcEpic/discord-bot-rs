@@ -163,6 +163,17 @@ welcome = false       # AI-generated welcome message on join
 # Promotes members from `from_role` to `to_role` once they meet activity
 # criteria. Runs periodically; the first pass happens at bot startup.
 
+# --- Web search ------------------------------------------------------------
+# Backends for the AI's web_search tool, tried in order. `searxng` needs
+# SEARXNG_URL (set automatically by the bundled docker-compose) or
+# `searxng_url` below; DuckDuckGo needs nothing but blocks most server IPs.
+# See docs/configuration/web-search.md.
+#
+# [search]
+# backends = ["searxng", "duckduckgo"]
+# searxng_url = "http://searxng:8080"
+# timeout_secs = 10
+
 # [auto_role]
 # from_role = "ROLE_ID"       # Snowflake of the role to remove
 # to_role = "ROLE_ID"         # Snowflake of the role to grant

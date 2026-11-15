@@ -25,6 +25,10 @@ pub struct InstanceConfig {
 	pub features: Features,
 	#[serde(default)]
 	pub ai: AiConfig,
+	/// `[search]` — web-search backends for the AI's `web_search` tool.
+	/// Absent = SearXNG (if `SEARXNG_URL` is set), then DuckDuckGo.
+	#[serde(default)]
+	pub search: crate::ai::search::SearchConfig,
 	pub auto_role: Option<AutoRoleConfig>,
 	pub minecraft: Option<MinecraftConfig>,
 	pub join_role: Option<JoinRoleConfig>,

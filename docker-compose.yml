@@ -37,6 +37,8 @@ services:
     env_file: ${INSTANCE_DIR:-./instances/example}/.env
     environment:
       CONFIG_DIR: /config
+      # Web search backend (see docs/configuration/web-search.md).
+      SEARXNG_URL: http://searxng:8080
     volumes:
       - ${INSTANCE_DIR:-./instances/example}:/config
     tmpfs:
@@ -44,11 +46,25 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      searxng:
+        condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "curl -s -o /dev/null --connect-timeout 2 http://localhost:9090/mcp"]
       interval: 10s
       timeout: 5s
       retries: 12
+
+  # Self-hosted metasearch for the AI's web_search tool. Internal only — no
+  # published port. Set SEARXNG_SECRET in the shell or a top-level .env;
+  # without it the container generates a random one on each start, which is
+  # fine (the bot keeps no SearXNG sessions).
+  searxng:
+    image: searxng/searxng:2026.11.15-2d500cb6b
+    restart: unless-stopped
+    environment:
+      SEARXNG_SECRET: "${SEARXNG_SECRET:-}"
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
 
   mcp-gateway:
     build:
