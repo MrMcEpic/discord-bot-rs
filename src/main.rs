@@ -76,10 +76,13 @@ pub struct Data {
 	/// Replaces the old inline `ApiEndpoint { url, model, api_key }` literals
 	/// scattered through `ai/chat.rs`. See `src/ai/providers/mod.rs`.
 	pub ai_router: ai::providers::ProviderRouter,
-	/// Ordered provider names to try when the primary provider returns the
-	/// `CENSORED` sentinel. Resolved from `instance_config.ai.fallback.on_censored`
-	/// at startup. Empty = no cascade (snarky-reply canned behaviour preserved).
-	pub ai_fallback_on_censored: Vec<String>,
+	/// `[ai.fallback]` from instance config: the ordered cascade
+	/// (`on_censored`), whether to also cascade on errors, and the
+	/// soft-refusal check settings. Empty `on_censored` = no cascade
+	/// (snarky-reply canned behaviour preserved).
+	pub ai_fallback: crate::instance_config::AiFallbackConfig,
+	/// `[search]` from instance config with `SEARXNG_URL` resolved.
+	pub search: ai::search::SearchConfig,
 	pub personality: String,
 	pub bot_name: String,
 	/// Resolved IANA timezone for the "current date / time" line in the AI
@@ -335,10 +338,41 @@ async fn main() {
 					&instance_cfg.ai,
 					|k| std::env::var(k).ok(),
 				);
-				let ai_fallback_on_censored = instance_cfg.ai.fallback.on_censored.clone();
+				let ai_fallback = instance_cfg.ai.fallback.clone();
+				let search = instance_cfg
+					.search
+					.clone()
+					.resolve(|k| std::env::var(k).ok());
+				let search_backends = search.active_backends();
+				if search_backends.is_empty() {
+					tracing::warn!(
+						"Web search: no usable backend ([search] backends lists only searxng \
+						 but SEARXNG_URL / searxng_url is unset); the web_search tool will fail"
+					);
+				} else {
+					tracing::info!(
+						"Web search backends: {:?}{}",
+						search_backends,
+						search
+							.searxng_url
+							.as_deref()
+							.map(|u| format!(" (searxng at {})", ai::search::redact_userinfo(u)))
+							.unwrap_or_default()
+					);
+				}
 				// Resolve once at startup so unknown / unconfigured names log a
 				// warning here, not on every CENSORED-cascade attempt.
-				let _ = ai_router.cascade_for(&ai_fallback_on_censored);
+				let startup_cascade = ai_router.cascade_for(&ai_fallback.on_censored);
+				tracing::info!(
+					"AI routing: chat={} vision={} reasoner={} fast={} fallback=[{}] on_error={} refusal_check={}",
+					ai_router.chat().map(|p| p.name()).unwrap_or("-"),
+					ai_router.vision().map(|p| p.name()).unwrap_or("-"),
+					ai_router.reasoner().map(|p| p.name()).unwrap_or("-"),
+					ai_router.fast().map(|p| p.name()).unwrap_or("-"),
+					startup_cascade.iter().map(|p| p.name()).collect::<Vec<_>>().join(", "),
+					ai_fallback.on_error,
+					ai_fallback.refusal_check,
+				);
 				// Welcome pre-flight: warn if the welcome feature is configured but no
 				// provider is available that member_join.rs can route to (it uses
 				// ai_router.chat().or_else(|| ai_router.vision())). With config-driven
@@ -366,7 +400,8 @@ async fn main() {
 					wordle_games: Arc::new(DashMap::new()),
 					config,
 					ai_router,
-					ai_fallback_on_censored,
+					ai_fallback,
+					search,
 					personality,
 					bot_name: instance_cfg.bot_name.clone(),
 					timezone,

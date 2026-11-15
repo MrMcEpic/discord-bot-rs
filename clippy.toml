@@ -8,3 +8,8 @@ doc-valid-idents = [
   "OAuth", "TOML", "YAML", "HTTP", "SSE", "JSON", "GitHub", "ghcr",
   "Tebex", "Minecraft", "URL",
 ]
+
+# serenity::Error (and BotError, which wraps it) is ~200+ bytes. poise's
+# command signatures fix the error type, so boxing isn't an option; raise
+# the result_large_err threshold (default 128) instead of allowing per-fn.
+large-error-threshold = 512

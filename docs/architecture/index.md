@@ -118,7 +118,7 @@ HTTP client. The full lifecycle is in [Data Flow](data-flow.md).
 | [`src/error.rs`](https://github.com/MrMcEpic/discord-bot-rs/blob/master/src/error.rs) | `BotError` enum and `From` conversions |
 | [`src/commands/`](https://github.com/MrMcEpic/discord-bot-rs/tree/master/src/commands) | Every prefix command, all parented under `!m` |
 | [`src/events/`](https://github.com/MrMcEpic/discord-bot-rs/tree/master/src/events) | Gateway event dispatcher, message handler, voice-state handler |
-| [`src/ai/`](https://github.com/MrMcEpic/discord-bot-rs/tree/master/src/ai) | DeepSeek/Gemini pipeline, tool execution, response sanitising |
+| [`src/ai/`](https://github.com/MrMcEpic/discord-bot-rs/tree/master/src/ai) | AI pipeline (config-driven providers, routing, fallback cascade), tool execution, response sanitising |
 | [`src/music/`](https://github.com/MrMcEpic/discord-bot-rs/tree/master/src/music) | Per-guild player, yt-dlp + songbird pipeline, voice handling |
 | [`src/wordle/`](https://github.com/MrMcEpic/discord-bot-rs/tree/master/src/wordle) | Wordle game state and puzzle fetching |
 | [`src/connections/`](https://github.com/MrMcEpic/discord-bot-rs/tree/master/src/connections) | NYT Connections game state and puzzle fetching |

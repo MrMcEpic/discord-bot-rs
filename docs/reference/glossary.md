@@ -17,16 +17,33 @@ their source available to its users on request. See the
 
 ### DeepSeek
 
-A Chinese AI provider whose `deepseek-v4-flash` model is the bot's
-primary backend for `@mention` AI chat when `DEEPSEEK_API_KEY` is set.
-Cheap, fast, supports OpenAI-style tool calls. See the
+A Chinese AI provider whose V4.1 Flash model (`deepseek-flash`) is
+the bot's default backend for every AI role (chat, vision, reasoner,
+fast) when `DEEPSEEK_API_KEY` is set. Cheap, multimodal, and supports
+OpenAI-style tool calls. Its content filter shows up either as a
+`Content Exists Risk` error or as an in-character
+[soft refusal](#soft-refusal). See the
 [AI Pipeline](../architecture/ai-pipeline.md) page.
+
+### Fallback cascade
+
+The ordered list of providers in `[ai.fallback] on_censored` that a
+request is retried through when the primary's answer is filtered (or,
+with `on_error = true`, when it errors). Opt-in, so it is empty by
+default. See [AI Providers](../configuration/ai-providers.md#fallback-cascade-aifallback).
+
+### Fast role
+
+The AI routing role for cheap, no-thinking one-word calls: the
+reasoner classifier and the soft-refusal judge. Default
+`deepseek_flash_fast` (V4.1 Flash with thinking disabled).
 
 ### Gemini
 
-Google's hosted LLM service. Used as the fallback path when DeepSeek
-returns an error and `GEMINI_API_KEY` is set, or as the only
-provider when DeepSeek isn't configured.
+Google's hosted LLM service (`gemini_flash`, model
+`gemini-3.8-flash`). Defined in the default registry but not routed
+by default. Used when listed in `[ai.fallback] on_censored` or routed
+to a role in `[ai.routing]`, and only if `GEMINI_API_KEY` is set.
 
 ### Gateway (Discord)
 
@@ -170,10 +187,19 @@ The project uses sqlx's runtime helpers (`query`, `query_as`) with
 the crate builds without a live database at compile time. See
 `src/db/queries.rs`.
 
+### Soft refusal
+
+An HTTP 200 reply in which the model dodges the question instead of
+answering. DeepSeek does this in character for sensitive topics, with
+no error and no fixed wording. When a fallback cascade is configured,
+short replies are checked by the `fast` provider and soft refusals are
+retried through the cascade (`[ai.fallback] refusal_check`).
+
 ### Tool (AI)
 
-A function the bot exposes to the LLM through DeepSeek's or
-Gemini's tool-call protocol. When the LLM emits a structured tool
+A function the bot exposes to the LLM through the provider's
+tool-call protocol (OpenAI-style function calling, or Anthropic
+`tool_use`). When the LLM emits a structured tool
 call in its response, the bot dispatches it to the matching Rust
 handler (e.g. `web_search`, `play_song`, `start_wordle`,
 `create_tempban`) and feeds the result back into the conversation.

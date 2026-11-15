@@ -147,11 +147,14 @@ and any cached audio.
 These are only required if you want the corresponding feature. All can be
 added later by editing your `.env` and restarting.
 
-- **DeepSeek API key** — primary AI chat provider. Free credits on signup.
-  Sign up at <https://platform.deepseek.com/>.
-- **Gemini API key** — fallback AI chat provider, used automatically when
-  DeepSeek errors. Free tier is generous. Get a key at
-  <https://aistudio.google.com/apikey>.
+- **DeepSeek API key** — the default AI provider for every role (chat,
+  images, reasoning). It is the only key AI chat needs. Sign up at
+  <https://platform.deepseek.com/>.
+- **Gemini / Grok API keys** — optional fallback providers. They are used
+  only if you list them in `[ai.fallback] on_censored` (or route a role to
+  them) in `config.toml`. Get a Gemini key at
+  <https://aistudio.google.com/apikey> and a Grok key at
+  <https://console.x.ai/>.
 - **Finnhub API key** — required for the virtual stock trading game. Free
   tier is enough. Sign up at <https://finnhub.io/>.
 - **Minecraft companion plugin** — required only if you plan to use the

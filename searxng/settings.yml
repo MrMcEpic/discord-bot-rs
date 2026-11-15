@@ -1,0 +1,33 @@
+# SearXNG settings for the bot's web_search backend.
+#
+# Mounted read-only into the `searxng` service in docker-compose.yml. The
+# instance is internal-only (no published port): bots reach it at
+# http://searxng:8080 via SEARXNG_URL. The secret key comes from the
+# SEARXNG_SECRET env var, so nothing sensitive lives in this file.
+#
+# Full reference: https://docs.searxng.org/admin/settings/index.html
+
+use_default_settings: true
+
+general:
+  instance_name: "discord-bot search"
+  # Some engines (wikipedia, wikidata, openstreetmap) refuse to load without a
+  # contact URL; they're not needed for the bot and log a harmless error.
+  contact_url: false
+
+server:
+  # Internal service with one trusted client — the bot-detection limiter
+  # would only get in the way (it expects a reverse proxy + X-Forwarded-For).
+  limiter: false
+  public_instance: false
+  image_proxy: false
+
+search:
+  # The bot queries the JSON API; without `json` here SearXNG answers 403.
+  formats: [html, json]
+
+engines:
+  # DuckDuckGo serves a CAPTCHA to most server IPs, so it only adds latency.
+  # The remaining defaults (Brave, Google CSE, ...) carry the results.
+  - name: duckduckgo
+    disabled: true

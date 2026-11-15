@@ -40,16 +40,22 @@ Two possibilities:
 
 ### AI chat doesn't reply when I @mention the bot.
 
-AI chat needs at least one of `DEEPSEEK_API_KEY` or `GEMINI_API_KEY`.
-If neither is set, mentions are silently ignored. Set one in your
-`.env`, restart, and try again.
+AI chat needs an available provider for the chat (or vision) role.
+With the default routing that's `DEEPSEEK_API_KEY`. `GEMINI_API_KEY`
+on its own isn't enough unless you set `[ai.routing] chat =
+"gemini_flash"`. If no chat or vision provider is available, mentions
+are silently ignored. Set the key in your `.env`, restart, and try
+again. The startup log line `AI routing: chat=... vision=...` shows
+what was resolved.
 
 If you have a key set and it still doesn't reply, tail the logs with
 `RUST_LOG=discord_bot::ai=debug,info` — the pipeline logs every
 inbound mention and every API call. Common downstream causes:
 
 - Rate limit hit (10 calls per user per 60s). Wait a minute.
-- DeepSeek/Gemini outage. The logs will show the upstream error.
+- Provider outage. The logs will show the upstream error. Set
+  `[ai.fallback] on_error = true` with an `on_censored` list to fail
+  over automatically.
 - The bot lacks **Send Messages** in the channel you mentioned it in.
 
 See [AI Chat](../features/ai-chat.md) for the full feature page.
@@ -247,12 +253,16 @@ to land your first PR.
 
 ### What models does the AI use?
 
-The default is DeepSeek's `deepseek-v4-flash` model when
-`DEEPSEEK_API_KEY` is set, falling back to Google's Gemini
-(`gemini-2.0-flash`) when DeepSeek errors out and `GEMINI_API_KEY`
-is set. Both are remote API calls; the bot has no local model.
-DeepSeek is recommended as the primary because it's the cheapest of
-the supported providers.
+By default, DeepSeek V4.1 Flash (`deepseek-flash`) handles every role
+at different effort levels: chat and images at `high`, hard reasoning
+questions at `max`, and the one-word classifier / refusal-check calls
+with thinking disabled. Only `DEEPSEEK_API_KEY` is needed. Gemini
+(`gemini-3.8-flash`) and Grok (`grok-4.7`) are defined as optional
+fallbacks: list them in `[ai.fallback] on_censored` to redirect
+filtered answers. DeepSeek V4-Pro is available as an opt-in reasoner.
+All of these are remote API calls, but you can point any role at a
+local OpenAI-compatible server such as Ollama. See
+[AI Providers](../configuration/ai-providers.md).
 
 ### Can I change the bot's personality?
 

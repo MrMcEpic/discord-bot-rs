@@ -2,7 +2,8 @@
 //!
 //! Replaces the per-provider structs (`DeepSeekChat`, `DeepSeekReasoner`,
 //! `Gemini`, `Grok`) with one struct whose fields come from either the baked
-//! default registry (Rust) or `[ai.providers.*]` user toml. See
+//! default registry (`defaults/providers.toml`, compiled in) or
+//! `[ai.providers.*]` in an instance's `config.toml`. See
 //! `docs/configuration/ai-providers.md` for the schema reference.
 
 use serde::Deserialize;
@@ -59,6 +60,21 @@ pub struct ProviderDef {
 	/// API key is the full header value).
 	#[serde(default = "default_auth_scheme")]
 	pub auth_scheme: String,
+	/// Extra top-level fields merged verbatim into every request body, after
+	/// the standard `model` / `messages` / `max_tokens` / `tools` fields (so
+	/// they can override those too). This is the knob for vendor-specific
+	/// options — e.g. DeepSeek's `reasoning_effort = "max"` or
+	/// `thinking = { type = "disabled" }` — so switching a model's behaviour
+	/// is a config edit, not a code change.
+	#[serde(default)]
+	pub extra_body: serde_json::Map<String, serde_json::Value>,
+	/// Substrings that, when found in a non-2xx error body, mean the
+	/// provider's content filter blocked the request. Matching bodies surface
+	/// as the `CENSORED` sentinel, which triggers the `[ai.fallback]` cascade.
+	/// (`finish_reason = "content_filter"` on a 2xx response and DeepSeek's
+	/// `Content Exists Risk` are always treated as CENSORED regardless.)
+	#[serde(default)]
+	pub refusal_markers: Vec<String>,
 }
 
 fn default_timeout_secs() -> u64 {
@@ -96,6 +112,8 @@ pub struct ConfiguredProvider {
 	pub headers: std::collections::HashMap<String, String>,
 	pub auth_header: String,
 	pub auth_scheme: String,
+	pub extra_body: serde_json::Map<String, serde_json::Value>,
+	pub refusal_markers: Vec<String>,
 }
 
 impl ConfiguredProvider {
@@ -130,6 +148,8 @@ impl ConfiguredProvider {
 			headers: def.headers,
 			auth_header: def.auth_header,
 			auth_scheme: def.auth_scheme,
+			extra_body: def.extra_body,
+			refusal_markers: def.refusal_markers,
 		})
 	}
 }
@@ -177,5 +197,13 @@ impl AiProvider for ConfiguredProvider {
 
 	fn extra_headers(&self) -> &std::collections::HashMap<String, String> {
 		&self.headers
+	}
+
+	fn extra_body(&self) -> &serde_json::Map<String, serde_json::Value> {
+		&self.extra_body
+	}
+
+	fn refusal_markers(&self) -> &[String] {
+		&self.refusal_markers
 	}
 }

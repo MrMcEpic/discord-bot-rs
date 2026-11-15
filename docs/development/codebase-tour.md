@@ -162,7 +162,7 @@ is the non-command event handler. It's one big `match` over
   things in order: bumps the `member_activity` row for auto-role,
   intercepts 5-letter messages as Wordle guesses in channels with an
   active game, and — if the message mentions the bot or replies to a
-  bot message — hands off to `ai::deepseek::handle_mention`.
+  bot message — hands off to `ai::chat::handle_mention`.
 - **`InteractionCreate` (Component)** → routes to one of the button
   handlers by prefix: `music_*`, `game_*` (Connections), `cb_*`
   (chargeback buttons). Music buttons enforce "you must be in the same
@@ -211,9 +211,12 @@ than the files.
   can't trivially inject prompts.
 - **`split.rs`** — splits responses over Discord's 2000-character
   message limit without breaking code fences or multi-byte chars.
-- **`search.rs`** — DuckDuckGo scraper, implemented via `curl` rather
-  than `reqwest` because DDG returns a non-result page when it sees
-  `reqwest`'s default headers.
+- **`search.rs`** — the `web_search` backends, tried in `[search]
+  backends` order: SearXNG (JSON API via `reqwest`) and a DuckDuckGo
+  HTML scraper (via `curl`, because DDG returns a non-result page for
+  `reqwest`'s default headers). DDG's bot-challenge page is reported as
+  an error rather than "no results". See
+  [Web Search](../configuration/web-search.md).
 - **`confirmation.rs`** — wraps moderation tool calls with a "react to
   confirm" button flow, with a 30-second timeout, so the AI can't
   tempban someone without explicit human sign-off.

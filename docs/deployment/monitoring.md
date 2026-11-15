@@ -129,9 +129,13 @@ WARN-level lines worth paying attention to:
 - `<feature> enabled but [<section>] config section missing` —
   a feature flag is on but its config section is absent. The
   feature is silently disabled until you fix the config.
-- `Welcome feature enabled but no AI API key (DEEPSEEK_API_KEY or
-  GEMINI_API_KEY) configured` — welcome messages need an AI
-  provider; one is missing.
+- `Welcome feature enabled but no AI provider is available for the
+  chat or vision role` — welcome messages need an AI provider. With
+  the default routing, `DEEPSEEK_API_KEY` is missing.
+- `AI provider '<name>' is referenced by routing or fallback but its
+  API key env var '<VAR>' is unset` — a role or `[ai.fallback]
+  on_censored` entry points at a provider without a key. It is
+  skipped.
 - `Donator sync: failed to fetch donators` — the Minecraft
   companion plugin is unreachable. Often transient (network blip,
   MC server restart); persistent failures mean MC_VERIFY_URL or

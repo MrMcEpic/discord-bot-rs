@@ -1,3 +1,8 @@
+// rustc 1.100 flags an `unreachable call` inside poise's `_parse_prefix`
+// macro expansion for every `#[poise::command(prefix_command, ...)]` that
+// takes typed args. It's a false positive in generated code we don't own.
+#![allow(unreachable_code)]
+
 pub mod admin;
 pub mod connections;
 pub mod help;
