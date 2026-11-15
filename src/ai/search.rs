@@ -207,17 +207,17 @@ async fn searxng_search(
 		.timeout(timeout)
 		.send()
 		.await
-		.map_err(|e| format!("request failed: {e}"))?;
+		.map_err(describe_reqwest_error)?;
 	let status = resp.status();
 	if !status.is_success() {
 		// 403 here almost always means the instance doesn't have
 		// `search.formats: [json]` enabled.
 		return Err(format!("HTTP {status}"));
 	}
-	let body: SearxResponse = resp
-		.json()
-		.await
-		.map_err(|e| format!("bad JSON response: {e}"))?;
+	let body: SearxResponse = resp.json().await.map_err(|e| {
+		tracing::debug!("SearXNG JSON decode error: {e}");
+		"bad JSON response".to_string()
+	})?;
 	let results = parse_searx(body.results, max);
 	if results.is_empty() && !body.unresponsive_engines.is_empty() {
 		let failed: Vec<String> = body
@@ -228,6 +228,43 @@ async fn searxng_search(
 		return Err(format!("all engines failed ({})", failed.join(", ")));
 	}
 	Ok(results)
+}
+
+/// Short, URL-free reason for a failed SearXNG request. These strings reach
+/// the model (and may be echoed into Discord), so they must not carry the
+/// internal base URL or the query string; the full error goes to the debug
+/// log only.
+fn describe_reqwest_error(e: reqwest::Error) -> String {
+	tracing::debug!("SearXNG request error: {e}");
+	if e.is_timeout() {
+		return "timed out".to_string();
+	}
+	if e.is_connect() {
+		return "unreachable".to_string();
+	}
+	// The innermost source (e.g. "connection reset by peer") never carries
+	// the request URL; reqwest's own Display does.
+	let mut root = None;
+	let mut cur = std::error::Error::source(&e);
+	while let Some(src) = cur {
+		root = Some(src.to_string());
+		cur = src.source();
+	}
+	match root {
+		Some(r) => format!("request failed ({r})"),
+		None => "request failed".to_string(),
+	}
+}
+
+/// Redact `user:pass@` from a URL before logging it.
+pub fn redact_userinfo(url: &str) -> String {
+	match url.split_once("://") {
+		Some((scheme, rest)) => match rest.split_once('@') {
+			Some((creds, host)) if !creds.contains('/') => format!("{scheme}://***@{host}"),
+			_ => url.to_string(),
+		},
+		None => url.to_string(),
+	}
 }
 
 fn parse_searx(raw: Vec<SearxResult>, max: usize) -> Vec<SearchResult> {
@@ -433,6 +470,40 @@ mod tests {
 		);
 		// A genuine empty result page is not an error.
 		assert!(ddg_block_reason("<html>No results.</html>", Some(200)).is_none());
+	}
+
+	#[test]
+	fn userinfo_is_redacted_for_logs() {
+		assert_eq!(
+			redact_userinfo("http://user:pw@searxng:8080"),
+			"http://***@searxng:8080"
+		);
+		assert_eq!(
+			redact_userinfo("http://searxng:8080"),
+			"http://searxng:8080"
+		);
+		assert_eq!(
+			redact_userinfo("http://h:1/path@x"),
+			"http://h:1/path@x",
+			"an @ in the path is not userinfo"
+		);
+	}
+
+	#[tokio::test]
+	async fn reqwest_failure_reason_has_no_url_or_query() {
+		// Port 9 (discard) on localhost: refused immediately.
+		let client = reqwest::Client::new();
+		let err = searxng_search(
+			&client,
+			"http://127.0.0.1:9",
+			"secret query",
+			5,
+			Duration::from_secs(2),
+		)
+		.await
+		.unwrap_err();
+		assert!(!err.contains("127.0.0.1"), "{err}");
+		assert!(!err.contains("secret"), "{err}");
 	}
 
 	#[test]

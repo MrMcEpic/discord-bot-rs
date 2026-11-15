@@ -356,7 +356,7 @@ async fn main() {
 						search
 							.searxng_url
 							.as_deref()
-							.map(|u| format!(" (searxng at {u})"))
+							.map(|u| format!(" (searxng at {})", ai::search::redact_userinfo(u)))
 							.unwrap_or_default()
 					);
 				}
